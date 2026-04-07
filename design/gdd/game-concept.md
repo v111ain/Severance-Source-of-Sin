@@ -18,11 +18,11 @@
 | Aspect | Detail |
 | ---- | ---- |
 | **Genre** | Top-down Tactical Stealth / Narrative Thriller |
-| **Platform** | Web / WeChat Mini Program |
+| **Platform** | PC (Steam) / PS5 |
 | **Target Audience** | Mid-core players (Ages 18-35) seeking deep narrative & tactical challenge |
 | **Player Count** | Single-player |
-| **Session Length** | 3 - 8 minutes per level (Optimized for mobile) |
-| **Monetization** | Premium / Ad-supported / none yet |
+| **Session Length** | 5 - 15 minutes per level |
+| **Monetization** | Premium (one-time purchase) |
 | **Estimated Scope** | Small (Personal Development, 3-6 months) |
 | **Comparable Titles** | Hotline Miami (perspective), The Last of Us (tone/brutality), Mark of the Ninja (stealth logic) |
 
@@ -137,11 +137,12 @@
 
 | Consideration | Assessment |
 | ---- | ---- |
-| **Recommended Engine** | **Cocos Creator** (WeChat Mini Program optimized) or **Godot 4** (Web export) |
-| **Key Tech Challenges** | 俯视角下的 AI 视野与听觉算法；轻量化的高质量音效与震动反馈。 |
+| **Engine** | **Unity 6.3 LTS** (PC & PS5 optimized) |
+| **Key Tech Challenges** | 俯视角下的 AI 视野与听觉算法；高质量音效与震动反馈；主机平台性能优化。 |
 | **Art Style** | **Stylized 2D/2.5D Pixel Art** or **Low-Poly 3D**. 强调明暗对比（Chiaroscuro）。 |
 | **Art Pipeline Complexity** | Medium (Requires character animations for executions and heavy environment props). |
 | **Audio Needs** | High. 需要极高质量的采样音效（骨碎声、低沉背景音乐）来渲染氛围。 |
+| **Platform Requirements** | PC: Windows 10+, Steam Deck compatible; PS5: Performance/Quality modes |
 
 ---
 
@@ -159,7 +160,124 @@
 
 ## Next Steps
 
-- [ ] 配置开发环境 (`/setup-engine Cocos Creator` 或 `Godot`)
+- [x] 配置开发环境 (`/setup-engine Unity 6.3`)
 - [ ] 细化第一关（据点：地下停车场/非法仓库）的地图设计
 - [ ] 编写核心 AI 逻辑（巡逻、怀疑、搜索、攻击）
-- [ ] 制作第一个“乔尔式”的沉重暗杀动画原型
+- [ ] 制作第一个”乔尔式”的沉重暗杀动画原型
+
+---
+
+## Formulas
+
+**核心数值框架**（具体数值在各系统GDD中定义，此处为设计约束）：
+
+| 数值项 | 约束 | 说明 |
+|--------|------|------|
+| 玩家移动速度 | Walk基准 = 1.0 | Sprint = 1.6x, Crouch = 0.5x |
+| NPC感知范围 | 8-30米可调 | 默认15米 |
+| 暴露值积累 | 潜行=0.1x, 行走=1.0x, 冲刺=3.0x | 基于LOS系统 |
+| 处决窗口 | 背面150°扇形 | 非正面判定 |
+| 体力消耗 | 仅冲刺时 | 停止后自动恢复 |
+| 伤害类型 | Lethal / Blunt | 一击必杀 vs 硬直倒地 |
+| 理智/愤怒 | 0-100双轨 | 累积可逆 |
+
+---
+
+## Edge Cases
+
+**关键场景处理**（详见各系统GDD）：
+
+| 场景 | 设计决策 | 验证方式 |
+|------|---------|---------|
+| 玩家在处决中被攻击 | 无无敌帧，立即死亡 | 单元测试 |
+| 多NPC同时发现玩家 | 各自独立计算暴露值，任一满100%即触发警报 | 集成测试 |
+| 误杀无辜者 | 理智-15，触发特殊视觉反馈 | 情绪反馈测试 |
+| 线索NPC死亡导致卡关 | 补偿机制给予替代线索 | 场景测试 |
+| 派系感知链断裂 | 昏迷NPC切断感知网络 | AI行为测试 |
+
+---
+
+## Dependencies
+
+### 核心系统依赖关系
+
+```
+Foundation Layer:
+  玩家控制器 ← 无依赖
+  脆弱度与伤害系统 ← 无依赖
+  关卡与存档系统 ← 无依赖
+
+Core Layer:
+  LOS与监听 ← 依赖玩家控制器
+  环境交互 ← 依赖玩家控制器
+  NPC AI ← 依赖LOS、脆弱度系统
+
+Feature Layer:
+  沉重处决 ← 依赖玩家控制器、NPC AI、环境交互
+  线索与日志 ← 依赖环境交互、NPC AI
+
+Meta Layer:
+  理智/愤怒 ← 依赖沉重处决、线索系统
+
+Presentation Layer:
+  沉浸式音频 ← 依赖所有系统
+  动态视觉滤镜 ← 依赖理智/愤怒系统
+```
+
+### 循环依赖检查
+
+无循环依赖。所有依赖均为单向。
+
+---
+
+## Tuning Knobs
+
+*以下为核心设计约束，各系统GDD中有具体可调参数。*
+
+| 参数类 | 约束范围 | 说明 |
+|--------|---------|------|
+| 致死率 | 一击必杀（无护甲） | 核心设计，不可妥协 |
+| 移动速度比 | Sprint/Walk = 1.6x | 影响潜行策略 |
+| 暴露速度 | 潜行/行走/冲刺 = 0.1x/1.0x/3.0x | 影响玩家行为模式 |
+| 理智惩罚 | 无辜者 > 帮凶 > 恶徒 | -15/-8/-5 |
+| 愤怒积累 | 击杀+10，消散-1/5秒 | 影响狂暴状态 |
+| 线索补偿 | 关键线索缺失必补偿 | 防卡关设计 |
+
+---
+
+## Acceptance Criteria
+
+### 核心体验验证
+
+| ID | 标准 | 测试方法 |
+|----|------|---------|
+| AC-1 | **一击必杀验证**：玩家被敌人命中（无护甲）立即死亡 | 创建测试场景，让敌人射击玩家，验证立即死亡 |
+| AC-2 | **潜行有效性验证**：潜行状态下，敌人平均需要3倍以上时间发现玩家 | 对比潜行vs行走的暴露值积累速度 |
+| AC-3 | **环境交互验证**：每个房间至少提供2种环境处决方式 | 逐房间检查环境物件清单 |
+| AC-4 | **线索驱动验证**：玩家不杀NPC可通过监听获取足够线索完成任务 | 试玩无击杀通关路径 |
+| AC-5 | **道德反馈验证**：误杀无辜者后理智<20，视觉滤镜明显恶化 | 故意击杀无辜NPC，观察视觉反馈 |
+
+### 支柱验证
+
+| 支柱 | Design Test | 验证方法 |
+|------|------------|---------|
+| **致命的脆弱感** | 玩家不能在1对1中无伤击杀3人以上 | 统计数据验证 |
+| **沉重、不洁的暴力** | 处决动作有物理反馈（屏幕震动、顿帧） | 感官验证 |
+| **环境即武器** | 每个房间至少2种环境处决方案 | 逐房间设计检查 |
+| **罪恶的深度** | 每关至少有1个可感知的NPC悲剧故事 | 叙事内容检查 |
+
+### 技术验证
+
+| ID | 标准 | 测试方法 |
+|----|------|---------|
+| AC-6 | 60FPS稳定（PS5/PC） | 性能分析工具 |
+| AC-7 | 存档可靠性100%（撤离后必有存档） | 压力测试50次撤离 |
+| AC-8 | 音频/震动反馈 < 30ms延迟 | 帧分析工具 |
+
+---
+
+## Revision Notes
+
+| 日期 | 版本 | 修改内容 |
+|------|------|---------|
+| 2026-04-07 | 0.2 | 补充Formulas、Edge Cases、Dependencies、Tuning Knobs、Acceptance Criteria章节 |

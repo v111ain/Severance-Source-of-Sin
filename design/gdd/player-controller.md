@@ -1,6 +1,6 @@
 # Player Controller (玩家控制器)
 
-> **Status**: In Design
+> **Status**: Approved
 > **Author**: [user + agents]
 > **Last Updated**: 2026-03-29
 > **Implements Pillar**: 致命的脆弱感 (Lethal Fragility)
@@ -44,9 +44,67 @@
 ### Interactions with Other Systems
 
 *   **提供给 [视野与监听系统]**：控制器每帧提供玩家当前的 `WorldPosition` (世界坐标) 和 `FacingDirection` (面朝向量)。
-*   **提供给 [NPC AI系统]**：控制器基于当前移动状态，向世界广播 `NoiseEvent` (噪音事件)，包含发生位置和声音半径（潜行=0，行走=小，冲刺=大）。
+*   **提供给 [NPC AI系统]**：控制器基于当前移动状态，向世界广播 `NoiseEvent` (噪音事件)。
+
+**NoiseEvent 数据结构**：
+```
+NoiseEvent:
+    position: Vector3          # 噪音发生的世界坐标
+    radius: Float             # 噪音广播半径（潜行=0m, 行走=3m, 冲刺=8m）
+    noise_type: Enum          # WALK / CROUCH / SPRINT / INTERACTION / NONE
+    duration: Float            # 噪音持续时间（秒），默认 0.5s
+    can_interrupt: Bool        # 是否可被打断（默认 true）
+    source_entity_id: Int     # 产生噪音的实体ID（玩家或其他）
+```
+
+**射线检测接口规范**：
+
+| 职责 | 拥有者 | 说明 |
+|------|--------|------|
+| 射线检测执行 | 玩家控制器 | 每帧执行物理射线投射（长度 2.0m，锥形 60°），性能优化：仅在有输入时激活 |
+| 检测结果存储 | 玩家控制器 | 将 RaycastResult 写入共享内存位置 |
+| 可交互性判定 | 环境交互系统 | 读取 RaycastResult，判定物件是否在交互范围内（距离+朝向） |
+
+**射线检测返回值格式**：
+```
+RaycastResult:
+    hit: Boolean              # 是否命中物件
+    object_id: Int            # 命中的物件ID（如果 hit=true）
+    object_type: Enum         # 物件类型（WEAPON/EXPLOSIVE/DESTRUCTIBLE/INTEL/OBSTACLE/MECHANISM/THROWABLE）
+    distance: Float           # 命中距离
+    normal: Vector3           # 命中点法线
+```
+
+**设计意图**：将"检测"(Raycast)和"判定"(InteractionCheck)解耦。玩家控制器专注于输入响应和物理检测，环境交互系统专注于交互逻辑。环境交互系统拥有 `RaycastResult` 的解释权，玩家控制器仅负责提供原始数据。
+
 *   **向 [环境交互系统] 发起请求**：当按下互动键时，控制器向正前方发出射线/盒体检测，触发对应物件的交互逻辑。
 *   **移交控制权给 [沉重处决系统]**：当触发处决时，玩家控制器将自身的 `IsLocked` 状态设为 True，由处决系统接管角色位置和动画，完成后再归还控制权。
+
+#### `IsLocked` 接口规范（所有权：玩家控制器）
+
+**接口所有权澄清**：
+- `IsLocked` 及其相关数据结构由**玩家控制器**拥有
+- 外部系统（如沉重处决系统）通过标准接口请求锁定，不得直接修改 `IsLocked` 状态
+- 锁定持有者负责在动作完成后主动释放锁定
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `IsLocked` | bool | **动作锁定标志**。当为 `true` 时，玩家控制器的位移输入被忽略，角色位置和动画由外部系统（如沉重处决系统）接管。 |
+| `LockOwner` | System | 当前锁定持有者的系统标识（如 `"GrittyTakedowns"`）。用于判断是否有权限解锁。 |
+| `LockTimestamp` | float | 锁定开始的时间戳（游戏内时间），用于计算锁定持续时间。 |
+
+**锁定/解锁接口**：
+
+| 接口 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `AcquireLock(requester: System, duration: float)` | 请求系统ID，预期锁定时长 | `bool` | 尝试获取锁定。成功返回 `true`，若已被其他系统锁定则返回 `false`。 |
+| `ReleaseLock(requester: System)` | 请求系统ID | `bool` | 尝试释放锁定。只有锁定持有者可以释放，成功返回 `true`。 |
+| `ForceReleaseLock()` | 无 | `void` | 强制释放锁定（仅用于紧急情况，如玩家死亡）。 |
+
+**锁定行为规则**：
+- 锁定期间，Player Controller 的 `ProcessInput()` 函数跳过位移输入处理
+- 锁定持有者负责在 `duration` 到期后主动调用 `ReleaseLock()`，或调用 `ForceReleaseLock()` 紧急解锁
+- 若锁定持有者未在 `duration` 内释放，Player Controller 会在超时后自动解锁（防止死锁）
 
 ## Formulas
 
@@ -93,7 +151,7 @@
 
 ## Tuning Knobs
 
-*   *这些参数将暴露给策划在引擎（Godot Inspector）中直接调整，无需修改代码。*
+*   *这些参数将暴露给策划在 Unity Inspector 中直接调整，无需修改代码。*
 *   `BaseSpeed` (基础移速)
 *   `SprintMultiplier` (冲刺速度乘数)
 *   `CrouchMultiplier` (下蹲速度乘数)
@@ -103,6 +161,7 @@
 *   `StaminaRegenDelay` (停止冲刺到开始恢复体力的延迟时间)
 *   `NoiseRadius_Walk` (行走时的噪音广播半径)
 *   `NoiseRadius_Sprint` (冲刺时的噪音广播半径)
+*   `NoiseRadius_Crouch` (潜行时的噪音广播半径，默认 0m，即静音)
 
 ## Visual/Audio Requirements
 

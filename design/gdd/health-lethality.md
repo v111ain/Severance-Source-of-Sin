@@ -1,6 +1,6 @@
 # Health & Lethality (脆弱度与伤害系统)
 
-> **Status**: In Design
+> **Status**: Approved
 > **Author**: [user + agents]
 > **Last Updated**: 2026-03-29
 > **Implements Pillar**: 致命的脆弱感 (Lethal Fragility)
@@ -28,7 +28,8 @@
     *   `Blunt` (钝击伤害)：如空手挥拳、普通木棍挥击、被门撞到。
 *   **部位与护甲 (Hitboxes & Armor)**：
     *   受击部位分为：`Head` (头部), `Torso` (躯干), `Limbs` (四肢 - 视实现成本可选合并入躯干)。
-    *   防弹衣 (Armor) 仅覆盖 `Torso`。它可以使一次躯干位置的 `Lethal` (子弹) 伤害降级为 `Blunt` 伤害（防弹衣随之损坏），但无法抵御近战处决。
+    *   防弹衣 (Armor) 仅覆盖 `Torso`。它可以抵挡一次 `Lethal` (子弹) 伤害，使目标进入 `Staggered` (硬直) 状态而非立即死亡（护甲随之损坏）。护甲无法抵御穿透伤害（高穿透武器可无视护甲直接致死），也无法抵御近战处决。
+    *   **注**：护甲抵挡 Lethal 伤害的结果是 `Staggered` 状态，与穿透规则中的"穿透失败 → Staggered"机制一致。穿透规则描述的是穿透力评估后的结果，此处描述的是护甲的标准防护机制。
 
 ### States and Transitions
 
@@ -46,8 +47,35 @@
 ### Interactions with Other Systems
 
 *   **监听 [所有攻击行为]**：系统接收一个 `DamageEvent` 数据包（包含：攻击者、受击者、伤害类型、命中部位）。
-*   **广播给 [NPC AI系统] 和 [玩家控制器]**：当状态发生转移时，发送 `StateChanged` 事件。AI 根据此事件决定是进入战斗（看到同伴硬直）还是逃跑（看到同伴爆头）；玩家控制器据此决定是否锁定玩家输入（如进入 Staggered 状态）。
+*   **事件广播**：
+    - 当 NPC 状态发生转移时，由 NPC AI 系统广播 `NPCStateChangedEvent`（Health System 触发后 NPC AI 系统负责广播）
+    - 当玩家状态发生转移时，Health System 广播 `PlayerDamagedEvent`
 *   **提供给 [沉重处决系统]**：判定目标是否处于 `Staggered` 或 `Downed` 状态，这是许多正面环境处决的触发前置条件（即：先用砖头砸晕，再进行处决）。
+
+**`PlayerDamagedEvent` 数据结构**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `player_id` | int | 玩家实体 ID |
+| `damage_type` | DamageType | LETHAL / BLUNT |
+| `hit_location` | HitLocation | HEAD / TORSO / LIMBS |
+| `source_entity_id` | int | 伤害来源实体 ID |
+| `is_lethal` | bool | 是否为致命伤害 |
+
+**`NPCStateChangedEvent` 数据结构**（由 NPC AI 系统广播）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `npc_id` | int | NPC 实体 ID |
+| `entity_type` | EntityType | NPC（固定值） |
+| `old_state` | HealthState | 变化前的状态：Healthy / Staggered / Downed / Dead |
+| `new_state` | HealthState | 变化后的状态 |
+| `damage_type` | DamageType | LETHAL / BLUNT / NONE（用于区分死亡原因） |
+
+**订阅方行为指南**：
+- Immersive Audio 订阅 `PlayerDamagedEvent`，根据 `new_state` 判定震动：
+  - `new_state == Staggered` → 触发 `player_hurt` 震动
+  - `new_state == Dead` → 触发 `player_dead` 震动
 
 ## Formulas
 
@@ -63,7 +91,40 @@
     *   *处理*：Lethal 伤害优先级永远高于 Blunt。如果同时发生，只结算 Lethal 伤害。
 *   **穿透伤害**：
     *   *问题*：高威力子弹（如狙击枪）打穿带护甲的躯干。
-    *   *处理*：在武器系统中定义 `Penetration` 属性。如果 `Penetration > ArmorLevel`，则无视护甲降级规则，直接触发 `Lethal` 死亡。
+    *   *处理*：武器系统定义 `Penetration` 属性（1-10级）。穿透判定公式如下：
+
+```
+# 穿透判定（每次命中时重新评估）
+if (ArmorState == DESTROYED):
+    # 护甲已损毁，无视护甲，直接判定
+    if (DamageType == Lethal):
+        TargetState = DEAD
+    else:
+        TargetState = STAGGERED
+elif (weapon_penetration > target_armor_level):
+    # 穿透成功，无视护甲，直接触发 Lethal 死亡
+    TargetState = DEAD
+else:
+    # 穿透失败，消耗护甲耐久，触发 Staggered
+    ArmorDurability -= 1
+    if (ArmorDurability <= 0):
+        ArmorState = DESTROYED
+    TargetState = STAGGERED
+```
+
+| 变量 | 定义 | 典型值 |
+|------|------|--------|
+| weapon_penetration | 武器的穿透等级（1-10） | 手枪=3, 步枪=6, 狙击枪=9 |
+| target_armor_level | 目标的护甲等级（1-10） | 轻装=2, 重装=5, 超重装=8 |
+| ArmorDurability | 护甲可承受穿透失败的次数 | 1-2次 |
+| ArmorState | 护甲状态 | ACTIVE / DESTROYED |
+
+**穿透机制说明**：
+- 每次命中时，根据当前护甲状态独立判定
+- 如果护甲已损毁，后续命中直接作用于角色（无论穿透值多高）
+- 如果穿透值 > 护甲等级，穿透成功，角色立即死亡
+- 如果穿透值 ≤ 护甲等级，穿透失败，消耗1点护甲耐久，角色进入 Staggered
+- 护甲耐久耗尽后变为 DESTROYED 状态，不再提供保护
 *   **倒地无敌帧**：
     *   *问题*：敌人倒地过程中模型碰撞体发生剧烈变化，导致后续子弹打空。
     *   *处理*：角色在播放 `Staggered -> Downed` 动画的下落期间，依然接收 Lethal 伤害并可随时转化为死亡。
@@ -73,7 +134,7 @@
 *   **上游依赖**：无 (基础层)。
 *   **下游依赖**：
     *   **NPC AI系统**: 软依赖 (需要依据自身和友军的健康状态切换行为树)。
-    *   **沉重处决系统**: 软依赖 (需要查询目标是否处于 Staggered/Downed 状态)。
+    *   **沉重处决系统**: 硬依赖 (需要查询目标是否处于 Staggered/Downed 状态以触发环境处决；向 Health 系统发送 DamageRequest 执行伤害)。
 
 ## Tuning Knobs
 
@@ -105,4 +166,7 @@
 
 ## Open Questions
 
-*   *问题1*：是否允许“部位破坏”？（例如打碎膝盖导致敌人只能在地上爬行）。目前设计中暂时没有，以控制动画成本，但可作为后续 Alpha 阶段的评估项。
+*   *问题1*：是否允许”部位破坏”？（例如打碎膝盖导致敌人只能在地上爬行）。目前设计中暂时没有，以控制动画成本，但可作为后续 Alpha 阶段的评估项。
+*   *问题2（已解决）*：**玩家死亡条件澄清** — 玩家的唯一死亡条件是 Lethal 伤害直接致死。Downed 状态仅适用于 NPC，玩家不受 Downed 恢复机制影响。这与”致命的脆弱感”支柱保持一致。
+*   *问题3（已解决）*：**事件命名统一** — Health 系统发送 `PlayerDamagedEvent`（玩家受伤）和触发 NPC AI 系统的 `NPCStateChangedEvent`（NPC 状态变化）。详见 Interactions with Other Systems。
+*   *问题3（已解决）*：**穿透与护甲判定顺序** — 判定顺序为：1) 检查 Penetration > ArmorLevel → 直接致死；2) Penetration <= ArmorLevel → 消耗护甲，转为 Staggered，ArmorLevel--。护甲耗尽后，Lethal 打击直接致死。

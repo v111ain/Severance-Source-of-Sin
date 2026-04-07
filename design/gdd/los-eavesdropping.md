@@ -1,6 +1,6 @@
 # 视野与监听系统 (LOS & Eavesdropping)
 
-> **Status**: In Design
+> **Status**: Approved
 > **Author**: [user + agents]
 > **Last Updated**: 2026-03-29
 > **Implements Pillar**: 线索驱动的动态潜行 (Clue-Driven Dynamic Stealth)
@@ -38,7 +38,7 @@
 | 静止/潜行 (Crouch) | 0.1x (极低) | 可随时进入 | 隐蔽性最高，最适合进行定点监听。 |
 | 行走 (Walk) | 1.0x (正常) | 无法进入 | 正常的位移状态，在敌人面朝方向容易被察觉。 |
 | 冲刺 (Sprint) | 3.0x (极高) | 无法进入 | 瞬间引起注意，极易触发敌人警觉。 |
-| 专注监听 (Focus) | 0.2x (低) | 激活中 | 视野变暗，准星对准声源提取关键词，移动极其缓慢。 |
+| 专注监听 (Focus) | 0.05x (极低) | 激活中 | 视野变暗，准星对准声源提取关键词，移动极其缓慢。专注模式下暴露度极低是因为玩家处于静止且极度专注状态。 |
 
 | NPC 身份状态 | 描述 | 受到攻击的后果 (联动理智系统) |
 | --- | --- | --- |
@@ -62,8 +62,8 @@
 其中：
 `DeltaExposure = BaseExposureRate * MovementMultiplier * DistanceFactor`
 * `BaseExposureRate` (基础积累率): 每秒增加的暴露值（如 20/秒）。
-* `MovementMultiplier` (运动乘数): 潜行=0.1, 行走=1.0, 冲刺=3.0, 专注监听=0.2。
-* `DistanceFactor` (距离衰减): `1.0 - (DistanceToNPC / MaxVisionRange)`。距离越近，暴露越快。如果中间有墙体视线遮挡，该值为 0。
+* `MovementMultiplier` (运动乘数): 潜行=0.1, 行走=1.0, 冲刺=3.0, 专注监听=0.05。
+* `DistanceFactor` (距离衰减): `Clamp(1.0 - (DistanceToNPC / MaxVisionRange), 0.0, 1.0)`。距离越近，暴露越快。如果中间有墙体视线遮挡，该值为 0。如果 `DistanceToNPC >= MaxVisionRange`，该值为 0（不产生暴露）。
 * *特殊情况*：如果 `DistanceToNPC < 贴脸判定半径`，`CurrentExposure` 瞬间设为 100。
 
 **2. 关键词捕获进度 (Tagging Progress)**
@@ -72,7 +72,25 @@
 
 其中：
 * `TagRate`: 基础破译速度（如 33/秒，意味着完美对准需要约 3 秒）。
-* `AimAccuracy` (准星精准度): 取值 0.0 到 1.0，基于屏幕中心准星与声源 UI 标识的距离。如果精准度低于 0.5（未对准），则视为 0（不增加进度）。
+* `AimAccuracy` (准星精准度): 取值 0.0 到 1.0，计算公式：
+  ```
+  ScreenDistance = Distance2D(CrosshairPosition, SoundSourceScreenPosition)
+  AimAccuracy = Clamp(1.0 - (ScreenDistance / MaxScreenDistance), 0.0, 1.0)
+  ```
+  - `CrosshairPosition`: 屏幕中心准星的像素坐标
+  - `SoundSourceScreenPosition`: 声源3D世界坐标投影到屏幕后的像素坐标
+  - `MaxScreenDistance`: 屏幕半径（超出此范围视为 0）
+  - 当 `AimAccuracy < 0.5` 时，进度不增加（未对准判定）
+
+**`SoundSourceScreenPosition` 计算说明**：
+```
+SoundSourceScreenPosition = Project3DToScreen(SoundSourceWorldPosition, CameraTransform)
+```
+- `SoundSourceWorldPosition`: 声源NPC的3D世界坐标
+- `CameraTransform`: 当前游戏摄像机Transform
+- 计算方式：使用Unity的 `Camera.WorldToScreenPoint()` 或等价方法，将3D坐标投影到屏幕像素空间
+- 注意：`SoundSourceScreenPosition` 是3D坐标的屏幕投影，**不是**UI元素的位置
+* **专注对准时间阈值**：玩家需要将准星对准声源并保持 `AimAccuracy >= 0.5` 累计达到 1.0 秒后，才开始累积关键词捕获进度。这防止玩家偶然划过声源就意外开始破译。
 
 ## Edge Cases
 
@@ -91,29 +109,156 @@
 
 ## Dependencies
 
-* **上游依赖 (依赖谁)**：
-  * **Player Controller**: 读取玩家的世界坐标、运动状态。
-* **下游依赖 (谁依赖本系统)**：
-  * **NPC AI System**: 接收 `PlayerSpotted` 暴露事件以触发战斗；接收被拦截的语音文本数据。
-  * **理智/愤怒系统 (Sanity/Rage)**: 接收被击杀 NPC 的真实 `Tag` 以计算理智增减。
+### 与 NPC AI 系统感知计算的职责划分
+
+**LOS 系统职责**：计算玩家被 NPC 发现的**暴露进度** (0-100%)
+- `CurrentExposure` 是"玩家在单个 NPC 视野内暴露程度的累积值"
+- 当 `CurrentExposure >= 100` 时，LOS 系统向 NPC AI 系统发送 `PlayerSpottedEvent` 事件
+
+**NPC AI 系统职责**：计算 NPC 对玩家的**综合感知评分** (0.0-1.0)
+- NPC AI 系统的 `PerceptionScore = VisualScore + AudioScore + MemoryScore`
+- 其中 `VisualScore = LOS.CurrentExposure / 100`（将 LOS 的暴露值映射为 NPC 的视觉感知）
+
+**设计意图澄清**：
+- LOS 系统是**玩家视角**的暴露计算（"我有多容易被发现"）
+- NPC AI 系统是**NPC 视角**的综合感知计算（"NPC 感知到了什么"）
+- 两者概念互补但服务不同目的，通过 `PlayerSpottedEvent` 事件和 `VisualScore` 映射实现解耦
+
+### 接口定义
+
+#### 本系统发出的事件
+
+| 事件名 | 方向 | 负载 | 说明 |
+|--------|------|------|------|
+| `PlayerSpottedEvent` | → NPC AI 系统 | `{player_id, npc_id, spot_time}` | 玩家被 NPC 发现 |
+| `KeywordCapturedEvent` | → Clue 系统 / UI | `{keyword, npc_id, location_id, category, capture_timestamp}` | 玩家捕获窃听关键词 |
+
+#### 本系统提供的查询接口
+
+| 接口名 | 参数 | 返回值 | 说明 |
+|--------|------|--------|------|
+| `QueryNPCIdentity` | `npc_id: int` | `NPCIdentity` | 查询 NPC 的身份标签（恶徒/帮凶/无辜者/未知） |
+
+**`QueryNPCIdentity` 返回数据结构**：
+```csharp
+NPCIdentity:
+    npc_id: int                          // NPC 实体 ID
+    identity: NPCIdentityType             // UNKNOWN / ENEMY / ACCOMPLICE / VICTIM
+    confidence: float                      // 置信度 0.0 - 1.0
+    source_keywords: List[string]        // 导致该身份确认的关键词列表
+    last_update_time: float               // 最后更新时间戳
+```
+
+**`KeywordCapturedEvent` 数据结构**：
+```csharp
+KeywordCapturedEvent:
+    keyword: string                       // 捕获的关键词文本（如"货到了"）
+    npc_id: int                          // 来源 NPC 的 ID
+    location_id: string                   // 当前位置 ID
+    category: KeywordCategory             // IDENTITY / LOCATION / RELATIONSHIP / ITEM / TRAGEDY
+    capture_timestamp: float              // 捕获时间戳
+```
+
+### 上游依赖 (依赖谁)
+
+| 系统 | 依赖类型 | 接口说明 |
+|------|---------|---------|
+| **Player Controller** | 硬依赖 | 读取玩家的世界坐标、运动状态 |
+
+### 下游依赖 (谁依赖本系统)
+
+| 系统 | 依赖类型 | 接口说明 |
+|------|---------|---------|
+| **NPC AI System** | 硬依赖 | 接收 `PlayerSpottedEvent` 暴露事件以触发战斗；接收被拦截的语音文本数据 |
+| **Clue System** | 硬依赖 | 接收 `KeywordCapturedEvent` 关键词事件，转化为线索 |
+| **理智/愤怒系统 (Sanity/Rage)** | 软依赖 | 通过 Gritty Takedowns 发送的 `KillTagEvent` 接收被击杀 NPC 的真实身份以计算理智增减 |
 
 ## Tuning Knobs
 
-* `MaxVisionRange` (最大视觉半径): NPC 能感知到运动的最大距离。
-* `ProximityThreshold` (贴脸判定): 无论玩家什么状态，一旦进入此距离立刻暴露（如 1.5米）。
-* `BaseExposureRate` (基础暴露率): 每秒积累的暴露值。
-* `DecayRate` (暴露衰减率): 脱离视线后每秒下降的暴露值。
-* `MaxListeningRange` (最大监听半径): 能够开启专注模式捕获声音的最大距离。
-* `TagRate` (破译速度): 持续对准时，每秒积累的破译进度。
-* `MinAimAccuracy` (最小准星容差): 准星必须多靠近声源中心才能开始累积进度。
+| 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
+|--------|------|--------|---------|------|
+| `MaxVisionRange` | float | 15.0m | 8.0m - 30.0m | NPC 能感知到运动的最大距离 |
+| `ProximityThreshold` | float | 1.5m | 1.0m - 3.0m | 无论玩家什么状态，一旦进入此距离立刻暴露 |
+| `BaseExposureRate` | float | 20.0/秒 | 10.0 - 50.0 | 每秒增加的暴露值 |
+| `DecayRate` | float | 15.0/秒 | 5.0 - 30.0 | 脱离视线后每秒下降的暴露值 |
+| `MaxListeningRange` | float | 10.0m | 5.0m - 20.0m | 能够开启专注模式捕获声音的最大距离 |
+| `TagRate` | float | 33.0/秒 | 20.0 - 50.0 | 持续对准时，每秒积累的破译进度（100%/33 ≈ 3秒完成） |
+| `MinAimAccuracy` | float | 0.5 | 0.3 - 0.8 | 准星必须多靠近声源中心才能开始累积进度（0.0-1.0） |
+| `FocusAlignmentTime` | float | 1.0秒 | 0.5 - 2.0秒 | 玩家需要保持对准才能开始累积破译进度的累计时间 |
 
 ## Visual/Audio Requirements
 
-[To be designed]
+### 视觉反馈
+
+| 事件 | 视觉反馈 |
+|------|---------|
+| 玩家暴露值上升 | NPC 头顶的危险警告图标亮度随暴露值增加而增强 |
+| 玩家暴露值衰减 | 危险警告图标亮度逐渐降低 |
+| 专注监听激活 | 画面边缘变暗，仅声源产生波纹高亮 |
+| 关键词捕获进度 | 准星中心出现径向进度条 |
+| 身份标签翻转（Tagging） | NPC 头顶标记从灰色"?"变为明确颜色（红/黄/绿） |
+
+### 听觉反馈
+
+| 事件 | 音效类型 |
+|------|---------|
+| 进入专注监听模式 | 低沉的"嗡"声 |
+| 锁定声源 | 短促的"滴"声 |
+| 关键词捕获进度累积 | 持续的电流/静电声 |
+| 50% 进度 | 确认音效"咔" |
+| 身份标签翻转完成 | 成功提示音 |
+| 玩家被 NPC 发现 | 警报音 |
+
+### 资产需求
+
+| 类型 | 需求 |
+|------|------|
+| 声源波纹 | 3D 空间化波纹特效 |
+| 危险警告图标 | NPC 头顶三角形警告标识，亮度可调 |
+| 身份标签 | 圆形标签，颜色可调（Enemy=红/Accomplice=黄/Victim=绿/Unknown=灰） |
+| 专注模式遮罩 | 径向渐变暗角着色器 |
+| 准星 | 圆形准星，跟随玩家面朝方向 |
+
+---
 
 ## UI Requirements
 
-[To be designed]
+### HUD 元素
+
+| 元素 | 位置 | 显示内容 | 触发条件 |
+|------|------|---------|---------|
+| 危险警告 | NPC 头顶 | 暴露值最高的 NPC 显示警告图标 | 玩家暴露值 > 0 |
+| 身份标签 | NPC 头顶 | Enemy/Accomplice/Victim/Unknown 标签 | 身份已确认或已知 |
+| 专注模式 UI | 屏幕中央 | 圆形准星 + 声源波纹 | 专注监听激活 |
+| 关键词进度 | 准星中心 | 径向进度条 | 专注监听中且对准声源 |
+| 专注模式提示 | 屏幕边缘 | "按 V 专注监听" | 可进入专注模式时 |
+
+### 专注模式 UI
+
+```
+┌─────────────────────────────────────────┐
+│                                         │
+│                                         │
+│            （画面边缘暗角）               │
+│                                         │
+│                  ◎ ← 声源波纹             │
+│                 ╱╲                      │
+│                ╱  ╲                     │
+│               ●━━━━ ← 准星              │
+│                                         │
+│                                         │
+│  [V] 专注监听                           │
+└─────────────────────────────────────────┘
+```
+
+### 身份标签显示规则
+
+| 标签类型 | 颜色 | 形状 | 何时显示 |
+|---------|------|------|---------|
+| Enemy (恶徒) | 红色 #E63946 | 实心圆 | LOS 系统确认身份后 |
+| Accomplice (帮凶) | 黄色 #F4A261 | 实心圆 | LOS 系统确认身份后 |
+| Victim (无辜者) | 绿色 #2ECC71 | 实心圆 | LOS 系统确认身份后 |
+| Unknown (未知) | 灰色 #95A5A6 | 问号 | 默认状态 |
 
 ## Acceptance Criteria
 

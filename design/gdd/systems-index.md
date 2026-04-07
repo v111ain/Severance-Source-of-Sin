@@ -2,8 +2,31 @@
 
 > **Status**: Approved
 > **Created**: 2026-03-29
-> **Last Updated**: 2026-03-29
+> **Last Updated**: 2026-04-07
 > **Source Concept**: design/gdd/game-concept.md
+> **Engine**: Unity 6.3 LTS (PC & PS5)
+> **Revision Notes**: 2026-04-07 批量修复已发现的设计问题：
+> - 引擎统一为 Unity 6.3 LTS（修复 Godot 引用冲突）
+> - 玩家控制器（射线检测职责划分、IsLocked所有权澄清）
+> - LOS与监听（AimAccuracy计算方法、专注对准时间阈值、感知职责划分）
+> - 沉重处决（ESCAPE状态行为澄清、AlertStateChanged事件说明、DialogueTree数据结构定义、PlayerIntelligenceBonus移除）
+> - 理智/愤怒（双轨并行模型澄清、状态优先级定义）
+> - 线索系统（关键词→线索匹配机制详细定义）
+> - 存档系统（撤离判定逻辑与战斗暂停逻辑统一）
+> - 脆弱度系统（穿透伤害公式定义）
+> - 音频系统（PlayerDamagedEvent广播职责澄清）
+> - 所有 Godot 引用已替换为 Unity
+> - game-concept.md 补充验收标准（Formulas/Edge Cases/Dependencies/Tuning Knobs/Acceptance Criteria）
+>
+> **2026-04-07 设计审查修复**：
+> - ✅ P0-1: LOS系统 `SoundSourceUIPosition` → `SoundSourceScreenPosition`，补充3D投影计算说明
+> - ✅ P0-2: 线索系统 `ContextMultiplier` → `ClueContextMultiplier`，避免与理智系统命名冲突
+> - ✅ P0-3: Gritty Takedowns `KillTagEvent{npc_tag, is_mistake}` → `KillTagEvent{kill_tag: NPCIdentityType}`
+> - ✅ P1-4: NPC AI系统 锁喉机制明确为 Alpha 范围，MVP 简化方案已定义
+> - ✅ P1-5: 理智系统 悲剧线索惩罚曲线重新评估（递减机制）
+> - ✅ P1-6: 环境交互系统 新增物件动画标签体系定义
+> - ✅ P2-7: 理智系统 愤怒消散速率调整（5秒→3秒，-1→-2），新增狂暴阈值锁定机制
+> - ✅ P2-8: 动态视觉滤镜系统 创建设计文档框架（draft）
 
 ---
 
@@ -17,17 +40,17 @@
 
 | # | System Name | Category | Priority | Status | Design Doc | Depends On |
 |---|-------------|----------|----------|--------|------------|------------|
-| 1 | 玩家控制器 (Player Controller) (inferred) | Core | MVP | Designed | design/gdd/player-controller.md | — |
-| 2 | 脆弱度与伤害系统 (Health & Lethality) (inferred) | Core | MVP | Designed | design/gdd/health-lethality.md | — |
-| 3 | 关卡与存档系统 (Progression & Save) (inferred) | Persistence | Vertical Slice | Not Started | — | — |
-| 4 | 视野与监听系统 (LOS & Eavesdropping) | Gameplay | MVP | Designed | design/gdd/los-eavesdropping.md | Player Controller |
-| 5 | 环境交互系统 (Environment Interaction) | Gameplay | MVP | Not Started | — | Player Controller |
-| 6 | NPC AI系统 (NPC AI System) | Gameplay | MVP | Not Started | — | LOS & Eavesdropping, Health & Lethality |
-| 7 | 线索与日志系统 (Clue & Journal) (inferred) | Narrative | MVP | Not Started | — | Environment Interaction, NPC AI System |
-| 8 | 沉重处决系统 (Gritty Takedowns) | Gameplay | MVP | Not Started | — | Player Controller, NPC AI System, Environment Interaction |
-| 9 | 理智/愤怒系统 (Sanity/Rage Meter) | Meta | Vertical Slice | Not Started | — | Gritty Takedowns, Clue & Journal |
-| 10| 沉浸式音频与震动 (Immersive Audio & Haptics) (inferred) | Audio | Vertical Slice | Not Started | — | Gritty Takedowns, Environment Interaction |
-| 11| 动态视觉滤镜系统 (Dynamic Post-Processing) (inferred) | Presentation | Alpha | Not Started | — | Sanity/Rage Meter |
+| 1 | 玩家控制器 (Player Controller) | Core | MVP | Approved | design/gdd/player-controller.md | — |
+| 2 | 脆弱度与伤害系统 (Health & Lethality) | Core | MVP | Approved | design/gdd/health-lethality.md | — |
+| 3 | 关卡与存档系统 (Progression & Save) | Persistence | Vertical Slice | Approved | design/gdd/progression-save.md | — |
+| 4 | 视野与监听系统 (LOS & Eavesdropping) | Gameplay | MVP | Approved | design/gdd/los-eavesdropping.md | Player Controller |
+| 5 | 环境交互系统 (Environment Interaction) | Gameplay | MVP | Approved | design/gdd/environment-interaction.md | Player Controller |
+| 6 | NPC AI系统 (NPC AI System) | Gameplay | MVP | Approved | design/gdd/npc-ai-system.md | LOS & Eavesdropping, Health & Lethality |
+| 7 | 线索与日志系统 (Clue & Journal) | Narrative | MVP | Approved | design/gdd/clue-and-journal.md | Environment Interaction, NPC AI System |
+| 8 | 沉重处决系统 (Gritty Takedowns) | Gameplay | MVP | Approved | design/gdd/gritty-takedowns.md | Player Controller, NPC AI System, Environment Interaction |
+| 9 | 理智/愤怒系统 (Sanity/Rage Meter) | Meta | Vertical Slice | Approved | design/gdd/sanity-rage-meter.md | Gritty Takedowns, Clue & Journal |
+| 10| 沉浸式音频与震动 (Immersive Audio & Haptics) | Audio | Vertical Slice | Approved | design/gdd/immersive-audio-haptics.md | Gritty Takedowns, Environment Interaction |
+| 11| 动态视觉滤镜系统 (Dynamic Post-Processing) | Presentation | Alpha | Draft | design/gdd/dynamic-post-processing.md | Sanity/Rage Meter |
 
 ---
 
@@ -124,16 +147,32 @@
 | Metric | Count |
 |--------|-------|
 | Total systems identified | 11 |
-| Design docs started | 0 |
-| Design docs reviewed | 0 |
-| Design docs approved | 0 |
-| MVP systems designed | 0/7 |
-| Vertical Slice systems designed | 0/3 |
+| Design docs started | 11 |
+| Design docs reviewed | 11 (全部11个系统已完成审查) |
+| Design docs with P0 issues fixed | 11 (全部已修复P0问题) |
+| Design docs approved | 11 (全部 Approved) |
+| Design docs in review | 0 |
+| Design docs with P1/P2 improvements | 6 (LOS/线索/理智/环境交互/NPC AI/DPP) |
+| MVP systems (7 total) | 7/7 (all Approved) |
+| Vertical Slice systems (3 total) | 3/3 (all Approved) |
+| Alpha systems (1 total) | 0/1 (DPP已启动框架) |
 
 ---
 
 ## Next Steps
 
-- [ ] Design MVP-tier systems first (use `/design-system [system-name]`)
-- [ ] Prototype the highest-risk system early (`/prototype NPC AI系统` or `沉重处决系统`)
-- [ ] Run `/sprint-plan new` to organize the first development sprint
+- [x] ✅ 引擎统一为 Unity 6.3 LTS
+- [x] ✅ 修复所有 Godot 引用为 Unity
+- [x] ✅ 解决 Gritty Takedowns 的 DialogueTree 数据结构定义
+- [x] ✅ 解决 Clue & Journal 的关键词匹配机制
+- [x] ✅ 解决 progression-save 撤离判定逻辑冲突
+- [x] ✅ 解决 sanity-rage-meter 双轨并行模型澄清
+- [x] ✅ 移除 gritty-takedowns 的 PlayerIntelligenceBonus
+- [x] ✅ 定义 health-lethality 穿透伤害公式
+- [x] ✅ 澄清 immersive-audio PlayerDamagedEvent 广播职责
+- [x] ✅ 补充 game-concept.md 验收标准
+- [x] ✅ P0/P1/P2 设计审查问题修复（2026-04-07）
+- [x] ✅ 动态视觉滤镜系统设计框架启动
+- [ ] Run `/gate-check pre-production` to check if you're ready to start building
+- [ ] Prototype the highest-risk system (`/prototype NPC AI系统`)
+- [ ] 完善动态视觉滤镜系统设计（确定渲染方案）

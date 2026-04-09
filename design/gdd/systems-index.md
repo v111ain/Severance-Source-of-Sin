@@ -57,6 +57,16 @@
 > - ✅ P1: UI 系统 OQ-1 小地图问题已解决（不需要小地图）
 > - ✅ P1: DialogTree 接口 npc_id 类型统一为 string，Alert State 枚举引用 npc-ai-system.md
 
+**2026-04-10 系统补充**：
+> - ✅ 新增天气系统 (Weather System) 到索引：分类 World，优先级 Full Vision，依赖环境交互系统
+
+**2026-04-10 设计审查后更新**：
+> - ✅ P0 接口问题全部修复，天气系统 + 光照系统状态更新为 Approved：
+>   - ✅ NPC AI 系统：添加天气/光照查询接口，实现 EffectiveVisionRange 计算
+>   - ✅ DPP 系统：添加光照系统订阅，实现 LightingFilter 滤镜层
+>   - ✅ LOS 系统：添加阴影隐蔽加成 StealthBonus 参数
+> - ✅ 天气系统代码审查修复：公式2半衰期修正（TransitionDuration/10）、雷雨视野bonus补充、发布验收AC-15添加、措辞修正
+
 ---
 
 ## Overview
@@ -85,6 +95,7 @@
 | 14| UI 系统 (UI System) | Presentation | MVP | Approved | design/gdd/ui-system.md | — |
 | — | **屏幕特效系统 (Screen Effects)** | **Infrastructure** | **Infrastructure** | **Approved** | design/gdd/screen-effects.md | — |
 | — | **DialogTree 接口协议** | **Interface** | **MVP** | **Approved** | design/gdd/dialog-tree-interface.md | Gritty Takedowns, NPC AI System |
+| 15 | **天气系统 + 光照系统 (Weather & Lighting)** | **World** | **Full Vision** | **Approved** | design/gdd/weather-system.md | Environment Interaction |
 
 ---
 
@@ -133,6 +144,10 @@
 1. **线索与日志系统 (Clue & Journal)** — depends on: 环境交互系统, NPC AI系统
 2. **沉重处决系统 (Gritty Takedowns)** — depends on: 玩家控制器, NPC AI系统, **武器系统**, 环境交互系统
 
+### World Layer (environmental systems affecting gameplay)
+
+1. **天气系统 (Weather System)** — depends on: 环境交互系统（天气影响环境物件）；影响：动态视觉滤镜系统, 沉浸式音频与震动系统, NPC AI系统
+
 ### Meta/Narrative Layer (depends on features)
 
 1. **理智/愤怒系统 (Sanity/Rage Meter)** — depends on: 沉重处决系统, 线索与日志系统 (玩家的行为反馈于此)
@@ -163,6 +178,7 @@
 | 12| 沉浸式音频与震动 (Immersive Audio & Haptics) | Vertical Slice| Presentation| sound-designer | S |
 | 13| 动态视觉滤镜系统 (Dynamic Post-Processing) | Alpha | Presentation| technical-artist | S |
 | 14| UI 系统 (UI System) | MVP | Presentation| ui-programmer / ux-designer | M |
+| 15| 天气系统 (Weather System) | Full Vision | World | game-designer / technical-artist | M |
 
 ---
 
@@ -186,17 +202,18 @@
 
 | Metric | Count |
 |--------|-------|
-| Total systems identified | 14 (含1个已替代系统) |
-| Active design docs | 14 |
-| Design docs reviewed | 12 |
+| Total systems identified | 15 (含1个已替代系统) |
+| Active design docs | 15 |
+| Design docs reviewed | 13 |
 | Design docs with P0 issues fixed | 12 |
 | Design docs in revision | 0 |
-| Design docs approved | 12 (活跃系统) + 1 superseded |
+| Design docs approved | 13 (活跃系统) + 1 superseded |
 | Design docs in review | 0 |
 | Design docs with P1/P2 improvements | 6 (LOS/线索/理智/环境交互/NPC AI/DPP) |
 | MVP systems (10 total) | 10/10 (全部 Approved) |
 | Vertical Slice systems (3 total) | 3/3 (all Approved) |
 | Alpha systems (1 total) | 1/1 (DPP ✅ Approved) |
+| Full Vision systems (1 total) | 1/1 (天气+光照系统 ✅ Approved) |
 
 ---
 
@@ -218,7 +235,15 @@
 - [ ] Prototype the highest-risk system (`/prototype NPC AI系统`)
 - [ ] 完善动态视觉滤镜系统设计（确定渲染方案）
 - [ ] UI 系统 OQ-1 交叉问题：LOS 系统是否需要提供小地图数据？（待 LOS 系统解答）
+- [x] ✅ 设计天气系统 (Weather System) — Full Vision，依赖环境交互系统
 
 **2026-04-09 更新**：
 - ✅ UI 系统已纳入索引（#14）
 - ✅ 动态视觉滤镜系统 (DPP) 补充 Tuning Knobs 章节，状态更新为 Approved
+
+**2026-04-09 天气系统设计审查修复**：
+- ✅ P0：修复 weather-system.md 与 systems-index.md 状态不一致（weather-system.md Status: Approved，systems-index.md Progress Tracker 同步更新）
+- ✅ P1：在 Dependencies 中补充对 Sanity/Rage 系统的软依赖（SOUL_SPLIT 状态引用）
+- ✅ P2：更新接口一致性检查表格（OQ-1 接口已与 NPC AI/LOS 系统确认）
+- ✅ P2：补充音效混音参数规格（待 Sound Designer 确认）
+- ✅ P2：调试 UI 说明更新为"发布版本必须禁用"

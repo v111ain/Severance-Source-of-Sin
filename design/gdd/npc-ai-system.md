@@ -458,6 +458,30 @@ NPC 对玩家的感知综合评分，用于判定 Alert State 转换。
 
 > **Clamp 说明**：虽然三个评分理论上最大值可达 2.8，但实际游戏中玩家不太可能同时达到最大视觉暴露、冲刺声音和 30 秒内残留记忆。添加 Clamp 确保 PerceptionScore 始终在 [0.0, 1.0] 范围内，与阈值表一一对应。
 
+**感知范围折扣计算（天气 + 光照）**：
+
+NPC 的有效感知范围受天气和光照条件影响：
+
+```
+EffectiveVisionRange = MaxPerceptionRange
+                      × WeatherModifier   // 天气系统提供
+                      × LightModifier    // 光照系统提供
+
+// 限制下限：最低保留 30% 的基础感知范围
+EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
+```
+
+| 变量 | 定义 | 来源 | 说明 |
+|------|------|------|------|
+| `MaxPerceptionRange` | 基础感知范围 | NPC AI Tuning Knobs | 默认 15 米 |
+| `WeatherModifier` | 天气视野折扣 | Weather System `GetWeatherModifier()` | 雾天=0.7，其他=1.0 |
+| `LightModifier` | 光照视野折扣 | Lighting System `GetLightModifier()` | 昏暗=0.7，黑暗=0.4，明亮/正常=1.0 |
+
+> **接口调用说明**：
+> - `GetWeatherModifier()` 和 `GetLightModifier()` 由各自的系统提供，NPC AI 系统在计算感知时调用
+> - 两个 Modifier 直接相乘，叠加在 `MaxPerceptionRange` 上
+> - 如果 `WeatherModifier × LightModifier < 0.3`，强制设为 0.3（保留最低感知）
+
 | 变量 | 定义 | 计算方式 | 与 LOS 系统的关系 |
 |------|------|---------|------------------|
 | `VisualScore` | 视觉感知评分 | 直接读取 `LOS.CurrentExposure / 100`，范围 0.0~1.0 | LOS 系统计算玩家的暴露进度 |
@@ -740,6 +764,8 @@ NPC 对玩家的感知综合评分，用于判定 Alert State 转换。
 | **玩家控制器 (Player Controller)** | 数据读取 | 硬依赖 | 读取玩家世界坐标、运动状态、移动速度，用于计算感知距离和方向 |
 | **视野与监听系统 (LOS & Eavesdropping)** | 事件接收 | 硬依赖 | 接收 `PlayerSpottedEvent` 事件触发 Alert State 变化；NPC 对话文本作为 LOS 系统的输入源 |
 | **脆弱度与伤害系统 (Health & Lethality)** | 内部接口 | 硬依赖 | 通过内部接口接收 Health 系统的伤害结果通知，触发 World State 更新；提供 `QueryState(NPC_ID)` 查询接口 |
+| **天气系统 (Weather System)** | 查询接口 | 软依赖 | 调用 `GetWeatherModifier()` 获取天气对 NPC 视野范围的折扣 |
+| **光照系统 (Lighting System)** | 查询接口 | 软依赖 | 调用 `GetLightModifier()` 获取光照对 NPC 视野范围的折扣；调用 `GetPlayerShadowState()` 获取玩家是否处于阴影中 |
 
 ### 下游依赖 (谁依赖本系统)
 
@@ -1109,6 +1135,7 @@ Health 系统 ───► 　　　
 | OQ-9 | **环境作为 NPC 行为触发器** | 关卡设计师 | TBD | 环境交互（如触发警报器）如何与 NPC AI 联动？是否需要定义环境事件到 NPC 行为的映射表？ |
 | OQ-10 | **NPC 数量上限与性能** | AI 程序员 | TBD | 单个区域最多允许多少 NPC 同时运行状态机？需要性能测试后确定 |
 | OQ-11（跨系统） | ~~**AlertStateChangedEvent 事件定义**~~ | ~~AI 程序员~~ | ~~下次对齐会议~~ | ✅ **已解决**：采用事件广播方案。已定义 `AlertStateChangedEvent(NPC_ID, old_state, new_state, trigger)` 事件，详见「事件接口定义」章节。Gritty Takedowns 订阅此事件替代轮询。 |
+| OQ-12（跨系统） | ~~**天气/光照感知折扣接口**~~ | ~~系统设计师~~ | ~~2026-04-30~~ | ✅ **已于 2026-04-10 解决**：NPC AI 系统已在 Dependencies 中添加 Weather System 和 Lighting System 作为软依赖（查询接口）。在公式4中添加了 `EffectiveVisionRange` 计算，整合天气和光照的视野折扣。详见「公式4：NPC 感知范围计算」章节。 |
 
 ---
 

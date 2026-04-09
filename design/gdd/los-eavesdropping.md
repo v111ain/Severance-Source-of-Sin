@@ -63,10 +63,13 @@
 `CurrentExposure = Clamp(PreviousExposure + (DeltaExposure * DeltaTime) - (DecayRate * DeltaTime), 0, 100)`
 
 其中：
-`DeltaExposure = BaseExposureRate * MovementMultiplier * DistanceFactor`
+`DeltaExposure = BaseExposureRate * MovementMultiplier * DistanceFactor * StealthBonus`
 * `BaseExposureRate` (基础积累率): 每秒增加的暴露值（如 20/秒）。
 * `MovementMultiplier` (运动乘数): 潜行=0.1, 行走=1.0, 冲刺=3.0, 专注监听=0.05。
 * `DistanceFactor` (距离衰减): `Clamp(1.0 - (DistanceToNPC / MaxVisionRange), 0.0, 1.0)`。距离越近，暴露越快。如果中间有墙体视线遮挡，该值为 0。如果 `DistanceToNPC >= MaxVisionRange`，该值为 0（不产生暴露）。
+* `StealthBonus` (隐蔽加成): 玩家处于阴影中时的额外保护。调用 `LightingSystem.GetPlayerShadowState()` 获取：
+  * `StealthBonus = 1.0` when in_light（玩家在光照范围内）
+  * `StealthBonus = 0.77` when in_shadow（玩家在阴影中，暴露速度降低 23%）
 * *特殊情况*：如果 `DistanceToNPC < 贴脸判定半径`，`CurrentExposure` 瞬间设为 100。
 
 **2. 关键词捕获进度 (Tagging Progress)**
@@ -185,6 +188,7 @@ KeywordCapturedEvent:
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|---------|
 | **Player Controller** | 硬依赖 | 读取玩家的世界坐标、运动状态 |
+| **光照系统 (Lighting System)** | 查询接口 | 调用 `GetPlayerShadowState()` 获取玩家当前是否处于阴影中，用于计算 `StealthBonus` |
 
 ### 下游依赖 (谁依赖本系统)
 
@@ -207,6 +211,8 @@ KeywordCapturedEvent:
 | `TagRate` | float | 33.0/秒 | 20.0 - 50.0 | 持续对准时，每秒积累的破译进度（100%/33 ≈ 3秒完成） |
 | `MinAimAccuracy` | float | 0.5 | 0.3 - 0.8 | 准星必须多靠近声源中心才能开始累积进度（0.0-1.0） |
 | `FocusAlignmentTime` | float | 1.0秒 | 0.5 - 2.0秒 | 玩家需要保持对准才能开始累积破译进度的累计时间 |
+| `StealthBonus_InLight` | float | 1.0 | — | 玩家在光照范围内时的暴露速度乘数（无加成） |
+| `StealthBonus_InShadow` | float | 0.77 | 0.5 - 1.0 | 玩家在阴影中时的暴露速度乘数（降低 23%）。安全范围外会导致隐蔽效果过强或过弱 |
 
 ## Visual/Audio Requirements
 
@@ -292,4 +298,6 @@ KeywordCapturedEvent:
 
 ## Open Questions
 
-[To be designed]
+| # | 问题 | 负责人 | 说明 |
+|---|------|--------|------|
+| OQ-1（已解决） | ~~**阴影隐蔽加成接口**~~ | ~~系统设计师~~ | ~~2026-04-30~~ | ✅ **已于 2026-04-10 解决**：在 Dependencies 中添加了光照系统作为上游依赖（查询接口）。在公式1的 `DeltaExposure` 中添加了 `StealthBonus` 参数。在 Tuning Knobs 中添加了 `StealthBonus_InLight` 和 `StealthBonus_InShadow` 参数。详见「公式1：视觉暴露值计算」和「Tuning Knobs」章节。 |

@@ -465,7 +465,7 @@ EffectiveVolume = SourceVolume * (1.0 - TotalDuckingReduction)
 | 事件名 | 方向 | 负载 | 说明 |
 |--------|------|------|------|
 | `AudioHapticEvent` | → 事件总线 | `{type, intensity, position}` | 音频和震动事件已触发 |
-| `AmbienceLayerChanged` | → 关卡系统 | `{layer, state}` | 氛围音层状态变化 |
+| `AmbienceLayerChanged` | → 地区探索/环境系统 | `{layer, state}` | 氛围音层状态变化（由玩家位置变化触发，订阅者根据当前所在地区/子区域决定播放哪层环境音） |
 
 ### 6.4 数据流摘要
 
@@ -482,7 +482,7 @@ EffectiveVolume = SourceVolume * (1.0 - TotalDuckingReduction)
 │                                                                     │
 │  Outputs（发送事件）:                                                  │
 │    - AudioHapticEvent (→ 事件总线)     → 反馈事件已触发                    │
-│    - AmbienceLayerChanged (→ 关卡)    → 氛围音状态变化                    │
+│    - AmbienceLayerChanged (→ 地区/环境系统) → 氛围音层状态变化                   │
 │                                                                     │
 │  直接调用:                                                             │
 │    - AudioStreamPlayer 系统 API    → 播放音效                          │

@@ -243,7 +243,6 @@ CompensationEntry:
 
 | 目标系统 | 发送数据 | 说明 |
 |---------|---------|------|
-| **任务/关卡系统** | `TaskProgressUpdated(task_id, completion_percentage)` | 任务进度变化时通知，用于解锁/锁定关卡目标 |
 | **理智/愤怒系统** | `ClueDiscoveredEvent(clue_id, clue_category)` | 新线索被发现时通知，用于计算理智值变化（如发现悲剧线索可能导致理智下降） |
 | **世界地图系统** | `LocationRevealed(location_id)` | 当线索揭示新地点时通知，用于在地图上显示新发现标记 |
 | **UI系统** | `JournalData(journal_view, current_clues)` | 日志UI需要的数据结构，按 LOCATION / NPC / TIMELINE 三种视图组织 |
@@ -258,7 +257,6 @@ CompensationEntry:
 | `NPCStateChangedEvent` | NPC AI系统 | NPC AI → 线索系统（NPC死亡时触发） |
 | `ClueDiscoveredEvent` 事件 | 线索系统 | 线索系统 → 理智系统 |
 | `LocationRevealed` 事件 | 线索系统 | 线索系统 → 世界地图系统 |
-| `TaskProgressUpdated` 事件 | 线索系统 | 线索系统 → 任务系统 |
 | `JournalData` 查询接口 | 线索系统 | UI系统 ← 线索系统 |
 
 #### 跨系统边界澄清
@@ -474,7 +472,6 @@ ClueDiscoveredEvent = {
 |------|---------|---------|
 | **理智/愤怒系统** | 软依赖 | 接收 `ClueDiscoveredEvent` 事件，根据线索类型计算理智值变化 |
 | **世界地图系统** | 硬依赖 | 接收 `LocationRevealed` 事件，在地图上揭示隐藏地点 |
-| **任务/关卡系统** | 硬依赖 | 接收 `TaskProgressUpdated` 事件，根据线索完成度解锁关卡 |
 | **UI系统** | 硬依赖 | 提供 `JournalData` 查询接口，供日志UI渲染 |
 | **LOS系统** | 软依赖 | 接收 `RequestKeywordTemplate` 请求，提供线索对应的关键词模板 |
 
@@ -500,17 +497,14 @@ ClueDiscoveredEvent = {
                                           │               │
                                           │               ▼
                                           │        ┌───────────┐
-                                          └───────▶│ 任务系统   │◀──TaskProgressUpdated
-                                                   └───────────┘
-                                                   ┌───────────┐
-                                                   │ UI系统    │◀──JournalData查询
-                                                   └───────────┘
+                                          │        │ UI系统    │◀──JournalData查询
+                                          │        └───────────┘
 ```
 
 ### 关键设计约束
 
 1. **线索系统不处理身份标记**：NPC的身份标签（Enemy/Accomplice/Victim）由LOS系统处理，线索系统只负责情报内容
-2. **线索系统不拥有任务进度**：任务进度的最终判定由任务/关卡系统控制，线索系统只提供完成度数据
+2. **线索系统内部管理任务进度**：`TaskProgressUpdated` 是内部事件，用于驱动任务状态机转换（LOCKED → ACTIVE → COMPLETE），不向外部系统发送
 3. **理智值变化是单向通知**：线索系统通知理智系统"发现了什么"，但不等待理智系统的响应（避免循环依赖）
 
 ### 关键词匹配规则表（OQ-2 已解决）
@@ -747,7 +741,7 @@ LOS系统捕获关键词
 | ID | 标准 | 测试方法 |
 |----|------|---------|
 | AC-8 | 线索被发现时，理智系统接收到ClueDiscoveredEvent | 监听事件总线，验证事件格式和触发时机 |
-| AC-9 | 任务进度更新时，任务系统接收到TaskProgressUpdated | 监听事件，验证任务系统收到正确的完成度 |
+| AC-9 | 任务进度更新时，任务状态正确转换 | 监听内部任务状态变化，验证 LOCKED→ACTIVE→COMPLETE 转换逻辑 |
 | AC-10 | UI系统能正确查询并渲染JournalData | 打开日志，检查显示内容与数据结构一致 |
 
 ### 边缘情况验收

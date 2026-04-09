@@ -4,6 +4,9 @@
 > **Author**: [user + agents]
 > **Last Updated**: 2026-03-29
 > **Implements Pillar**: 线索驱动的动态潜行 (Clue-Driven Dynamic Stealth)
+>
+> **Revision Notes (2026-04-08)**:
+> - ✅ AimAccuracy 公式澄清：添加超出范围情况的明确处理说明和计算示例
 
 ## Overview
 
@@ -73,14 +76,32 @@
 其中：
 * `TagRate`: 基础破译速度（如 33/秒，意味着完美对准需要约 3 秒）。
 * `AimAccuracy` (准星精准度): 取值 0.0 到 1.0，计算公式：
-  ```
-  ScreenDistance = Distance2D(CrosshairPosition, SoundSourceScreenPosition)
-  AimAccuracy = Clamp(1.0 - (ScreenDistance / MaxScreenDistance), 0.0, 1.0)
-  ```
-  - `CrosshairPosition`: 屏幕中心准星的像素坐标
-  - `SoundSourceScreenPosition`: 声源3D世界坐标投影到屏幕后的像素坐标
-  - `MaxScreenDistance`: 屏幕半径（超出此范围视为 0）
-  - 当 `AimAccuracy < 0.5` 时，进度不增加（未对准判定）
+
+```
+ScreenDistance = Distance2D(CrosshairPosition, SoundSourceScreenPosition)
+AimAccuracy = Clamp(1.0 - (ScreenDistance / MaxScreenDistance), 0.0, 1.0)
+```
+
+| 变量 | 定义 | 典型值 | 安全范围 |
+|------|------|--------|---------|
+| `CrosshairPosition` | 屏幕中心准星的像素坐标 | (屏幕宽/2, 屏幕高/2) | — |
+| `SoundSourceScreenPosition` | 声源3D世界坐标投影到屏幕后的像素坐标 | 动态计算 | — |
+| `MaxScreenDistance` | 屏幕半径（超出此范围时 AimAccuracy=0） | 500.0 | 300.0~800.0 |
+| `ScreenDistance` | 准星与声源投影的2D像素距离 | 0~MaxScreenDistance | — |
+| `AimAccuracy` | 准星精准度，0.0=完全偏离，1.0=完美对准 | 0.0~1.0 | — |
+
+- 当 `AimAccuracy < 0.5` 时，进度不增加（未对准判定）
+
+**公式计算示例**：
+- 准星中心 = 屏幕中心 (960, 540)
+- 声源屏幕位置 = (1000, 600)
+- `ScreenDistance = Distance2D((960,540), (1000,600)) = √(40² + 60²) ≈ 72.1`
+- `MaxScreenDistance = 500`（屏幕半径）
+- `AimAccuracy = Clamp(1.0 - (72.1/500), 0.0, 1.0) = Clamp(0.856, 0.0, 1.0) = 0.856`
+- 因为 `0.856 > 0.5`，所以破译进度会增加
+
+**边界情况**：
+- 如果 `ScreenDistance > MaxScreenDistance`（如声源在屏幕外），则 `AimAccuracy = 0.0`，进度不增加
 
 **`SoundSourceScreenPosition` 计算说明**：
 ```
@@ -178,6 +199,7 @@ KeywordCapturedEvent:
 | 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
 |--------|------|--------|---------|------|
 | `MaxVisionRange` | float | 15.0m | 8.0m - 30.0m | NPC 能感知到运动的最大距离 |
+| `MaxScreenDistance` | float | 500.0 | 300.0 - 800.0 | 屏幕半径（像素），用于 AimAccuracy 计算。当声源投影到屏幕边缘时，AimAccuracy = 0 |
 | `ProximityThreshold` | float | 1.5m | 1.0m - 3.0m | 无论玩家什么状态，一旦进入此距离立刻暴露 |
 | `BaseExposureRate` | float | 20.0/秒 | 10.0 - 50.0 | 每秒增加的暴露值 |
 | `DecayRate` | float | 15.0/秒 | 5.0 - 30.0 | 脱离视线后每秒下降的暴露值 |

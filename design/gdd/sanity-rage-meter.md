@@ -161,7 +161,7 @@
 **公式1：理智值变化计算**
 
 ```
-SanityDelta = BaseValue[EventType] * ContextMultiplier * TimeMultiplier
+SanityDelta = BaseValue[EventType] * ContextMultiplier * TimeMultiplier * NarrativeSignificanceMultiplier
 ```
 
 | 事件类型 | BaseValue | 说明 |
@@ -177,7 +177,7 @@ SanityDelta = BaseValue[EventType] * ContextMultiplier * TimeMultiplier
 | 捆绑NPC（不杀） | +3 | 仁慈选择 |
 | 成功转化线人 | +5 | 正向干预 |
 
-**ContextMultiplier**：
+**ContextMultiplier**（用于战斗/暴力类事件）：
 - 连续击杀（5秒内）：×1.5（累积心理压力）
 - 首次击杀：×1.0
 - 击杀后被目击：×1.2
@@ -187,11 +187,26 @@ SanityDelta = BaseValue[EventType] * ContextMultiplier * TimeMultiplier
 - 5秒内连续事件：×1.5
 - 30秒后再次发现：×0.8
 
+**NarrativeSignificanceMultiplier**（用于线索类事件，来自线索系统）：
+- 普通线索（NORMAL）：×1.0
+- 与主要目标相关（MAIN_TARGET）：×1.5
+- 揭示 NPC 同情的一面（NPC_SYMPATHY）：×2.0
+
 **悲剧线索惩罚递减机制说明**：
 - 首次发现悲剧线索：完整惩罚（-5）
 - 后续发现同类型悲剧线索：递减惩罚（-3）
 - 多次深入揭示同一悲剧背景：最低惩罚（-2）
 - 设计意图：玩家应该被**鼓励探索**，而不是因为收集线索而受到过度惩罚。第一条悲剧线索的情感冲击最强烈，后续递减避免玩家因"知道太多"而崩溃。
+
+> **⚠️ Playtest 验证需求**：当前惩罚曲线假设每任务平均有 3-5 条悲剧线索。如果实际关卡设计中悲剧线索数量超出此范围，可能导致理智惩罚累积过快。需要在上线前通过 playtest 验证曲线合理性。
+
+**线索系统事件接收**：
+ClueDiscoveredEvent 携带以下字段用于计算：
+- `clue_category`：线索类别（TRAGEDY/IDENTITY/LOCATION 等）
+- `discovery_stage`：发现阶段（FIRST/SUBSEQUENT/DEEP_REVEAL）
+- `narrative_significance`：叙事重要性（NORMAL/MAIN_TARGET/NPC_SYMPATHY）
+
+最终惩罚 = BaseValue[discovery_stage] × NarrativeSignificanceMultiplier
 
 ---
 
@@ -388,6 +403,9 @@ Clue&Journal ──ClueEvent───▶ │  Sanity/Rage Meter  │──Vignet
 | `TragedyClueSanityPenalty_First` | int | -5 | -3~-8 | 首次悲剧线索理智惩罚 |
 | `TragedyClueSanityPenalty_Subsequent` | int | -3 | -2~-5 | 后续悲剧线索理智惩罚（递减） |
 | `TragedyClueSanityPenalty_Deep` | int | -2 | -1~-4 | 深度揭示悲剧线索理智惩罚（边际递减） |
+| `NarrativeSignificanceMultiplier_Normal` | float | 1.0 | 0.5~1.5 | 普通线索叙事重要性乘数 |
+| `NarrativeSignificanceMultiplier_MainTarget` | float | 1.5 | 1.0~2.0 | 与主要目标相关乘数 |
+| `NarrativeSignificanceMultiplier_NPCSympathy` | float | 2.0 | 1.5~3.0 | 揭示 NPC 同情乘数 |
 | `VignetteMaxIntensity` | float | 0.8 | 0.5~1.0 | 暗角最大强度 |
 | `NoiseMaxIntensity` | float | 0.5 | 0.3~0.8 | 噪点最大强度 |
 | `SaturationMinMultiplier` | float | 0.3 | 0.1~0.5 | 最低饱和度乘数 |

@@ -2,8 +2,17 @@
 
 > **Status**: Approved
 > **Author**: [user + agents]
-> **Last Updated**: 2026-03-29
+> **Last Updated**: 2026-04-10
 > **Implements Pillar**: 致命的脆弱感 (Lethal Fragility)
+> **Revision Notes**: 2026-04-08 协同修订（配合武器系统修复设计审查问题）：
+> - 补充 `ExplosionEvent` 数据结构定义
+> - 补充 Dependencies 接口说明表（含空间分区优化归属说明）
+> **2026-04-10 战斗团队评审修复**：
+> - P1: 爆炸伤害边界统一使用 `<=`（边界=致死），与 Weapon System 保持一致
+> - P1: 穿透公式使用 `>=`（穿透值 ≥ 护甲等级 = 穿透成功），Open Questions 描述已修正
+> - P2: 补充 Tuning Knobs 安全范围（StaggerDuration、DownedRecoveryTime、ArmorDurability）
+> - P2: 补充 Downed 恢复路径说明（地面处决窗口期 → Staggered → Healthy）
+> - P2: 新增 `ExplosionAlertEvent` 和 `FriendlyFireExplosionEvent` 接口定义
 
 ## Overview
 
@@ -82,7 +91,18 @@
 *   本系统没有常规的 `HP = HP - Damage` 公式。
 *   **恢复判定公式** (仅用于敌人从倒地状态苏醒)：
     `RecoveryProgress = TimeSinceLastHit / DownedRecoveryTime`
-    当 `RecoveryProgress >= 1.0` 时，状态从 `Downed` 转移回 `Staggered`。
+    当 `RecoveryProgress >= 1.0` 时，状态从 `Downed` 转移回 `Staggered`。Staggered 状态在持续 `StaggerDuration` 时间后，自动转移回 `Healthy`。
+
+**NPC 状态完整生命周期**：
+```
+Healthy ←─────── StaggerDuration ─────── Staggered
+  ▲                                        │
+  │                                        │ (再次受击 Blunt)
+  │                                        ▼
+  │                                   Downed
+  │                                        │
+  └─────── RecoveryProgress >= 1.0 ←───────┘
+```
 
 ## Edge Cases
 
@@ -101,7 +121,7 @@ if (ArmorState == DESTROYED):
         TargetState = DEAD
     else:
         TargetState = STAGGERED
-elif (weapon_penetration > target_armor_level):
+elif (weapon_penetration >= target_armor_level):
     # 穿透成功，无视护甲，直接触发 Lethal 死亡
     TargetState = DEAD
 else:
@@ -122,9 +142,40 @@ else:
 **穿透机制说明**：
 - 每次命中时，根据当前护甲状态独立判定
 - 如果护甲已损毁，后续命中直接作用于角色（无论穿透值多高）
-- 如果穿透值 > 护甲等级，穿透成功，角色立即死亡
-- 如果穿透值 ≤ 护甲等级，穿透失败，消耗1点护甲耐久，角色进入 Staggered
+- 如果穿透值 >= 护甲等级，穿透成功，角色立即死亡
+- 如果穿透值 < 护甲等级，穿透失败，消耗1点护甲耐久，角色进入 Staggered
 - 护甲耐久耗尽后变为 DESTROYED 状态，不再提供保护
+*   **爆炸伤害（混合型）**：
+    *   *问题*：手榴弹、C4 等爆炸物造成范围伤害，与穿透伤害是独立机制。
+    *   *处理*：爆炸伤害由武器系统计算，Health 系统执行最终判定：
+
+**`ExplosionEvent` 数据结构**（武器系统 → Health 系统）：
+```csharp
+ExplosionEvent:
+    position: Vector3        // 爆炸中心位置
+    radius: float           // 爆炸半径（米）
+    lethal_ratio: float      // 致死半径比例（如 0.3 表示 30% 半径内致死）
+    base_damage: float      // 基础伤害（爆炸中心）
+```
+
+        1. Health 系统接收 `ExplosionEvent(position, radius, lethal_ratio, base_damage)`
+        2. 使用空间分区（Quadrant/Octree）预筛选范围内实体，避免 O(n) 全实体遍历
+        3. 对范围内每个实体，基于距离计算伤害类型：
+           - 若 `distance <= radius × lethal_ratio`：Lethal 伤害 → DEAD
+           - 若 `distance > radius × lethal_ratio` 且在爆炸半径内：`Blunt` 伤害 → Staggered/Downed
+        4. 爆炸伤害绕过护甲直接作用于角色（护甲不被摧毁）
+        5. **爆炸警报广播**：当爆炸造成任意 NPC 死亡时，Health 系统广播 `ExplosionAlertEvent`：
+           - `position`：爆炸中心
+           - `radius`：爆炸半径（用于计算影响范围）
+           - `victim_id`：被击杀的 NPC ID
+           - `killer_is_player`：是否由玩家引爆
+           - NPC AI 系统订阅此事件后，强制范围内所有 NPC（除 victim）进入 ALERT 状态
+        6. **友军误伤处理**：当 NPC 被同派系成员的爆炸物炸死时，Health 系统广播 `FriendlyFireExplosionEvent`：
+           - `victim_id`：被炸死的 NPC
+           - `killer_id`：引爆爆炸物的 NPC（可能是友军）
+           - `faction_relation`：凶手与受害者的派系关系
+           - NPC AI 系统根据派系关系计算惩罚：友军误伤 → faction_hostility += 30；凶手进入 GUILT 特殊状态
+
 *   **倒地无敌帧**：
     *   *问题*：敌人倒地过程中模型碰撞体发生剧烈变化，导致后续子弹打空。
     *   *处理*：角色在播放 `Staggered -> Downed` 动画的下落期间，依然接收 Lethal 伤害并可随时转化为死亡。
@@ -133,14 +184,37 @@ else:
 
 *   **上游依赖**：无 (基础层)。
 *   **下游依赖**：
+    *   **武器系统 (Weapon System)**: 软依赖 (武器系统发送 `DamageRequest` 和 `ExplosionEvent` 到本系统，但不依赖本系统的输出)。
     *   **NPC AI系统**: 软依赖 (需要依据自身和友军的健康状态切换行为树)。
     *   **沉重处决系统**: 硬依赖 (需要查询目标是否处于 Staggered/Downed 状态以触发环境处决；向 Health 系统发送 DamageRequest 执行伤害)。
 
+**接口说明**：
+
+| 接口 | 方向 | 负载 | 说明 |
+|------|------|------|------|
+| `DamageRequest` | ← 武器系统/沉重处决 | `{target_id, damage_type, penetration, source}` | 伤害请求 |
+| `ExplosionEvent` | ← 武器系统 | `{position, radius, lethal_ratio, base_damage}` | 爆炸物引爆（混合型：近距离Lethal，远距离Blunt） |
+| `NPCStateChangedEvent` | → NPC AI 系统 | `{npc_id, old_state, new_state, damage_type}` | NPC 状态变化（由 NPC AI 系统广播） |
+| `PlayerDamagedEvent` | → 音频系统 | `{player_id, damage_type, hit_location, is_lethal}` | 玩家受击（由 Health 系统广播） |
+| `ExplosionAlertEvent` | → NPC AI 系统 | `{position, radius, victim_id, killer_is_player}` | 爆炸物引爆时广播，强制范围内 NPC 进入 ALERT 状态（详见 Edge Cases） |
+| `FriendlyFireExplosionEvent` | → NPC AI 系统 | `{victim_id, killer_id, faction_relation, explosion_position}` | 友军误伤爆炸时广播，触发派系感知惩罚（详见 Edge Cases） |
+
 ## Tuning Knobs
 
-*   `StaggerDuration` (硬直持续时间，默认 1.5秒)
-*   `DownedRecoveryTime` (倒地后自动苏醒的时间，默认 15秒)
-*   `ArmorDurability` (护甲可抵挡致命伤的次数，默认 1，重装兵可为 2)
+| 参数 | 类型 | 默认值 | 安全范围 | 说明 |
+|------|------|--------|---------|------|
+| `StaggerDuration` | float | 1.5s | 1.0s ~ 2.5s | 硬直持续时间。太短失去"硬直惩罚"意义，太长让敌人无敌 |
+| `DownedRecoveryTime` | float | 15s | 10s ~ 30s | 倒地后自动苏醒时间。太短让"地面处决"窗口价值降低，太长玩家可从容补刀。苏醒后先进入 Staggered，再经 StaggerDuration 转回 Healthy |
+| `ArmorDurability_Light` | int | 1 | 1 | 轻装护甲：可承受穿透失败的次数 |
+| `ArmorDurability_Heavy` | int | 2 | 2 | 重装护甲：可承受穿透失败的次数 |
+
+**安全范围设计依据**：
+
+| 参数 | 低于下限的影响 | 高于上限的影响 |
+|------|---------------|---------------|
+| `StaggerDuration` < 1.0s | 硬直几乎无法被利用，失去处决窗口 | 敌人硬直过长，玩家可无风险连击 |
+| `DownedRecoveryTime` < 10s | "地面处决"决策时间过短 | 玩家可从容处理多个倒地敌人 |
+| `ArmorDurability` > 2 | — | 护甲过强，削弱 Lethal 武器价值 |
 
 ## Visual/Audio Requirements
 
@@ -169,4 +243,5 @@ else:
 *   *问题1*：是否允许”部位破坏”？（例如打碎膝盖导致敌人只能在地上爬行）。目前设计中暂时没有，以控制动画成本，但可作为后续 Alpha 阶段的评估项。
 *   *问题2（已解决）*：**玩家死亡条件澄清** — 玩家的唯一死亡条件是 Lethal 伤害直接致死。Downed 状态仅适用于 NPC，玩家不受 Downed 恢复机制影响。这与”致命的脆弱感”支柱保持一致。
 *   *问题3（已解决）*：**事件命名统一** — Health 系统发送 `PlayerDamagedEvent`（玩家受伤）和触发 NPC AI 系统的 `NPCStateChangedEvent`（NPC 状态变化）。详见 Interactions with Other Systems。
-*   *问题3（已解决）*：**穿透与护甲判定顺序** — 判定顺序为：1) 检查 Penetration > ArmorLevel → 直接致死；2) Penetration <= ArmorLevel → 消耗护甲，转为 Staggered，ArmorLevel--。护甲耗尽后，Lethal 打击直接致死。
+*   *问题3（已解决）*：**穿透与护甲判定顺序** — 判定顺序为：1) 检查 Penetration >= ArmorLevel → 直接致死（穿透成功，无视护甲）；2) Penetration < ArmorLevel → 穿透失败，消耗护甲耐久，转为 Staggered。护甲耗尽后（ArmorState = DESTROYED），后续 Lethal 打击直接致死。注意：穿透值与护甲等级相等时视为穿透成功（>=），这是经过修订后的一致版本。
+*   *问题4（已解决）*：**Downed 状态恢复路径** — NPC 从 Downed 恢复时，路径为：Healthy → (受击) → Staggered → (再受击) → Downed → (恢复计时) → Staggered → (StaggerDuration 结束) → Healthy。NPC 不会直接从 Downed 跳回 Healthy，必须先经过 Staggered 状态作为过渡。玩家不受 Downed 机制影响（详见问题2）。

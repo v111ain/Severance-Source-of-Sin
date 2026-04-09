@@ -105,6 +105,8 @@ JournalView:
 2. NPC死亡时
 3. 玩家主动请求检查时
 
+**关键定义**：`clues_discovered_for_task` 仅统计来源为 `LOS_EAVESDROP` 或 `ENVIRONMENT` 且状态为 `DISCOVERED/UNLOCKED/COMPLETED` 的线索。来源为 `NPC_DEATH` 转移的线索不计入（它们在转移时状态为 `DISCOVERED`，但属于"已损失"的线索）。
+
 检查逻辑：
 ```
 if clues_discovered_for_task >= min_clues_required_for_task:
@@ -126,37 +128,50 @@ else if critical_clue_missing:
 - `criticality == CRITICAL` AND `missing_reason != null`
 - 且当前任务 `clues_discovered < min_clues_required`
 
-**补偿线索池生成规则（OQ-3 已解决）**：
+**补偿线索池生成规则（OQ-3 已解决，MVP 简化版）**：
 
-补偿线索池采用**混合策略**，在设计阶段由设计师手动预设关键线索的补偿路径：
+> **MVP 简化决策**：为降低实现复杂度，MVP 阶段采用**单一预设路径**策略，移除自动生成逻辑。
 
 | 线索类别 | 生成方式 | 说明 |
-|---------|---------|------|
-| **CRITICAL** | 设计师手动预设 | 每条 CRITICAL 线索必须预设至少 1 条替代补偿线索，确保叙事完整性 |
-| **IMPORTANT** | 系统自动生成 | 从同任务、同类别、未被玩家发现的线索中自动抽取 |
-| **OPTIONAL** | 系统自动生成 | 从同任务、未被玩家发现的所有线索中抽取 |
+|---------|---------|-------|
+| **CRITICAL** | 设计师手动预设（每条至少1条） | 确保叙事完整性 |
+| **IMPORTANT** | 设计师手动预设（每条至少1条） | 简化实现 |
+| **OPTIONAL** | 无补偿（可选线索不影响任务推进） | 不需要补偿机制 |
 
 **设计师预设补偿线索的数据结构**：
 ```python
 CompensationEntry:
     source_clue_id: String        # 原始关键线索 ID
-    compensation_clue_ids: List[String]  # 补偿线索 ID 列表（按优先级排序）
-    fallback_pool_size: int        # 自动填充的备用池大小（默认 2）
+    compensation_clue_id: String   # 补偿线索 ID（单一路径）
 ```
 
-**补偿选择优先级**：
-1. 优先使用设计师预设的补偿线索（按 `compensation_clue_ids` 顺序尝试）
-2. 预设线索全部已获取时，使用系统自动生成的备用线索
-3. 备用池为空或无法生成时，触发设计错误日志，允许临时通关
+**补偿选择流程**：
+1. 检查补偿线索是否已被玩家获取
+2. 如未获取，**显示警告提示"关键信息已永久缺失——你的选择造成了无法挽回的后果"**，然后给予补偿线索
+3. 如已获取（玩家之前通过其他途径获得），记录设计警告
+4. 补偿线索也缺失时，允许临时通关（`OverrideTaskCompletion()`）
+
+**叙事一致性保证**：补偿机制不消除"遗憾"，而是将遗憾转化为"代价"。玩家获得了替代线索，但代价是：
+- 日志中持续显示"[信息缺失—NPC已死亡]"标记（即使获得补偿线索也不消失）
+- 补偿线索显示为"**苍白替代**"（视觉上带有灰度滤镜），暗示这是次等的信息来源
+- 首次触发补偿时，屏幕中央短暂显示红色警示文字"——你的选择留下了无法愈合的伤口——"
 
 **示例**：
 ```json
 {
   "source_clue_id": "ID_仓库密码",
-  "compensation_clue_ids": ["ID_接头人透露密码", "ID_账本记载密码"],
-  "fallback_pool_size": 2
+  "compensation_clue_id": "ID_接头人透露密码"
 }
 ```
+
+**与完整版（Post-MVP）的差异**：
+
+| 特性 | MVP 简化版 | Post-MVP 完整版 |
+|------|----------|----------------|
+| 补偿路径数量 | 单一路径 | 多路径（按优先级尝试） |
+| 自动生成备用池 | 无 | 有 |
+| 设计师工作量 | 每条 CRITICAL 线索预设1条 | 每条 CRITICAL 线索预设多条 |
+| 实现复杂度 | 低 | 中 |
 
 ### States and Transitions
 
@@ -183,6 +198,8 @@ CompensationEntry:
 | COMPLETED | 玩家已阅读线索 | 无（终止态） | 阅读动作完成 |
 | MISSING | NPC死亡导致线索无法获取 | 无（终止态） | NPC死亡时，该NPC的knowledge中尚未DISCOVERED的线索直接标记为MISSING |
 
+**注意**：MISSING是**逻辑终止态**，但在实际UI中，补偿触发后会在同一位置显示补偿线索的"苍白替代"版本，原MISSING标记**不消失**——两者共存，确保玩家始终意识到"原本可以知道但现在永远不知道"的遗憾。
+
 **状态转移规则**：
 - NPC死亡时，如果该NPC的knowledge包含尚未DISCOVERED的线索 → 直接标记为 MISSING（不经过NOT_DISCOVERED状态）
 - MISSING状态的线索不计入任务完成度，但会在日志中显示 `[信息缺失—NPC已死亡]`
@@ -199,8 +216,8 @@ CompensationEntry:
 | 状态 | 描述 | 触发条件 |
 |------|------|---------|
 | COMPENSATION_PENDING | 等待补偿检查 | 关键线索缺失且任务无法推进 |
-| COMPENSATION_ACTIVE | 补偿正在执行 | 系统给予替代线索 |
-| COMPENSATION_COMPLETE | 补偿完成 | 替代线索已添加到日志 |
+| COMPENSATION_ACTIVE | 补偿正在执行 | 系统显示警示文字"——你的选择留下了无法愈合的伤口——"，之后给予替代线索 |
+| COMPENSATION_COMPLETE | 补偿完成 | 替代线索已添加到日志，标记为"苍白替代"样式 |
 
 #### 任务进度状态 (Task Progress State)
 
@@ -208,8 +225,8 @@ CompensationEntry:
 |------|------|---------|
 | TASK_LOCKED | 任务未解锁 | 前置任务未完成 |
 | TASK_ACTIVE | 任务进行中 | 玩家已进入该任务 |
-| TASK_COMPLETE | 任务完成 | 已发现足够线索 |
-| TASK_FAILED | 任务失败（关键线索永久缺失） | 补偿机制也无法恢复 |
+| TASK_COMPLETE | 任务完成 | 已发现足够线索（包括补偿获得的线索） |
+| TASK_FAILED | 任务失败（所有补偿路径均失效） | 补偿触发后补偿线索池为空，OverrideTaskCompletion()也被拒绝 |
 
 ### Interactions with Other Systems
 
@@ -228,6 +245,7 @@ CompensationEntry:
 |---------|---------|------|
 | **任务/关卡系统** | `TaskProgressUpdated(task_id, completion_percentage)` | 任务进度变化时通知，用于解锁/锁定关卡目标 |
 | **理智/愤怒系统** | `ClueDiscoveredEvent(clue_id, clue_category)` | 新线索被发现时通知，用于计算理智值变化（如发现悲剧线索可能导致理智下降） |
+| **世界地图系统** | `LocationRevealed(location_id)` | 当线索揭示新地点时通知，用于在地图上显示新发现标记 |
 | **UI系统** | `JournalData(journal_view, current_clues)` | 日志UI需要的数据结构，按 LOCATION / NPC / TIMELINE 三种视图组织 |
 | **LOS系统** | `RequestKeywordTemplate(clue_id)` | 请求LOS系统提供特定线索对应的关键词模板（用于窃听匹配） |
 
@@ -239,6 +257,7 @@ CompensationEntry:
 | `IntelObjectInteracted` 事件 | 环境交互系统 | 环境 → 线索系统 |
 | `NPCStateChangedEvent` | NPC AI系统 | NPC AI → 线索系统（NPC死亡时触发） |
 | `ClueDiscoveredEvent` 事件 | 线索系统 | 线索系统 → 理智系统 |
+| `LocationRevealed` 事件 | 线索系统 | 线索系统 → 世界地图系统 |
 | `TaskProgressUpdated` 事件 | 线索系统 | 线索系统 → 任务系统 |
 | `JournalData` 查询接口 | 线索系统 | UI系统 ← 线索系统 |
 
@@ -282,20 +301,22 @@ ShouldCompensate = (
 )
 ```
 
-**公式4：补偿替代线索选择**
+**公式4：补偿替代线索选择（MVP简化版）**
 
-当触发补偿时，从预设的补偿线索池中选择替代线索：
+当触发补偿时，根据预设的 `CompensationEntry` 直接查找替代线索：
 
 ```
-AvailableCompensationClues = CompensationPool.Filter(clue =>
-    clue.task_id == current_task_id
-    AND clue not in Journal
-).Take(1)
+CompensationEntry = LookupCompensation(source_clue_id)
 
-AddToJournal(AvailableCompensationClues.First())
+if CompensationEntry != null AND CompensationEntry.compensation_clue_id not in Journal:
+    AddToJournal(CompensationEntry.compensation_clue_id)
+    MarkAsPallidReplacement(CompensationEntry.compensation_clue_id)  # 标记为苍白替代
+else if CompensationEntry == null OR compensation_clue_id already in Journal:
+    RecordDesignWarning("补偿路径异常")
+    OverrideTaskCompletion()  # 允许临时通关
 ```
 
-补偿线索池由策划预设，确保每条关键线索都有至少一条替代路径。
+**Post-MVP扩展**：完整版将从多路径补偿池中按优先级选择（详见「补偿线索池生成规则」章节）。
 
 **公式5：地点完成度计算**
 
@@ -305,31 +326,43 @@ LocationCompletion = clues_in_location.Filter(clue =>
 ).Count() / clues_in_location.TotalCount() * 100
 ```
 
-**公式6：理智值影响计算（与理智系统联动）**
+**公式6：ClueDiscoveredEvent 上下文定义**
+
+> **重要**：线索系统只负责发送携带上下文的 `ClueDiscoveredEvent`，最终理智惩罚由理智系统根据 `discovery_stage` 和 `narrative_significance` 计算。
 
 ```
-SanityDelta = BaseValue[clue.category] * ClueContextMultiplier
+ClueDiscoveredEvent = {
+    clue_id: String,
+    clue_category: Enum,           // IDENTITY / LOCATION / RELATIONSHIP / ITEM / TRAGEDY
+    discovery_stage: Enum,          // FIRST / SUBSEQUENT / DEEP_REVEAL
+    narrative_significance: Enum    // NORMAL / MAIN_TARGET / NPC_SYMPATHY
+}
 ```
 
-**BaseValue（与理智系统对齐）**：
+| discovery_stage | 定义 | 对应理智惩罚 BaseValue |
+|----------------|------|----------------------|
+| FIRST | 该类别的第一条悲剧线索 | -5 |
+| SUBSEQUENT | 同类别后续悲剧线索 | -3 |
+| DEEP_REVEAL | 深度揭示同一悲剧背景 | -2 |
 
-| 线索类别 | BaseValue | 说明 |
-|---------|-----------|------|
-| Identity (身份线索) | +5 | 确认敌人身份 = 复仇进展 |
-| Location (位置线索) | +10 | 获得新地点 = 重大进展 |
-| Relationship (关系线索) | 0 | 中性信息 |
-| Item (物品线索) | +5 | 获得关键物品 |
-| Tragedy (悲剧线索) | -10 ~ -20 | 发现悲剧 = 情感代价 |
+| narrative_significance | 定义 | Multiplier |
+|----------------------|------|------------|
+| NORMAL | 普通线索 | ×1.0 |
+| MAIN_TARGET | 与主要目标相关 | ×1.5 |
+| NPC_SYMPATHY | 揭示 NPC 值得同情的一面 | ×2.0 |
 
-**ClueContextMultiplier**（避免与理智系统的 ContextMultiplier 混淆）：
-- first_discovery: ×1.0
-- related_to_main_target: ×1.5
-- reveals_npc_sympathy: ×2.0
+**计算责任分离**：
+- 线索系统：定义上下文元数据（discovery_stage + narrative_significance），发送事件
+- 理智系统：根据 `clue_category` + `discovery_stage` 确定 BaseValue，乘以 `narrative_significance` 的 Multiplier，计算最终 SanityDelta
 
-**与理智系统的数值对齐**：
-- 悲剧线索的 -10 ~ -20 范围与理智系统的 `TragedyClueSanityPenalty_Min/Max` 参数一致
-- 身份/位置线索的 +5/+10 与理智系统的 BaseValue 一致
-- 本系统的 `ClueDiscoveredEvent` 事件携带 `clue_category`，理智系统据此计算具体的 SanityDelta
+**最终惩罚示例**：
+- 首次发现主线相关悲剧线索：-5 × 1.5 = **-7.5**
+- 后续发现揭示 NPC 同情悲剧线索：-3 × 2.0 = **-6**
+- 深度揭示普通悲剧线索：-2 × 1.0 = **-2**
+
+**旧术语说明**（已废弃）：
+- ~~`ClueContextMultiplier`~~ → 已更名为 `NarrativeSignificanceMultiplier`
+- ~~悲剧线索 BaseValue -10~-20~~ → 已废弃，由 `discovery_stage` 决定实际惩罚值
 
 ## Edge Cases
 
@@ -397,6 +430,14 @@ SanityDelta = BaseValue[clue.category] * ClueContextMultiplier
 
 ---
 
+**边缘情况8b：LOS窃听关键词与NPC knowledge产出相同线索（设计疏漏检测）**
+
+*问题*：理论上同一线索不应同时存在于LOS关键词模板和NPC knowledge列表中。但如果因设计疏漏导致重复，系统应能检测并报警。
+
+*处理*：在 `ClueTemplates` 和 `NPC knowledge` 数据导入时，系统检测 `clue_id` 是否重复。如发现重复，记录 `DesignWarning` 并输出："线索 [clue_id] 同时定义为LOS来源和NPC knowledge来源，请确认是否为设计意图"。运行时不因此报错，以设计警告替代。
+
+---
+
 **边缘情况9：任务跨多个地点**
 
 *问题*：单个任务可能跨越多个地点，地点完成度如何计算？
@@ -409,7 +450,12 @@ SanityDelta = BaseValue[clue.category] * ClueContextMultiplier
 
 *问题*：玩家加载旧存档，导致线索状态与当前游戏世界状态不一致。
 
-*处理*：每次保存存档时，同时保存 `Journal` 的完整快照。加载存档时恢复Journal状态，确保线索状态与存档一致。
+*处理*：每次保存存档时，同时保存 `Journal` 的完整快照。加载存档时：
+1. 恢复 Journal 快照（包含所有线索的 state、missing_reason 等）
+2. **不恢复** NPC 生死状态（由游戏世界状态管理）
+3. 如果 Journal 中某条线索的 `missing_reason == "NPC已死亡"` 但对应 NPC 实际存活，系统**不会**自动恢复该线索为可获取状态——玩家需要重新从该 NPC 处获取线索
+
+**注意**：此设计确保"罪恶的深度"支柱不被存档回滚破坏——玩家因冲动杀人导致的线索永久缺失是**不可逆的**，即使读档也无法恢复。
 
 ## Dependencies
 
@@ -427,6 +473,7 @@ SanityDelta = BaseValue[clue.category] * ClueContextMultiplier
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|---------|
 | **理智/愤怒系统** | 软依赖 | 接收 `ClueDiscoveredEvent` 事件，根据线索类型计算理智值变化 |
+| **世界地图系统** | 硬依赖 | 接收 `LocationRevealed` 事件，在地图上揭示隐藏地点 |
 | **任务/关卡系统** | 硬依赖 | 接收 `TaskProgressUpdated` 事件，根据线索完成度解锁关卡 |
 | **UI系统** | 硬依赖 | 提供 `JournalData` 查询接口，供日志UI渲染 |
 | **LOS系统** | 软依赖 | 接收 `RequestKeywordTemplate` 请求，提供线索对应的关键词模板 |
@@ -436,7 +483,7 @@ SanityDelta = BaseValue[clue.category] * ClueContextMultiplier
 ```
 ┌────────────────┐
 │   LOS系统      │────KeywordCapturedEvent──▶┌────────────────┐
-│                │                        │               │
+│                │◀──RequestKeywordTemplate │               │
 │   NPC AI系统   │────NPCStateChangedEvent─▶│ 线索与日志系统 │
 │                │                        │               │
 │   环境交互系统 │────IntelInteracted───▶ │               │
@@ -448,7 +495,15 @@ SanityDelta = BaseValue[clue.category] * ClueContextMultiplier
                                           │               │
                                           │               ▼
                                           │        ┌───────────┐
+                                          │        │ 世界地图   │◀──LocationRevealed
+                                          │        └───────────┘
+                                          │               │
+                                          │               ▼
+                                          │        ┌───────────┐
                                           └───────▶│ 任务系统   │◀──TaskProgressUpdated
+                                                   └───────────┘
+                                                   ┌───────────┐
+                                                   │ UI系统    │◀──JournalData查询
                                                    └───────────┘
 ```
 
@@ -516,10 +571,11 @@ LOS系统捕获关键词
 | 系统对 | 依赖关系 | 是否双向 | 解决方案 |
 |--------|---------|---------|---------|
 | 线索 ↔ 理智 | 线索通知理智 | 否 | 线索系统主动推送，理智系统被动接收 |
+| 线索 ↔ 世界地图 | 线索揭示地点，地点关联线索高亮 | 是 | 线索系统推送 LocationRevealed，世界地图被动接收并高亮关联线索区域 |
 | 线索 ↔ 任务 | 线索更新任务进度 | 否 | 线索系统主动推送，任务系统被动接收 |
 | 线索 ↔ LOS | 线索请求关键词模板 | 是 | 仅在需要时查询，不形成循环 |
 
-**不存在双向循环依赖**：线索系统是数据的"消费者"（接收LOS/NPC/环境的线索）和"分发者"（向理智/任务/UI推送数据），不依赖下游系统的回调。
+**不存在双向循环依赖**：线索系统是数据的"消费者"（接收LOS/NPC/环境的线索）和"分发者"（向理智/世界地图/任务/UI推送数据），不依赖下游系统的回调。
 
 ## Tuning Knobs
 
@@ -555,15 +611,14 @@ LOS系统捕获关键词
 | `JournalSortDefault` | enum | LOCATION | — | 默认排序方式 |
 | `MaxCluesDisplayedPerPage` | int | 20 | 10-50 | 日志每页最多显示线索数 |
 
-### 理智值联动参数（占位符，待理智系统确认）
+### 理智值联动参数（已移至理智系统）
 
-| 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
-|--------|------|--------|---------|------|
-| `SanityDelta_Identity` | int | +5 | -10~+10 | 发现身份线索的理智变化 |
-| `SanityDelta_Location` | int | +10 | -10~+20 | 发现位置线索的理智变化 |
-| `SanityDelta_Tragedy` | int | -15 | -30~-5 | 发现悲剧线索的理智变化 |
-| `SanityDelta_FirstDiscoveryMultiplier` | float | 1.0 | 0.5-2.0 | 首次发现乘数 |
-| `SanityDelta_MainTargetMultiplier` | float | 1.5 | 1.0-3.0 | 与主要目标相关乘数 |
+> **注意**：理智惩罚的具体数值计算已移至理智系统（sanity-rage-meter.md）。本系统只负责发送事件，不直接控制惩罚值。
+
+| 相关参数 | 所属系统 | 说明 |
+|---------|---------|------|
+| SanityDelta_BaseValue | Sanity/Rage 系统 | 见 sanity-rage-meter.md Tuning Knobs |
+| NarrativeSignificanceMultiplier | Sanity/Rage 系统 | 见 sanity-rage-meter.md Tuning Knobs |
 
 ### 调参风险提示
 
@@ -582,7 +637,7 @@ LOS系统捕获关键词
 | 线索从 DISCOVERED → UNLOCKED | 线索卡片从灰色渐变为正常颜色，伴随轻微弹跳 |
 | 线索被标记为 MISSING | 卡片显示红色"[信息缺失]"标签，带删除线效果 |
 | 任务完成 | 屏幕中央弹出"线索收集完成"提示，伴随金色光效 |
-| 触发补偿机制 | 屏幕边缘橙色闪烁，日志图标出现"+1"浮出动画 |
+| 触发补偿机制 | 屏幕短暂显示红色警示文字"——你的选择留下了无法愈合的伤口——"（持续1.5秒），之后显示补偿线索获得提示 |
 
 ### 视觉层级
 
@@ -591,6 +646,7 @@ LOS系统捕获关键词
 - **已解锁未阅读**：正常颜色，卡片右上角有"NEW"标签
 - **已阅读完成**：正常颜色，无标签
 - **缺失线索**：灰色卡片，显示"[信息缺失—NPC已死亡]"，带红色删除线
+- **苍白替代线索**（补偿获得的线索）：带灰度滤镜的卡片，显示"苍白替代"标签（替代来源的视觉暗示），保留原有的 [信息缺失] 标记但点击可查看替代内容
 
 ### 音效反馈
 
@@ -600,7 +656,7 @@ LOS系统捕获关键词
 | 线索解锁 | 解锁音效 | 低沉的"咔嗒"声 |
 | 线索标记为缺失 | 缺失音效 | 沉重的"咚"声，带回音 |
 | 任务完成 | 成就音效 | 上升音阶的弦乐 |
-| 补偿触发 | 补偿音效 | 警报音+柔和的补偿音效 |
+| 补偿触发 | 警示音效 | 低沉的警报音（200Hz，持续0.3秒），之后是低沉的嗡鸣声，传达"代价已付出"的沉重感 |
 
 ### 色调规范
 
@@ -611,6 +667,7 @@ LOS系统捕获关键词
 | 关系线索 | 紫色 | 灰色 |
 | 物品线索 | 绿色 | 铜色 |
 | 悲剧线索 | 灰紫色 | 暗红 |
+| 苍白替代线索 | 灰色（70%饱和度） | 浅灰（原生类别色彩降饱和度后叠加灰度滤镜） |
 
 ## UI Requirements
 
@@ -649,11 +706,12 @@ LOS系统捕获关键词
 
 | 字段 | 显示规则 |
 |------|---------|
-| 类别标签 | 左上角彩色标签（如[身份]） |
-| 标题 | 加粗字体 |
+| 类别标签 | 左上角彩色标签（如[身份]），苍白替代线索降低70%饱和度 |
+| 标题 | 加粗字体，苍白替代线索标题后显示"【苍白替代】"前缀 |
 | 描述 | 普通字体，解锁后可见 |
 | 来源信息 | 右下角小字（"来自：张三的knowledge"） |
-| 缺失标记 | 红色"[信息缺失—NPC已死亡]"，带删除线 |
+| 缺失标记 | 红色"[信息缺失—NPC已死亡]"，带删除线，苍白替代线索也保留此标记 |
+| 苍白替代标识 | 卡片边框显示虚线灰边 + 整体灰度滤镜 + 右上角显示"苍白替代"标签 |
 
 ### 交互提示
 
@@ -681,6 +739,8 @@ LOS系统捕获关键词
 | AC-5 | 补偿机制在关键线索缺失且任务无法推进时正确触发 | 模拟关键NPC死亡且无替代线索，验证补偿线索是否添加 |
 | AC-6 | 日志UI三种视图模式正确切换显示 | 在日志中切换地点/人物/时间线视图，验证显示内容正确 |
 | AC-7 | 任务完成度正确计算并通知任务系统 | 收集不同数量线索，验证完成度百分比和通知时机 |
+| AC-7b | 补偿触发时正确显示警示文字和苍白替代线索 | 触发补偿，检查屏幕是否显示红色警示文字，补偿线索是否显示"苍白替代"样式 |
+| AC-7c | 苍白替代线索保留原有的[信息缺失]标记 | 查看补偿线索卡片，验证两种标记并存 |
 
 ### 跨系统验收
 
@@ -716,7 +776,7 @@ LOS系统捕获关键词
 
 | # | 问题 | 状态 | 负责人 | 说明 |
 |---|------|------|--------|------|
-| OQ-1（已解决） | **理智值变化数值确认** | ✅ 已解决 | 理智系统设计师 | BaseValue 已与理智系统对齐。悲剧线索 -10~-20 与理智系统的 TragedyClueSanityPenalty_Min/Max 一致。Identity +5, Location +10 与理智系统 BaseValue 一致。 |
+| OQ-1（已解决） | **理智值变化数值确认** | ✅ 已解决 | 理智系统设计师 | 计算方式已重构。线索系统发送 ClueDiscoveredEvent 携带 discovery_stage 和 narrative_significance 元数据，理智系统计算最终 SanityDelta。详见「公式6」章节。 |
 | OQ-2（已解决） | **关键词→线索的匹配机制** | ✅ 已解决 | — | 见下方「关键词匹配规则表」详细定义 |
 | OQ-3 | ~~**补偿线索池的生成策略**~~ | ✅ **已解决** | 游戏设计师 | **混合策略**：CRITICAL 线索由设计师手动预设补偿线索（每条至少 1 条替代路径，确保叙事完整性）；IMPORTANT/OPTIONAL 线索由系统自动从同任务、同类别的未使用线索中抽取。详见下方「补偿线索池生成规则」。 |
 | OQ-4 | **日志UI的美术风格** | 待确认 | 美术设计师 | 日志UI的具体美术风格尚未确定——是复古笔记本风格还是现代UI风格？ |

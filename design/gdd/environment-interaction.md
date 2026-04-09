@@ -2,8 +2,14 @@
 
 > **Status**: Approved
 > **Author**: [user + agents]
-> **Last Updated**: 2026-04-06
+> **Last Updated**: 2026-04-08
 > **Implements Pillar**: 环境即武器 (Environment as a Weapon)
+> **Revision Notes**: 2026-04-08 协同修订（配合武器系统修复设计审查问题）：
+> - 新增 `ObjectStateChangedEvent` 数据结构，提供给武器系统
+> - 明确环境交互系统为物件状态的唯一数据源
+> - 新增事件触发时机表
+> - 新增物件状态与武器系统状态的对应关系
+> - 添加武器系统为下游依赖
 
 ## Overview
 
@@ -114,9 +120,9 @@
 
 ### States and Transitions
 
-**物件状态机**
+**物件状态机（唯一数据源）**
 
-每个环境物件拥有独立的状态机：
+每个环境物件拥有独立的状态机。**环境交互系统是物件状态的唯一数据源（Single Source of Truth）**，其他系统（如武器系统）通过订阅 `ObjectStateChangedEvent` 来同步状态，不得自行维护独立的状态副本。
 
 ```
 [Available] ──玩家交互──▶ [InUse] ──动画完成──▶ [OnCooldown]
@@ -131,9 +137,18 @@
 | 状态 | 描述 | 可转移至 |
 |------|------|----------|
 | Available | 物件可用，可被交互 | InUse（玩家交互）、OnCooldown（远程触发） |
-| InUse | 物件正在被使用（拾取动画、放置动画等） | OnCooldown |
+| InUse | 物件正在被使用（拾取动画、放置动画等） | OnCooldown、Depleted |
 | OnCooldown | 物件已使用但可刷新（如投掷物被捡回、障碍物被重置） | Available |
 | Depleted | 物件已耗尽，不可刷新（如被打碎的灯泡） | 无（场景重置时恢复） |
+
+**状态与武器系统的对应关系**：
+
+| 环境交互系统状态 | 武器系统状态 | 说明 |
+|----------------|-------------|------|
+| Available | `Available` | 物件在场景中，未被拾取 |
+| InUse | `Held` | 物件被玩家持有（武器系统使用"Held"作为对外接口） |
+| OnCooldown | `Held` 或 `Used` | 根据物件类型判断：消耗品→Used，非消耗品→Held |
+| Depleted | `Depleted` | 物件被摧毁/消耗完毕 |
 
 **玩家交互状态机**
 
@@ -196,6 +211,27 @@ EnvironmentalEvent:
 **提供给 [沉重处决系统]**：
 - 环境物件可作为处决工具（如将敌人摔向爆炸物、推倒架子砸死敌人）
 - 提供物件的位置、类型、效果参数给处决系统
+
+**提供给 [武器系统 (Weapon System)]**：
+- 环境物件被拾取/丢弃/消耗时，通知武器系统更新物件的持有状态
+- 武器系统依赖本系统作为物件状态的**唯一数据源（Single Source of Truth）**
+
+**ObjectStateChangedEvent 数据结构**（本系统 → 武器系统）：
+```csharp
+ObjectStateChangedEvent:
+    object_id: int              // 物件唯一ID
+    object_category: ObjectCategory  // 物件类别（武器类/爆炸类/投掷类等）
+    new_state: ObjectState       // Available / InUse / OnCooldown / Depleted
+    position: Vector3?          // 物件当前位置（可选，用于位置相关的武器查询）
+```
+
+**事件触发时机**：
+| 事件 | 触发条件 | 发送到武器系统 |
+|------|----------|---------------|
+| `ObjectSpawned` | 物件在场景中生成并可交互 | ✅ |
+| `ObjectPickedUp` | 玩家拾取物件（Available → InUse） | ✅ |
+| `ObjectDropped` | 玩家丢弃物件（InUse → Available） | ✅ |
+| `ObjectUsed` | 物件效果被触发（InUse → OnCooldown 或 Depleted） | ✅ |
 
 **接收来自 [视野与监听系统]**：
 - 玩家的当前视野范围和朝向（用于确定物件是否在"可发现"状态）
@@ -351,6 +387,7 @@ EventType = DetermineEventType(Object.Category, TriggerMethod)
 | 沉重处决系统 (Gritty Takedowns) | 硬依赖 | 环境物件可作为处决工具，系统需提供物件位置、类型、效果参数 |
 | 线索与日志系统 (Clue & Journal) | 软依赖 | 情报类物件被交互后通知线索系统更新任务进度 |
 | NPC AI 系统 (NPC AI System) | 硬依赖 | 环境物件被触发时生成 EnvironmentalEvent，包含事件类型、位置、影响半径 |
+| **武器系统 (Weapon System)** | **软依赖（订阅）** | **订阅 ObjectStateChangedEvent 同步物件状态；武器系统不自行维护物件状态副本** |
 
 **数据流摘要**：
 

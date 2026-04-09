@@ -1,10 +1,29 @@
 # NPC AI系统 (NPC AI System)
 
-> **Status**: Approved
+> **Status**: Approved (修订中)
 > **Author**: [user + agents]
-> **Last Updated**: 2026-04-06
+> **Last Updated**: 2026-04-08
 > **Implements Pillar**: 致命的脆弱感 (Lethal Fragility)
-> **Revision Notes**: GDD 定稿。Open Questions (OQ-1,2,4,5,7,8,9,10) 涉及派系完整定义等非 MVP 内容，延后至 Alpha 阶段处理。OQ-3 已解决。
+> **Revision Notes**: 根据团队评审进行全面修订。OQ-4、OQ-5 已解决；AC-19/20/24 移至 Alpha 阶段；修复多处一致性和完整性问题。
+>
+> **修订历史**：
+> - **2026-04-08** 团队评审修订：
+>   - ✅ OQ-4 已解决：vulnerability 通过搜身/审问获取
+>   - ✅ OQ-5 已解决：NPC 唤醒后行为脚本（MVP 简化版）
+>   - ✅ OQ-11 边缘情况11 标注为 MVP 不适用（派系动态变化属 Alpha）
+>   - ✅ 修复公式3与感知共享表冲突：明确基础延迟+距离计算
+>   - ✅ 补充 ESCAPE→COMBAT 转换路径
+>   - ✅ 补充 NPCStateChangedEvent 完整定义
+>   - ✅ PerceptionScore 添加 Clamp 说明
+>   - ✅ 补充 LOS/NPC AI 感知同步机制说明
+>   - ✅ 修正 NPC 类型模板 Courage 值（胆小职员 4→2）
+>   - ✅ 修复边缘情况7与降级规则冲突
+>   - ✅ 添加感知阈值边界 AC（AC-25/26/27）
+>   - ✅ 添加威胁交互失败 AC（AC-28/29）
+>   - ✅ 添加边缘情况13（多 NPC 同时发现同伴异常）
+>   - ✅ 添加边缘情况14（派系感知共享内容降级数据结构）
+>   - ✅ AC-6/13/16/17/21/22 描述修正
+>   - ⚠️ AC-19/20/24 移至 Alpha 阶段测试
 
 ## Overview
 
@@ -46,7 +65,7 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 
 | 字段 | 类型 | 说明 | 示例 |
 |------|------|------|------|
-| `affiliation` | 派系列表 | 所属派系（可多属） | ["青龙帮", "赌场保护费"] |
+| `affiliation` | 派系列表 | 所属派系（可多属） | ["凋亡议会", "锈网", "灰烬团", "无声者", "苍白之手"] |
 | `allegiance` | 整数 | 对玩家态度 (-100 敌对 ~ +100 友好) | -30, 0, +20 |
 | `vulnerability` | 弱点列表 | 玩家可利用的心理/现实弱点 | ["母亲重病", "欠债", "想逃跑"] |
 | `knowledge` | 线索ID列表 | 掌握的情报 | ["仓库密码", "接头人姓名"] |
@@ -74,16 +93,50 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 
 同派系 NPC 之间会共享感知信息（位置、威胁类型）。派系之间存在敌对关系时，感知信息不会跨边界共享——这是玩家可以利用的漏洞。
 
-示例：青龙帮的 NPC 发现玩家，不会通知相邻的军阀 NPC。玩家可以在军阀地盘制造青龙帮的动静，转移军阀注意力。
+> **MVP简化说明**：派系感知共享使用静态关系，同派系100%共享，无动态变化。
 
-**规则5：派系间利益矛盾**
+**派系感知共享规则**：
 
-派系之间存在动态的利益关系：
-- **敌对**：一个派系的敌人是另一个派系的盟友
-- **竞争**：两个派系争夺同一资源（玩家可渔翁得利）
-- **中立**：无直接利益冲突
+| 派系关系 | 共享概率 | 基础延迟 | 内容降级 |
+|---------|---------|---------|---------|
+| 同派系 | 100% | 2秒 | 无 |
+| 联盟派系 | 50% | 4秒（基础延迟 × 2） | 降一级 |
+| 敌对派系 | 0% | — | — |
+| 中立派系 | 10% | 6秒（基础延迟 × 3） | 降一级 |
 
-玩家可以主动激化派系矛盾，制造混乱来获取战术优势。
+> **延迟计算说明**：
+> - 表格中的"基础延迟"是固定值，加上距离因素后形成最终延迟
+> - 完整延迟公式：`SharedAlertDelay = BaseDelay + (DistanceBetweenNPCs / SharedAlertSpeed)`
+> - 基础延迟对照：同派系=2秒，联盟派系=4秒，中立派系=6秒
+> - 如果两个 NPC 之间有墙体遮挡，`SharedAlertSpeed` 降低 50%
+
+**规则5：派系定义（MVP简化版）**
+
+| 派系 | 英文名 | 道德定位 | 核心特征 |
+|------|--------|---------|---------|
+| **凋亡议会** | The Apoptosis | 纯恶边缘 | 城市名流秘密组织，操控人口贩卖网络 |
+| **锈网** | The Corroded Web | 灰色偏恶 | 腐败执法势力，垄断港口与边境 |
+| **灰烬团** | The Ashen Corps | 灰色 | 军阀化私人武装，城郊黑色秩序 |
+| **无声者** | The Voiceless | 灰偏白/受害者 | 失踪者家属地下网络，秘密营救 |
+| **苍白之手** | The Pale Hand | 中立/神秘 | 神秘买家群体，人口贩卖终极目的 |
+
+**派系关系矩阵**：
+
+|       | 凋亡议会 | 锈网 | 灰烬团 | 无声者 | 苍白之手 |
+|-------|---------|------|--------|-------|---------|
+| **凋亡议会** | — | 操控/联盟 | 出售劳动力(联盟) | 压制(敌对) | 客户(中立) |
+| **锈网** | 被操控(从属) | — | 清剿(敌对) | 监视(敌对) | 忌惮(紧张) |
+| **灰烬团** | 出售劳力(从属) | 被清剿(敌对) | — | 警惕(中立) | 交易(中立) |
+| **无声者** | 被压制(敌对) | 被监视(敌对) | 被警惕(中立) | — | 神秘(中立) |
+| **苍白之手** | 客户(中立) | 忌惮(紧张) | 交易(中立) | 神秘(中立) | — |
+
+> **玩家阵营**：玩家（父亲）初始不属于任何派系，但与"无声者"天然联盟（都是失踪者家属）
+
+**派系动态机制延后说明（MVP不实现）**
+
+> **MVP不实现**：派系关系为静态，不动态变化。玩家能否利用派系争斗由任务系统决定，与AI无关。
+>
+> 延后至Alpha：派系关系动态变化机制、派系好感度数值系统
 
 **规则6：allegiance 变化规则**
 
@@ -94,9 +147,9 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 | 威胁 NPC | -20 | 立即变化 |
 | 成功贿赂 NPC | +10 | 消耗资源 |
 | 转化 NPC 为玩家做事 | +30 | 重大突破 |
-| 击杀恶徒 | +5 | 理智可能恢复 |
-| 击杀帮凶 | -15 | 理智惩罚 |
-| 击杀无辜者 | -50 | 理智崩溃 |
+| 击杀恶徒 | +5 | allegiance 提升 |
+| 击杀帮凶 | -15 | allegiance 大幅下降 |
+| 击杀无辜者 | -50 | allegiance 崩溃 |
 
 `allegiance` 影响 NPC 的行为反应：敌对（-100~-30）会主动攻击或逃跑；中立（-30~+30）会观望或犹豫；友好（+30~+100）可能在关键时刻帮助玩家或提供情报。
 
@@ -147,6 +200,7 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 | **ALERT** | SEARCH | 玩家逃离视野 > 2秒 | 已触发过 ALERT |
 | **ESCAPE** | SEARCH | 成功逃离当前区域，到达安全位置 | 已触发过 ESCAPE |
 | **ESCAPE** | ALERT | 逃离后增援到达，重新集结 | 已触发过 ESCAPE |
+| **ESCAPE** | COMBAT | 逃离中的 NPC 被玩家主动攻击 | 已触发过 ESCAPE |
 | **COMBAT** | SEARCH | 玩家逃离视野 > 10秒；所有敌人死亡 | 已触发过 COMBAT |
 | **COMBAT** | ESCAPE | 伤亡过大（同伴死亡 > 50%）且玩家仍存活 | 已触发过 COMBAT |
 
@@ -175,15 +229,6 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 | ESCAPE | SEARCH |
 | COMBAT | ALERT |
 
-#### 派系感知共享规则
-
-| 派系关系 | 共享概率 | 共享延迟 | 内容降级 |
-|---------|---------|---------|---------|
-| 同派系 | 100% | 2秒 | 无 |
-| 联盟派系 | 50% | 4秒 | 降一级 |
-| 敌对派系 | 0% | — | — |
-| 中立派系 | 10% | 6秒 | 降一级 |
-
 ### Interactions with Other Systems
 
 #### 数据流入 (Inputs)
@@ -205,6 +250,7 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 | **Health & Lethality** | `NPCStateChangedEvent` | NPC 状态转移（FREE→UNCONSCIOUS/DEAD）广播 |
 | **Sanity/Rage System** | 被击杀 NPC 的 `Tag` | 击杀事件携带的 NPC 身份标签（Enemy/Accomplice/Victim/Innocent） |
 | **Clue & Journal** | NPC 的 `knowledge` | NPC 掌握的线索列表，搜身/审问后可获取 |
+| **世界地图系统** | `AreaCleared(area_id)` | 地区内所有敌人被清除时通知，用于更新地区状态为 CLEARED |
 
 **`knowledge` 数据结构**：
 ```python
@@ -266,6 +312,37 @@ NPC AI 系统在 Alert State 发生转换时触发此事件，通知外部系统
 | `EXECUTION` | 处决被目击（收到 `ExecutionWitnessed` 事件） |
 
 **触发时机**：Alert State 表格中的**任何**状态转换时均触发。
+
+---
+
+**`NPCStateChangedEvent` 事件**
+
+NPC AI 系统在 World State 发生转换时触发此事件，通知外部系统（如 Health 系统、Clue & Journal 系统）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `npc_id` | int | 状态变化的 NPC 标识符 |
+| `old_state` | WorldState | 变化前的世界状态：`FREE`, `UNCONSCIOUS`, `TIED`, `DEAD` |
+| `new_state` | WorldState | 变化后的世界状态 |
+| `reason` | WorldStateChangeReason | 变化原因，枚举值见下表 |
+
+**WorldStateChangeReason 枚举值**：
+
+| 值 | 说明 |
+|----|------|
+| `DAMAGE_LETHAL` | 受到 Lethal 伤害 |
+| `DAMAGE_BLUNT` | 受到 Blunt 伤害导致 Downed |
+| `BUNDLED` | 玩家执行捆绑交互 |
+| `UNTIED` | 玩家执行解开交互 |
+| `RECOVERED` | 计时到期自动苏醒 |
+| `FINISHED_OFF` | 补刀（Lethal 伤害） |
+| `REANIMATED` | 复活（Alpha 阶段可能实现） |
+
+**触发时机**：World State 转换表格中的**任何**状态转换时均触发。
+
+> **与 AlertStateChangedEvent 的区别**：`AlertStateChangedEvent` 关注 NPC 的警觉程度（UNDETECTED→SUSPECT→SEARCH→ALERT→ESCAPE→COMBAT），`NPCStateChangedEvent` 关注 NPC 的物理状态（FREE→UNCONSCIOUS/TIED/DEAD）。两者独立触发，互不依赖。
+
+---
 
 **`QueryAllegiance(NPC_ID: int) -> int`**
 | 参数 | 类型 | 说明 |
@@ -377,7 +454,9 @@ NPC 对玩家的态度（allegiance）根据玩家交互行为实时更新。
 
 NPC 对玩家的感知综合评分，用于判定 Alert State 转换。
 
-`PerceptionScore = VisualScore + AudioScore + MemoryScore`
+`PerceptionScore = Clamp(VisualScore + AudioScore + MemoryScore, 0.0, 1.0)`
+
+> **Clamp 说明**：虽然三个评分理论上最大值可达 2.8，但实际游戏中玩家不太可能同时达到最大视觉暴露、冲刺声音和 30 秒内残留记忆。添加 Clamp 确保 PerceptionScore 始终在 [0.0, 1.0] 范围内，与阈值表一一对应。
 
 | 变量 | 定义 | 计算方式 | 与 LOS 系统的关系 |
 |------|------|---------|------------------|
@@ -385,10 +464,15 @@ NPC 对玩家的感知综合评分，用于判定 Alert State 转换。
 | `AudioScore` | 听觉感知评分 | 静止=0, 潜行=0.3, 行走=0.6, 冲刺=1.0 | NPC AI 独立计算 |
 | `MemoryScore` | 记忆残留评分 | 离开视野后 10 秒内=0.8, 10-30 秒=0.4, 30 秒+=0 | NPC AI 独立计算 |
 
-**与 LOS 系统的职责划分**：
-- **LOS 系统**：计算玩家被 NPC 发现的**暴露进度** (0-100%)
-- **NPC AI 系统**：计算 NPC 对玩家的**综合感知评分** (0.0~1.0)
+**与 LOS 系统的职责划分与同步机制**：
+- **LOS 系统**：计算玩家被 NPC 发现的**暴露进度** (0-100%)，包含自己的衰减机制
+- **NPC AI 系统**：计算 NPC 对玩家的**综合感知评分** (0.0~1.0)，包含独立的 MemoryScore 衰减
+- **两者独立计算**：LOS 的 `CurrentExposure` 衰减与 NPC AI 的 `MemoryScore` 衰减**互不影响**，这是设计意图而非冲突
+  - LOS 的暴露进度反映玩家**当前被看到的程度**
+  - NPC AI 的记忆评分反映 NPC **对玩家的记忆残留**
 - 当 LOS 的 `CurrentExposure >= 100` 时，NPC AI 收到 `PlayerSpottedEvent` 事件，VisualScore 瞬间设为 1.0
+
+> **重要**：NPC AI 系统的 `MaxPerceptionRange`（默认 15 米）与 LOS 系统的 `MaxVisionRange` 必须**保持同步修改**，两者定义的是同一种感知距离的不同视角。
 
 **感知评分到 Alert State 转换的触发条件映射**：
 
@@ -404,10 +488,14 @@ NPC 对玩家的感知综合评分，用于判定 Alert State 转换。
 
 | PerceptionScore 范围 | 触发 Alert State | 说明 |
 |---------------------|-----------------|------|
-| 0 ~ 0.3 | UNDETECTED | 无感知 |
-| 0.3 ~ 0.6 | SUSPECT | 感到不安 |
-| 0.6 ~ 0.8 | SEARCH | 主动搜索 |
-| > 0.8 | ALERT | 确认威胁 |
+| < 0.3 | UNDETECTED | 无感知 |
+| ≥ 0.3 且 < 0.6 | SUSPECT | 感到不安 |
+| ≥ 0.6 且 < 0.8 | SEARCH | 主动搜索 |
+| ≥ 0.8 | ALERT | 确认威胁 |
+
+**边界说明**：
+- 当 PerceptionScore 恰好等于阈值（如 0.3, 0.6, 0.8）时，使用**较高**的状态
+- 例如：PerceptionScore = 0.3 时，触发 SUSPECT 而非 UNDETECTED
 
 ### 公式5：ProximityScore（对峙距离评分）
 
@@ -510,11 +598,17 @@ NPC 对玩家的感知综合评分，用于判定 Alert State 转换。
 **问题**：玩家在昏迷 NPC 旁边等待，NPC 唤醒后立即感知到玩家——进入什么 Alert State？
 
 **处理方案**：
-- 唤醒后，NPC 首先评估玩家距离
-  - **距离 < 2 米**：立即进入 **SEARCH**（威胁迫在眉睫）
-  - **距离 2~5 米**：进入 **SUSPECT**（感到不安）
+- 唤醒后，NPC 首先应用降级规则（如 COMBAT→ALERT，SEARCH→SUSPECT）
+- 然后根据玩家距离进行**叠加判定**：
+  - **距离 < 2 米**：在降级后状态的基础上**额外降一级**（如 ALERT→SEARCH，ALERT→SUSPECT）
+  - **距离 2~5 米**：保持降级后的状态
   - **距离 > 5 米**：按正常感知评分计算
-- 如果 NPC 唤醒前已经有降级后的 Alert State（如 COMBAT→ALERT），优先恢复该状态再叠加距离判定
+- 最终状态取降级和距离判定的**较高者**（较警戒状态）
+
+> **逻辑示例**：NPC 在 COMBAT 状态被击晕，唤醒后：
+> 1. 降级规则：COMBAT→ALERT
+> 2. 距离判定（< 2米）：ALERT 额外降一级→SEARCH
+> 3. 最终状态：SEARCH
 
 ---
 
@@ -551,6 +645,8 @@ NPC 对玩家的感知综合评分，用于判定 Alert State 转换。
 ---
 
 ### 边缘情况11：派系关系动态变化时 pending 共享的处理
+
+> **MVP 说明**：派系动态变化机制属于 Alpha 阶段，MVP 派系关系为静态。边缘情况11描述的场景在 MVP 中不会发生，此处定义的处理方案供 Alpha 阶段参考。
 
 **问题**：派系关系从敌对变为友好（或反之）时，pending 中的 SharedAlert 是否立即生效/作废？
 
@@ -604,6 +700,36 @@ NPC 对玩家的感知综合评分，用于判定 Alert State 转换。
 | 强制-抵抗 | 高 | 1秒 | 无 |
 | 强制-沟通 | 中 | 3秒 | 降一级 |
 | 强制-欺骗 | 不共享 | — | — |
+
+---
+
+### 边缘情况13：多个 NPC 同时发现同伴处于非 FREE 状态
+
+**问题**：多个 NPC 同时发现同伴处于 TIED/UNCONSCIOUS/DEAD 状态，警报是否会叠加？
+
+**处理方案**：
+- 接收方 NPC 维护独立的"已接收共享"列表（来源 NPC + 时间戳）
+- 同一来源的 SharedAlert 在 5 秒内只处理一次
+- 不同来源的 SharedAlert 可以叠加，但**不叠加 Alert State 等级**
+- 取所有接收到的警报中**最高的威胁等级**作为响应状态
+- 例如：NPC-A 发现同伴死亡（SEARCH），NPC-B 发现同伴昏迷（ALERT），接收方取 ALERT
+
+---
+
+### 边缘情况14：派系感知共享"内容降级"的数据结构
+
+**问题**：派系感知共享中"内容降级"后的信息结构是什么？
+
+**处理方案**：
+- 共享信息包含两个字段：`threat_level`（威胁等级）和 `location`（威胁位置，可选）
+- 威胁等级枚举：`SUSPICIOUS`（可疑）、`CONFIRMED`（确认）、`CRITICAL`（危急）
+- 降级规则：
+  - 同派系共享：保留原始 `threat_level`
+  - 联盟派系共享：降一级（如 CONFIRMED → SUSPICIOUS）
+  - 中立派系共享：降两级（如 CONFIRMED → SUSPICIOUS，最高为 SUSPICIOUS）
+- 位置信息：同派系共享包含位置，联盟/中立派系共享**不包含位置**
+
+---
 
 ## Dependencies
 
@@ -660,8 +786,10 @@ Health 系统 ───► 　　　
 |---------|-------------|-------------|---------|
 | 帮派核心成员 | 7 | 6 | 抵抗倾向高，不易逃跑 |
 | 普通守卫 | 5 | 5 | 中等抵抗力 |
-| 胆小职员 | 3 | 4 | 容易屈服，容易逃跑或求饶 |
+| 胆小职员 | 3 | 2 | 容易屈服，容易回避或求饶 |
 | 无辜平民 | 2 | 3 | 极易屈服，极易逃跑或求饶 |
+
+> **Courage 说明**：Courage < 3 时触发回避行为。胆小职员 Courage=2 会触发回避，符合直觉；无辜平民 Courage=3 接近阈值，描述为"极易逃跑"可能略有出入，但仍在合理范围内。
 
 **属性影响的行为判定**：
 
@@ -695,9 +823,9 @@ Health 系统 ───► 　　　
 | `MaxConfrontationRange` | 5 米 | 3~10 米 | 过短=难以对峙，过长=太容易触发 | 对峙威胁的触发距离 |
 | `SharedAlertBaseDelay` | 2 秒 | 1~5 秒 | 过短=警报传播太快，过长=玩家有时间差 | 同派系感知共享基础延迟 |
 | `SharedAlertSpeed` | 10 米/秒 | 5~20 米/秒 | 过短=跨区域警报，过长=本地化感知 | 感知共享传递速度 |
-| `PerceptionSuspectThreshold` | 0.3 | 0.2~0.5 | 过低=太容易怀疑，过高=太迟钝 | 触发 SUSPECT 的感知评分阈值 |
-| `PerceptionSearchThreshold` | 0.6 | 0.4~0.8 | 过低=太容易搜索，过高=难以触发 | 触发 SEARCH 的感知评分阈值 |
-| `PerceptionAlertThreshold` | 0.8 | 0.6~1.0 | 过低=太容易警报，过高=难以触发 | 触发 ALERT 的感知评分阈值 |
+| `PerceptionSuspectThreshold` | 0.3 | 0.2~0.5 | 过低=太容易怀疑，过高=太迟钝 | 触发 SUSPECT 的感知评分阈值（使用 ≥ 比较） |
+| `PerceptionSearchThreshold` | 0.6 | 0.4~0.8 | 过低=太容易搜索，过高=难以触发 | 触发 SEARCH 的感知评分阈值（使用 ≥ 比较） |
+| `PerceptionAlertThreshold` | 0.8 | 0.6~1.0 | 过低=太容易警报，过高=难以触发 | 触发 ALERT 的感知评分阈值（使用 ≥ 比较） |
 
 ---
 
@@ -869,7 +997,7 @@ Health 系统 ───► 　　　
 
 | # | 测试条件 | 验证方法 |
 |---|---------|---------|
-| AC-6 | 同派系 NPC 发现威胁，2 秒后邻近同派系 NPC 收到警报 | 触发 NPC-A 进入 ALERT，计时验证 NPC-B 在 2 秒内进入 ALERT |
+| AC-6 | 同派系 NPC 发现威胁，约 2.5 秒后邻近同派系 NPC 收到警报 | 触发 NPC-A 进入 ALERT（测试 NPC 距离约 5 米），计时验证 NPC-B 在 2.5 秒内进入 ALERT。延迟计算：2.0秒基础延迟 + (5米/10米/秒) = 2.5秒 |
 | AC-7 | 联盟派系 NPC 收到警报概率约 50%，延迟翻倍 | 多次测试，统计联盟派系接收率和延迟 |
 | AC-8 | 敌对派系 NPC 不会收到警报 | 验证敌对派系 NPC 始终不进入警戒状态 |
 | AC-9 | UNCONSCIOUS/TIED NPC 不参与派系感知 | 昏迷 NPC 不发送也不接收 SharedAlert |
@@ -883,7 +1011,7 @@ Health 系统 ───► 　　　
 | AC-10 | NPC 受到 Lethal 伤害立即死亡 | 对 NPC 施加 Lethal 伤害，验证立即 DEAD |
 | AC-11 | NPC 受到 Blunt 伤害进入 UNCONSCIOUS | 对 NPC 施加 Blunt 伤害，验证 UNCONSCIOUS |
 | AC-12 | 昏迷 NPC 15 秒后自动苏醒 | 触发 UNCONSCIOUS，计时 15 秒后验证苏醒 |
-| AC-13 | 昏迷 NPC 唤醒后 Alert State 降一级 | 在 COMBAT 状态下击晕，唤醒后验证是 ALERT |
+| AC-13 | 昏迷 NPC 唤醒后 Alert State 降一级 | 在 ALERT 状态下击晕，唤醒后验证降为 SEARCH；在 COMBAT 状态下击晕，唤醒后验证降为 ALERT |
 
 ---
 
@@ -893,18 +1021,19 @@ Health 系统 ───► 　　　
 |---|---------|---------|
 | AC-14 | 对峙不自动触发 Alert State 变化 | 玩家接近但不进入交互范围，验证 NPC 保持 UNDETECTED |
 | AC-15 | 强制交互立即触发 SUSPECT | 执行强制交互，验证 NPC 立即进入 SUSPECT |
-| AC-16 | Bravery=8 的 NPC 在 allegiance=-20 时会抵抗 | 设置正确参数，执行强制交互，验证抵抗行为 |
-| AC-17 | Bravery=2 的 NPC 在 allegiance=+10 时会屈服 | 设置正确参数，执行强制交互，验证屈服行为 |
-| AC-18 | 屈服分支触发派系感知共享（2 秒延迟） | 触发屈服，验证邻近同派系 NPC 在 2 秒后进入警戒 |
+| AC-16 | Bravery=8 的 NPC 在 allegiance=-20 时会抵抗 | 设置正确参数（Bravery=8, allegiance=-20），执行强制交互，验证抵抗行为。参数配置：Bravery=8（NPC类型模板的帮派核心成员），allegiance=-20（通过玩家威胁降至）。判定公式：`Allegiance < -30 OR Bravery × 10 > CurrentAllegianceChange` → -20 不小于 -30，但 Bravery×10=80 > |-20|=20，故抵抗 |
+| AC-17 | Bravery=2 的 NPC 在 allegiance=+10 时会屈服 | 设置正确参数（Bravery=2, allegiance=+10），执行强制交互，验证屈服行为。参数配置：Bravery=2（NPC类型模板的帮派核心成员），allegiance=+10。判定公式：`Allegiance > +20 OR Courage < 2` → +10 不大于 +20，但 Bravery=2 意味着 Courage 也可能较低，需同时验证 Courage<2 时屈服 |
 
 ---
 
-### 锁定机制测试
+### 锁定机制测试（Alpha 阶段）
 
-| # | 测试条件 | 验证方法 |
-|---|---------|---------|
-| AC-19 | 玩家在 NPC 广播前完成击杀，警报不发出 | 在 SharedAlert 广播完成前击杀 NPC，验证周围 NPC 未进入警戒 |
-| AC-20 | 玩家在 NPC 广播完成后完成击杀，警报正常发出 | 等待 1.5 秒后击杀，验证周围 NPC 进入 ALERT |
+| # | 测试条件 | 验证方法 | 阶段 |
+|---|---------|---------|------|
+| AC-19 | 玩家在 NPC 广播前完成击杀，警报不发出 | 在 SharedAlert 广播完成前击杀 NPC，验证周围 NPC 未进入警戒 | Alpha |
+| AC-20 | 玩家在 NPC 广播完成后完成击杀，警报正常发出 | 等待 1.5 秒后击杀，验证周围 NPC 进入 ALERT | Alpha |
+
+> **MVP 说明**：MVP 简化方案为"NPC 死亡后不等待广播完成，直接死亡，警报在下一帧根据派系共享规则正常扩散"。锁喉机制的帧级精确判定属于 Alpha 阶段内容。
 
 ---
 
@@ -912,10 +1041,29 @@ Health 系统 ───► 　　　
 
 | # | 测试条件 | 验证方法 |
 |---|---------|---------|
-| AC-21 | 多个 NPC 同时感知玩家，ThreatScore 最高的主导 | 多 NPC 同时看到玩家，验证行为协调性 |
-| AC-22 | NPC 唤醒时玩家在 2 米内，立即进入 SEARCH | 玩家在昏迷 NPC 旁等待苏醒，验证立即 SEARCH |
+| AC-21 | 多个 NPC 同时感知玩家，ThreatScore 最高的主导 | 3 个 NPC 同时看到玩家（距离分别为 5米、8米、10米），验证：①距离最近的 NPC（5米）进入 ALERT，②其他 NPC 在 2 秒内跟随进入 ALERT（派系感知共享），③主导 NPC 的 Alert State 不低于其他 NPC |
+| AC-22 | NPC 唤醒时玩家在 2 米内，在降级后基础上额外降一级 | 玩家在昏迷 NPC 旁等待苏醒，验证最终状态符合降级+距离判定规则 |
 | AC-23 | COMBAT 中的 NPC 被贿赂后，下个循环转为友好 | 在 COMBAT 中贿赂，验证当前循环结束后行为变化 |
-| AC-24 | 派系关系从敌对变为友好后，pending 警报作废 | 改变派系关系，验证 pending 警报不生效 |
+| ~~AC-24~~ | ~~派系关系从敌对变为友好后，pending 警报作废~~ | ~~改变派系关系，验证 pending 警报不生效~~ | **移至 Alpha**：派系动态变化机制属于 Alpha 阶段，MVP 派系关系为静态，此 AC 不适用 |
+
+---
+
+### 感知阈值边界测试（补充）
+
+| # | 测试条件 | 验证方法 |
+|---|---------|---------|
+| AC-25 | PerceptionScore = 0.3 时触发 SUSPECT（不是 UNDETECTED） | 设置 VisualScore=0.1, AudioScore=0.2, MemoryScore=0（总分=0.3），验证 NPC 进入 SUSPECT |
+| AC-26 | PerceptionScore = 0.6 时触发 SEARCH（不是 SUSPECT） | 设置 VisualScore=0.3, AudioScore=0.3, MemoryScore=0（总分=0.6），验证 NPC 进入 SEARCH |
+| AC-27 | PerceptionScore = 0.8 时触发 ALERT（不是 SEARCH） | 设置 VisualScore=0.5, AudioScore=0.2, MemoryScore=0.1（总分=0.8），验证 NPC 进入 ALERT |
+
+---
+
+### 威胁交互失败测试（补充）
+
+| # | 测试条件 | 验证方法 |
+|---|---------|---------|
+| AC-28 | 贿赂失败后 NPC allegiance -5 | 玩家资源不足时尝试贿赂，验证 NPC allegiance 下降 5 |
+| AC-29 | 威胁识破后 NPC allegiance -15，50% 概率进入 SUSPECT | 威胁被识破后多次测试，验证 allegiance 下降 15，且约 50% 概率 NPC 进入 SUSPECT |
 
 ---
 
@@ -927,15 +1075,34 @@ Health 系统 ───► 　　　
 | 派系感知广播传播时间 | < 16ms | 8 层派系链路的最大延迟 |
 | 状态机转换响应时间 | < 1 帧 | Alert State 变化立即响应 |
 
+### 感知计算优化策略
+
+**感知 culling 策略**：
+- **空间分区**：使用 Quadrant/Octree 对 NPC 视野范围进行空间分区，单帧只计算玩家所在分区内的 NPC 感知
+- **距离预筛选**：在计算 `PerceptionScore` 前，先检查 `DistanceToPlayer > MaxPerceptionRange`，超出范围的 NPC 直接跳过
+- **分帧计算**：将 NPC 感知计算分散到多帧，避免同一帧内计算所有 NPC（每帧最多计算 20 个 NPC 的完整感知）
+
+**优化决策规则**：
+| 场景 | 优化策略 | 理由 |
+|------|---------|------|
+| 玩家静止 | 降低感知计算频率至 0.5 秒/次 | 玩家静止时暴露值不增加，无需每帧计算 |
+| 玩家在掩体后 | 降低 AudioScore 计算权重 | 掩体后视觉已被遮挡，主要依赖听觉 |
+| NPC 处于 ESCAPE/COMBAT | 提升计算频率至每帧计算 | 战斗状态需要即时响应 |
+| NPC 处于 FREE + UNDETECTED | 降低计算频率至 0.25 秒/次 | 未发现威胁的 NPC 不需要高频率感知更新 |
+
+**性能监控**：
+- 当 NPC 数量 > 30 时，自动切换到"分帧计算"模式
+- 当单帧感知计算耗时 > 1ms 时，自动降低计算频率
+
 ## Open Questions
 
 | # | 问题 | 负责人 | 目标日期 | 说明 |
 |---|------|--------|---------|------|
-| OQ-1 | **派系体系的完整定义** | 游戏设计师 | TBD | 尚未定义具体的派系列表（如青龙帮、军阀等）、派系之间的关系（敌对/联盟/中立）、以及派系之间的利益矛盾设计 |
-| OQ-2 | **派系利益矛盾的具体机制** | 游戏设计师 | TBD | 如何利用派系间争斗达到获取线索或过关条件？需要设计具体的触发条件和结果链 |
+| OQ-1（已解决） | ~~**派系体系的完整定义**~~ | ✅ 已解决 | 游戏设计师 | 5派系已定义（凋亡议会、锈网、灰烬团、无声者、苍白之手），静态关系。详见规则5。OQ-2延后至Alpha。 |
+| OQ-2 | **派系利益矛盾的具体机制** | 游戏设计师 | Alpha 阶段 | 如何利用派系间争斗达到获取线索或过关条件？需要设计具体的触发条件和结果链。MVP阶段不实现派系动态机制。 |
 | OQ-3 | ~~**Bravery/Courage 属性在 NPC 生成时的分布**~~ | ~~系统设计师~~ | ~~TBD~~ | ✅ **已解决**：Bravery/Courage 使用正态分布（均值5，标准差2），辅以 NPC 类型模板预设值。详见第565-590行「NPC 属性生成」章节。 |
-| OQ-4 | **NPC 的 vulnerability 如何被玩家发现** | 游戏设计师 | TBD | 玩家如何知道 NPC 的弱点？是通过监听对话、搜身、还是审问？ |
-| OQ-5 | **NPC 醒来后的行为脚本** | AI 程序员 | TBD | 昏迷 NPC 苏醒后，除了 Alert State 降级外，是否有特定的行为脚本（如去查看同伴状态）？ |
+| OQ-4（已解决） | ~~**NPC 的 vulnerability 如何被玩家发现**~~ | ✅ 已解决 | 游戏设计师 | **已解决**：玩家通过**搜身**（对 UNCONSCIOUS/DEAD NPC）或**审问**（对 UNCONSCIOUS NPC）获取 NPC 的 vulnerability。监听对话可获取线索但不能直接获取 vulnerability。详见 Gritty Takedowns 系统文档。 |
+| OQ-5（已解决） | ~~**NPC 醒来后的行为脚本**~~ | ✅ 已解决 | AI 程序员 | **已解决（MVP 简化版）**：NPC 苏醒后首先检查附近是否有同伴处于非 FREE 状态（TIED/UNCONSCIOUS/DEAD）。如有，NPC 发出惊呼并进入 ALERT；如无，NPC 按降级后的 Alert State 正常行为。NPC 不会主动去"查看同伴"，因为这会破坏潜行体验。 |
 | OQ-6 | **"锁喉"机制的时序精确性** | 系统设计师 | TBD | 玩家必须在 1 秒内完成击杀才能阻止广播——这个时序是否需要更精确的帧级判定？ |
 | OQ-7 | **对话选项的后果预览程度** | UX 设计师 | TBD | 试探分支中，对话选项的后果应该预览多少？完全不预览（高风险）还是部分预览（中等风险）？ |
 | OQ-8 | **NPC 转化（Convert）机制** | 游戏设计师 | TBD | 玩家将 NPC 转化为"线人"后，该 NPC 的后续行为如何定义？是一次性帮助还是持续配合？ |

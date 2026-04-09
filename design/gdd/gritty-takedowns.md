@@ -2,9 +2,18 @@
 
 > **Status**: Approved
 > **Author**: [user + agents]
-> **Last Updated**: 2026-04-07
+> **Last Updated**: 2026-04-10
 > **Implements Pillar**: 沉重、不洁的暴力 (Gritty, Dirty Violence)、环境即武器 (Environment as a Weapon)
 > **Revision Notes**: 2026-04-07 修复状态标记为 In Review；澄清公式5中 Alert State < ALERT 的具体含义（指 UNDETECTED/SUSPECT/SEARCH 三态）
+> **2026-04-08 协同修订（配合武器系统修复设计审查问题）**：
+> - P1: `DamageRequest` 接口添加 `penetration` 参数，说明来自武器数据
+> - P2: 新增 `WeaponQueryRequest`/`WeaponQueryResponse` 事件接口
+> - P2: 明确 `source` 参数来源于 `WeaponQueryResponse` 的 `weapon_id`
+> **2026-04-10 战斗团队评审修复**：
+> - P0: 公式3 捆绑时间变量 `NPCSizeMultiplier` 和 `PlayerSkillBonus` 完整定义表
+> - P1: `StaggerRecoveryThreshold` 安全范围补全（0.3 ~ 0.7）
+> - P1: `DeceptionBaseChance` 公式与 Tuning Knobs 关联明确化
+> - P2: `InteractionRange_Search` 默认值与安全范围统一
 
 ## Overview
 
@@ -101,6 +110,7 @@
    - 前置：已获取 NPC vulnerability
    - 类型：临时线人（单次情报）
    - 执行后：allegiance 大幅提升，提供一次情报后恢复原状
+   - **超时机制**：转化效果持续 `ConversionEffectDuration`（默认 30 秒），超时后 allegiance 自动恢复，无需等待情报提供
 
 8. **对话选项**：
    - 与 NPC AI 系统的 CONFRONTATION 机制共用
@@ -165,6 +175,7 @@
 | NPC AI 系统 | Bravery, Courage 属性 | 威胁/欺骗的成功率判定 |
 | LOS & Eavesdropping | 身份标签（恶徒/帮凶/受害者/未知） | 判定是否可以安全处决 |
 | 环境交互系统 | 可用环境物件列表、持有物状态 | 环境处决选项 |
+| **武器系统 (Weapon System)** | `WeaponQueryResponse(weapon_id, WeaponData)` | **环境处决前查询武器数据**；本系统发送 `WeaponQueryRequest` 查询物件对应的 WeaponData；返回的 `weapon_id` 作为 `DamageRequest` 的 `source` 参数 |
 
 **数据流出 (Outputs)**：
 
@@ -211,11 +222,31 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 
 `TieUpDuration = BaseTieUpTime * (1.0 + NPCSizeMultiplier - PlayerSkillBonus)`
 
-| 变量 | 定义 | 默认值 |
-|------|------|--------|
-| BaseTieUpTime | 基础捆绑时间 | 4.0 秒 |
-| NPCSizeMultiplier | NPC 体型乘数（大型 NPC 时间更长） | 0.0 ~ 0.5 |
-| PlayerSkillBonus | 玩家技能加成（降低时间） | 0 ~ 0.3 |
+| 变量 | 定义 | 数据来源 | 典型值 |
+|------|------|---------|--------|
+| BaseTieUpTime | 基础捆绑时间 | Tuning Knobs | 4.0 秒 |
+| NPCSizeMultiplier | NPC 体型对捆绑时间的加成 | NPC AI - `EntityData.size_category` | 小型=0.0, 中型=0.25, 大型=0.5 |
+| PlayerSkillBonus | 玩家技能对捆绑时间的减免 | 玩家技能系统 `PlayerSkillTree.tie_up_efficiency` | 基础=0.0, 进阶=0.15, 专家=0.3 |
+
+**NPCSizeMultiplier 定义表**：
+
+| NPC 体型 | NPCSizeMultiplier | 说明 |
+|---------|------------------|------|
+| 小型 (Small) | 0.0 | 捆得更快 |
+| 中型 (Medium) | 0.25 | 标准 |
+| 大型 (Large) | 0.5 | 体型大，捆绑耗时长 |
+
+**PlayerSkillBonus 定义表**：
+
+| 技能等级 | PlayerSkillBonus | 说明 |
+|---------|-----------------|------|
+| 基础 (Tier 1) | 0.0 | 无加成 |
+| 进阶 (Tier 2) | 0.15 | 捆绑效率提升 |
+| 专家 (Tier 3) | 0.3 | 最高效率加成 |
+
+安全范围验证：
+- 最短捆绑时间：`4.0 × (1.0 + 0.0 - 0.3) = 2.8s`（接近 3.0s 安全下限）
+- 最长捆绑时间：`4.0 × (1.0 + 0.5 - 0.0) = 6.0s`（等于 6.0s 安全上限）
 
 安全范围：3.0 秒 ~ 6.0 秒
 
@@ -385,7 +416,7 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|---------|
 | **NPC AI 系统 (NPC AI System)** | 软依赖（事件订阅） | 订阅本系统的 `InteractionEvent`（威胁/击杀/捆绑等），触发 NPC 状态变化 |
-| **Health 系统** | 硬依赖 | 接收 `DamageRequest`（Lethal/Blunt）执行伤害计算 |
+| **Health 系统** | 硬依赖 | 接收 `DamageRequest`（含 penetration）执行伤害计算；穿透值来自武器数据 |
 | **Clue & Journal 系统** | 软依赖 | 接收 `KnowledgeGainedEvent` 搜身/审问获取的线索 |
 | **Sanity/Rage 系统** | 软依赖 | 接收 `KillTagEvent` 击杀事件及 NPC 身份（异步后置） |
 | **沉浸式音频系统** | 软依赖 | 订阅 `InteractionEvent` 用于音效触发 |
@@ -397,9 +428,11 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 | 事件名 | 方向 | 负载 | 说明 |
 |--------|------|------|------|
 | `InteractionEvent` | → 事件总线 → NPC AI/音频 | `{type, target_id, source, result}` | 所有交互的通用事件 |
-| `DamageRequest` | → Health 系统 | `{target_id, damage_type, source}` | 处决类交互的伤害请求 |
+| `DamageRequest` | → Health 系统 | `{target_id, damage_type, penetration, source}` | 处决类交互的伤害请求；`penetration` 来自 WeaponData；`source` 来自 WeaponQueryResponse 的 `weapon_id` |
 | `KillTagEvent` | → Sanity 系统 | `{kill_tag: NPCIdentityType}` | 击杀事件（异步后置），携带被击杀NPC的身份标签 |
 | `KnowledgeGainedEvent` | → Clue 系统 | `{npc_id, knowledge_list}` | 搜身/审问获取的线索 |
+| `WeaponQueryRequest` | → 武器系统 | `{weapon_id}` | 环境处决前查询武器数据 |
+| `WeaponQueryResponse` | ← 武器系统 | `{weapon_id, WeaponData}` | 返回武器数据（含 damage_type、penetration、animation_tags）；`weapon_id` 用作 DamageRequest 的 `source` |
 
 #### 本系统订阅的事件
 
@@ -475,7 +508,7 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 |------|------|--------|---------|------|
 | `BaseTieUpTime` | float | 4.0s | 3.0s ~ 6.0s | 基础捆绑时间 |
 | `TargetSwitchCooldown` | float | 0.5s | 0.3s ~ 1.0s | 切换目标的冷却时间 |
-| `StaggerRecoveryThreshold` | float | 0.5 | — | 处决中断时 NPC 存活判定（动画进度比例） |
+| `StaggerRecoveryThreshold` | float | 0.5 | 0.3 ~ 0.7 | 处决中断时 NPC 存活判定（动画进度比例）。低于0.3处决窗口过短，高于0.7几乎总会失败 |
 
 ### 欺骗判定参数
 
@@ -490,6 +523,7 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 |------|------|--------|---------|------|
 | `ConversionAllegianceBoost` | int | +50 | +30 ~ +80 | 转化线人的基础 allegiance 提升 |
 | `VulnerabilityDepthMultiplier_Max` | float | 1.5 | 1.0 ~ 2.0 | 弱点深度最大乘数 |
+| `ConversionEffectDuration` | float | 30.0s | 20.0s ~ 60.0s | 转化效果持续时间，超时后 allegiance 自动恢复 |
 
 ### UI 反馈参数
 
@@ -614,7 +648,7 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 | # | 问题 | 负责人 | 目标日期 |
 |---|------|--------|---------|
 | OQ-1（已解决） | **DialogueTree 的具体数据结构定义** | NPC AI 系统设计者 | ✅ 已解决 |
-| OQ-2 | 转化线人的"临时"持续时间是否需要超时机制 | 游戏设计师 | Vertical Slice 设计时 |
+| OQ-2 | ✅ **已解决**：转化线人的"临时"持续时间设置超时机制。详见核心规则第7条。 | 已解决 | — |
 | OQ-3（已解决） | **环境处决的物件效果优先级**：当多个物件同时可用时，选择距离最近的物件。玩家可通过轻微移动切换选择目标。 | 已解决 | — |
 | OQ-4 | 是否需要"非致命威胁"选项（如打伤但不杀） | 游戏设计师 | MVP 评审时 |
 | OQ-5 | 玩家在审问/捆绑时 NPC 苏醒，动画如何过渡 | 技术艺术 + 动画师 | Vertical Slice 时 |

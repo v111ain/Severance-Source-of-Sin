@@ -2,7 +2,7 @@
 
 > **Status**: Approved
 > **Created**: 2026-03-29
-> **Last Updated**: 2026-04-09
+> **Last Updated**: 2026-04-10
 > **Source Concept**: design/gdd/game-concept.md
 > **Engine**: Unity 6.3 LTS (PC & PS5)
 > **Revision Notes**: 2026-04-07 批量修复已发现的设计问题：
@@ -67,6 +67,45 @@
 >   - ✅ LOS 系统：添加阴影隐蔽加成 StealthBonus 参数
 > - ✅ 天气系统代码审查修复：公式2半衰期修正（TransitionDuration/10）、雷雨视野bonus补充、发布验收AC-15添加、措辞修正
 
+**2026-04-10 主角背景角色系统设计完成**：
+> - ✅ 新增主角背景角色系统 (Character Background System)：分类 Core/Feature，优先级 MVP
+> - 设计差异化策略：特殊能力（核心）+ NPC态度（叙事）+ 数值修饰（轻微，仅理智惩罚和狂暴阈值）
+> - 三个背景：普通人（智慧型）、特工（情报型）、雇佣兵（战斗型）
+> - 依赖系统：技能系统、NPC AI系统、DialogTree、理智/愤怒系统
+> - 状态更新为 Designed
+
+**2026-04-10 叙事系统设计审查修复**：
+> - ✅ P0: 添加 DialogTree、Sanity/Rage、GrittyTakedowns 双向依赖
+> - ✅ P0: 澄清悲剧揭示数值区分（+2 主动发现 vs +8 误杀解锁）
+> - ✅ P1: 解决 OQ-2（确认保持 4 种对话变体）
+> - ✅ P1: 补充"旁观者"特殊结局设计（零行为玩家专属）
+> - ✅ P1: 澄清 dominant_trait 触发机制（事件驱动非定时）
+> - ✅ P2: 添加 mercy_count 软上限（kill_count * 3）
+> - ✅ P2: 明确模块解锁优先级规则（类别优先级 + 字母顺序）
+> - ✅ P2: 修正 3.4 节段落编号（新增 3.4.2 模块解锁优先级）
+
+**2026-04-10 主角背景系统审查后更新**：
+> - ⚠️ 主角背景系统状态更新为 In Review：
+>   - P1: 修复 `QueryOldAcquaintanceBonus` 接口描述为 Pull 模式
+>   - P1: 补充 `IFirstEncounterBonusProvider` 接口与 `HasMetFaction` 协作逻辑说明
+>   - P2: 补充态度矩阵脚注，明确为首次遭遇时的初始态度
+>   - P2: 补充 `PerceptionModifier_Agent` 调参风险提示
+
+**2026-04-10 叙事系统审查后更新**：
+> - ✅ P0: 补充旁观者路线与模块解锁互斥说明
+> - ✅ P1: Section 3.1 表格添加 moral_standing 变化值列统一术语
+> - ✅ P1: 添加 AC-32b 验证 SanityRecoveryEvent.final_recovery 计算正确性
+> - ✅ P2: 测试脚本引用标注 (planned)
+> - ✅ P2: KillUnknownPenalty 标注为高风险参数并补充 playtest 验证说明
+> - ✅ 叙事系统状态更新为 **Approved**
+
+**2026-04-10 叙事系统 v0.9 审查后修复**：
+> - ✅ P0: 统一 dominant_trait 判定变量（victim_kill_count vs accidental_kill_count 不一致）
+> - ✅ P1: Section 4.3 ModuleBonus 改为乘数语义并补充示例计算
+> - ✅ P1: Section 7.5 补充 KillUnknownPenalty 设置过高的风险描述
+> - ✅ P2: AC-4b 添加惩罚合理性验证（-50惩罚对玩家行为的影响）
+> - ✅ P2: 补充对话变体 MERCY/CRUEL/CALCULATING/CAUTIOUS 的 UI 边框颜色和音效差异化说明
+
 ---
 
 ## Overview
@@ -87,9 +126,11 @@
 | 6 | 环境交互系统 (Environment Interaction) | Gameplay | MVP | Approved | design/gdd/environment-interaction.md | Player Controller |
 | 7 | NPC AI系统 (NPC AI System) | Gameplay | MVP | Approved | design/gdd/npc-ai-system.md | LOS & Eavesdropping, Health & Lethality |
 | 8 | 线索与日志系统 (Clue & Journal) | Narrative | MVP | Approved | design/gdd/clue-and-journal.md | Environment Interaction, NPC AI System |
+| 17 | **叙事系统 (Narrative System)** | **Narrative** | **Vertical Slice** | **Approved** | **design/gdd/narrative-system.md** | **LOS System, Gritty Takedowns, Clue & Journal, Sanity/Rage Meter, DialogTree** |
 | 9 | **武器系统 (Weapon System)** | **Gameplay** | **MVP** | Approved | design/gdd/weapon-system.md | Player Controller, Environment Interaction |
 | 10 | 沉重处决系统 (Gritty Takedowns) | Gameplay | MVP | Approved | design/gdd/gritty-takedowns.md | Player Controller, NPC AI System, **Weapon System** |
-| 11| 理智/愤怒系统 (Sanity/Rage Meter) | Meta | Vertical Slice | Approved | design/gdd/sanity-rage-meter.md | Gritty Takedowns, Clue & Journal |
+| 11 | 理智/愤怒系统 (Sanity/Rage Meter) | Meta | Vertical Slice | Approved | design/gdd/sanity-rage-meter.md | Gritty Takedowns, Clue & Journal |
+| 16 | **主角背景角色系统 (Character Background)** | **Core/Feature** | **MVP** | **In Review** | **design/gdd/character-background.md** | **NPC AI System, DialogTree, Sanity/Rage Meter, Narrative System** |
 | 12| 沉浸式音频与震动 (Immersive Audio & Haptics) | Audio | Vertical Slice | Approved | design/gdd/immersive-audio-haptics.md | Gritty Takedowns, Environment Interaction |
 | 13| 动态视觉滤镜系统 (Dynamic Post-Processing) | Presentation | Alpha | Approved | design/gdd/dynamic-post-processing.md | Sanity/Rage Meter, Screen Effects |
 | 14| UI 系统 (UI System) | Presentation | MVP | Approved | design/gdd/ui-system.md | — |
@@ -142,7 +183,8 @@
 ### Feature Layer (depends on core)
 
 1. **线索与日志系统 (Clue & Journal)** — depends on: 环境交互系统, NPC AI系统
-2. **沉重处决系统 (Gritty Takedowns)** — depends on: 玩家控制器, NPC AI系统, **武器系统**, 环境交互系统
+2. **沉重处决系统 (Gritty Takedowns)** — depends on: 玩家控制器, NPC AI系统, **武器系统**, 环境交互系统；**被叙事系统依赖（KillTagEvent）**
+3. **~~主角背景角色系统 (Character Background)~~** — depends on: NPC AI系统, DialogTree, Sanity/Rage Meter, Narrative System；**被叙事系统依赖（SKILL系列模块解锁）** — ⚠️ 审查中
 
 ### World Layer (environmental systems affecting gameplay)
 
@@ -150,7 +192,8 @@
 
 ### Meta/Narrative Layer (depends on features)
 
-1. **理智/愤怒系统 (Sanity/Rage Meter)** — depends on: 沉重处决系统, 线索与日志系统 (玩家的行为反馈于此)
+1. **理智/愤怒系统 (Sanity/Rage Meter)** — depends on: 沉重处决系统, 线索与日志系统, **叙事系统** (玩家的道德行为反馈于此)
+2. **叙事系统 (Narrative System)** — depends on: LOS System, Gritty Takedowns, Clue & Journal, Sanity/Rage Meter, DialogTree；影响：Dialog Tree System, Achievement System, **Sanity/Rage System**
 
 ### Presentation Layer (depends on meta/features)
 
@@ -202,18 +245,20 @@
 
 | Metric | Count |
 |--------|-------|
-| Total systems identified | 15 (含1个已替代系统) |
-| Active design docs | 15 |
-| Design docs reviewed | 13 |
-| Design docs with P0 issues fixed | 12 |
+| Total systems identified | 17 (含1个已替代系统) |
+| Active design docs | 17 |
+| Design docs reviewed | 15 |
+| Design docs with P0 issues fixed | 14 |
 | Design docs in revision | 0 |
-| Design docs approved | 13 (活跃系统) + 1 superseded |
-| Design docs in review | 0 |
-| Design docs with P1/P2 improvements | 6 (LOS/线索/理智/环境交互/NPC AI/DPP) |
-| MVP systems (10 total) | 10/10 (全部 Approved) |
-| Vertical Slice systems (3 total) | 3/3 (all Approved) |
+| Design docs approved | 14 (活跃系统) + 1 superseded |
+| Design docs in review | 2 (叙事系统 + 主角背景系统) |
+| Design docs with P1/P2 improvements | 7 (LOS/线索/理智/环境交互/NPC AI/DPP) |
+| MVP systems (9 total) | 9/9 (全部 Approved) |
+| Vertical Slice systems (4 total) | 3/3 + 1 In Review (叙事系统) |
 | Alpha systems (1 total) | 1/1 (DPP ✅ Approved) |
 | Full Vision systems (1 total) | 1/1 (天气+光照系统 ✅ Approved) |
+| **New Designed** | **1 (主角背景角色系统 ✅ Designed)** |
+| **Removed** | **1 (技能系统 - 已删除，依赖已被 Character Background 吸收)** |
 
 ---
 

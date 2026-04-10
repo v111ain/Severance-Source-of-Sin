@@ -1,6 +1,6 @@
 # 理智/愤怒系统 (Sanity/Rage Meter)
 
-> **Status**: Approved
+> **Status**: Approved (Revised)
 > **Author**: Systems Designer
 > **Last Updated**: 2026-04-07
 > **Priority**: Vertical Slice
@@ -138,10 +138,34 @@
 
 | 来源系统 | 数据内容 | 处理方式 |
 |---------|---------|---------|
-| GrittyTakedowns | `KillTagEvent{kill_tag: NPCIdentityType}` | 根据击杀目标身份（ENEMY/ACCOMPLICE/VICTIM）计算理智/愤怒变化 |
+| GrittyTakedowns | `KillTagEvent{kill_tag: NPCIdentityType}` | 根据击杀目标身份（ENEMY/ACCOMPLICE/VICTIM）计算理智惩罚和愤怒变化 |
+| **叙事系统 (Narrative System)** | `SanityRecoveryEvent{type, base_recovery, module_multiplier, final_recovery}` | 接收救赎行为的理智恢复（埋葬受害者、找到家人等）。Narrative 系统已根据公式计算 final_recovery 值，本系统直接应用 |
 | Clue&Journal | `ClueDiscoveredEvent{clue_id, clue_category}` | 根据线索类别计算理智变化（悲剧线索为负） |
 | Health&Lethality | `PlayerDamaged{damage_type, is_lethal}` | 受伤时愤怒上升，重伤理智也下降 |
 | 玩家控制器 | 时间流逝 | 愤怒每5秒自动-1（自然消散） |
+
+**SanityRecoveryEvent 事件数据结构**：
+
+```csharp
+struct SanityRecoveryEvent {
+    RecoveryType type;      // BURY_VICTIM / FIND_FAMILY / MERCY_ACTS / TRAGEDY_UNLOCK
+    int base_recovery;      // 基础恢复值（由 Narrative 系统根据公式计算）
+    float module_multiplier;// 模块加成（如有 REL_02 / TRUTH_02 则 > 1.0）
+    int final_recovery;     // 最终恢复值 = base_recovery * module_multiplier
+}
+
+enum RecoveryType {
+    BURY_VICTIM,     // 埋葬受害者
+    FIND_FAMILY,     // 找到家人
+    MERCY_ACTS,      // 仁慈行为累积
+    TRAGEDY_UNLOCK   // 悲剧故事解锁（部分抵消误杀惩罚）
+}
+```
+
+**处理逻辑**：
+- 收到 `SanityRecoveryEvent` 后，直接将 `final_recovery` 值加到当前 Sanity
+- Sanity 上限为 100（超过部分截断）
+- 不需要二次计算（Narrative 系统已根据 Section 4.3 公式完成计算）
 
 **数据流出 (Outputs)**：
 
@@ -161,8 +185,26 @@
 **公式1：理智值变化计算**
 
 ```
-SanityDelta = BaseValue[EventType] * ContextMultiplier * TimeMultiplier * NarrativeSignificanceMultiplier
+EffectiveSanityDelta = BaseValue[EventType] × ContextMultiplier × TimeMultiplier × NarrativeSignificanceMultiplier × SanityPenaltyMultiplier
 ```
+
+| 变量 | 定义 | 来源 |
+|------|------|------|
+| `BaseValue[EventType]` | 事件基础惩罚值 | 本系统定义（见事件类型表） |
+| `ContextMultiplier` | 情境乘数 | 本系统定义（连续击杀/首次击杀等） |
+| `TimeMultiplier` | 时间乘数 | 本系统定义（首次/连续/间隔） |
+| `NarrativeSignificanceMultiplier` | 叙事重要性乘数 | 线索系统（Clue & Journal） |
+| **`SanityPenaltyMultiplier`** | **背景理智惩罚系数** | **角色背景系统（Character Background）** |
+
+**SanityPenaltyMultiplier**（来自角色背景系统）：
+
+| 背景 | 系数 | 说明 |
+|------|------|------|
+| 普通人 | 0.9x | 略微习惯暴力，心理承受力中等 |
+| 特工 | 0.8x | 习惯暴力惩罚最低，道德挣扎最剧烈 |
+| 雇佣兵 | 1.15x | 最不适应内心黑暗，冲动失控倾向高 |
+
+> **集成说明**：`SanityPenaltyMultiplier` 在公式最后一位与最终乘积相乘。例如：特工击杀帮凶（基准惩罚 -8）→ `-8 × 1.0 × 1.0 × 1.0 × 0.8 = -6.4`
 
 | 事件类型 | BaseValue | 说明 |
 |---------|-----------|------|
@@ -270,17 +312,26 @@ MovementSpeedBonus = Lerp(0.0, 0.1, Rage/100)  # 最高+10%
 **公式4：状态阈值判定**
 
 ```
+EffectiveFrenzyThreshold = BaseFrenzyThreshold + FrenzyThresholdModifier
+
+// 其中：BaseFrenzyThreshold = 70（由本系统定义）
+//       FrenzyThresholdModifier 来自 Character Background 系统（普通人=+8, 特工=±0, 雇佣兵=-8）
+
 if Rage > 90:
     State = FRENZIED
 elif Sanity < 20:
     State = BROKEN
-elif Rage > 70 OR Sanity < 40:
+elif Rage > EffectiveFrenzyThreshold OR Sanity < 40:
     State = AGITATED
 elif Rage > 30 OR Sanity < 70:
     State = UNEASY
 else:
     State = CALM
 ```
+
+> **FrenzyThresholdModifier 集成说明**：`FrenzyThresholdModifier` 由 Character Background 系统提供（见 Dependencies 章节）。本公式使用 EffectiveFrenzyThreshold 替代硬编码的 70 阈值，实现背景对狂暴触发时机的个性化调整。
+>
+> **示例**：雇佣兵（`FrenzyThresholdModifier = -8`）的有效狂暴阈值为 `70 + (-8) = 62`，即 Rage > 62 时即进入 AGITATED 状态，Rage > 90 时进入 FRENZIED。普通人（`FrenzyThresholdModifier = +8`）的有效狂暴阈值为 `70 + 8 = 78`，需要更高的愤怒积累才会触发狂暴状态。
 
 ---
 
@@ -360,6 +411,7 @@ else:
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|----------|
 | GrittyTakedowns | 硬依赖 | 监听 `KillTagEvent` 事件获取击杀数据 |
+| **叙事系统 (Narrative System)** | 硬依赖 | 接收 `SanityRecoveryEvent`（理智恢复事件：埋葬受害者、找到家人、仁慈行为、悲剧解锁）|
 | Clue&Journal | 硬依赖 | 监听 `ClueDiscoveredEvent` 获取线索发现 |
 | Health&Lethality | 软依赖 | 监听 `PlayerDamaged` 事件获取受伤数据 |
 | 玩家控制器 | 软依赖 | 获取时间流逝，用于愤怒自然消散 |
@@ -371,20 +423,23 @@ else:
 | ScreenEffects | 硬依赖 | 发送视觉效果请求（暗角/噪点/饱和度/抖动） |
 | DynamicPostProcessing | 软依赖 | 发送心理状态枚举，供后处理着色器使用 |
 | 玩家控制器 | 软依赖 | 发送移动速度乘数 |
+| **主角背景角色系统 (Character Background)** | 硬依赖 | 接收 `SanityPenaltyMultiplier`（理智惩罚修正）和 `FrenzyThresholdModifier`（狂暴阈值调整），在计算理智惩罚和判定狂暴状态时应用 |
 
 ### 依赖关系矩阵
 
 ```
-GrittyTakedowns ──KillTagEvent──▶ ┌─────────────────────┐
-                              │                     │
-Clue&Journal ──ClueEvent───▶ │  Sanity/Rage Meter  │──VignetteRequest──▶ ScreenEffects
-                              │                     │──NoiseRequest──▶
-                              │                     │──SaturationRequest──▶
-                              └─────────────────────┘
-                                    │
-                                    │──ShakeRequest──▶ ScreenEffects
-                                    │──MovementSpeedMultiplier──▶ PlayerController
-                                    │──PsychologicalState──▶ DynamicPostProcessing
+GrittyTakedowns ──KillTagEvent──┐
+                                 │
+Clue&Journal ──ClueEvent──────▶ │  ┌─────────────────────┐
+                                 │  │                     │
+Narrative ──SanityRecoveryEvent─▶ │  │  Sanity/Rage Meter  │──VignetteRequest──▶ ScreenEffects
+         System ──────────────▶ │  │                     │──NoiseRequest──▶
+                                 │  │                     │──SaturationRequest──▶
+                                 │  └─────────────────────┘
+                                 │            │
+                                 │            │──ShakeRequest──▶ ScreenEffects
+                                 │            │──MovementSpeedMultiplier──▶ PlayerController
+                                 │            │──PsychologicalState──▶ DynamicPostProcessing
 ```
 
 ---
@@ -472,3 +527,5 @@ Clue&Journal ──ClueEvent───▶ │  Sanity/Rage Meter  │──Vignet
 | 日期 | 版本 | 修改内容 | 作者 |
 |------|------|---------|------|
 | 2026-04-07 | 0.1 | 初稿创建 | Systems Designer Agent |
+| 2026-04-10 | 0.2 | 设计审查修复：更新依赖矩阵，添加Narrative System的SanityRecoveryEvent监听说明；定义SanityRecoveryEvent完整数据结构；更新Section 3.3 Inputs表格，澄清Narrative System的理智恢复事件处理逻辑 | Claude Code |
+| 2026-04-10 | 0.3 | 设计审查修复：在公式4中集成 FrenzyThresholdModifier，计算 EffectiveFrenzyThreshold 替代硬编码阈值，使不同背景的狂暴触发时机符合设计预期 | Claude Code |

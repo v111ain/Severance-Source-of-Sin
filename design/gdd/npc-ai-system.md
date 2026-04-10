@@ -362,6 +362,20 @@ NPC AI 系统在 World State 发生转换时触发此事件，通知外部系统
 | `NPC_ID` | int | NPC 的唯一标识符 |
 | **返回值** | `List[String]` | NPC 掌握的线索 ID 列表，如 `["ID_仓库密码", "ID_接头人"]` |
 
+**`QueryOldAcquaintanceBonus(NPC_ID: int, player_background: BackgroundType) -> int`**
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `NPC_ID` | int | NPC 的唯一标识符 |
+| `player_background` | BackgroundType | 玩家当前背景类型（CIVILIAN/AGENT/MERCENARY） |
+| **返回值** | `int` | 旧识关系态度加成值（0 或对应枚举值，最高 +25） |
+
+> **接口说明**：此接口由 Character Background 系统实现，NPC AI 系统在计算 NPC 对玩家的初始态度时调用。
+> 返回值查表：
+> - `SAME_FACTION`（特工 + 锈网）：+25
+> - `MERCE_TO_MERCE`（雇佣兵 + 灰烬团）：+20
+> - `MERCE_EMPLOYER`（雇佣兵 + 凋亡议会）：+15
+> - 其他组合：无加成（返回 0）
+
 ## Formulas
 
 ### 公式1：allegiance 变化计算
@@ -776,6 +790,7 @@ EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
 | **沉重处决系统 (Gritty Takedowns)** | 查询接口 + 事件订阅 | 软依赖 | 提供 `QueryAlertState(NPC_ID)` 和 `QueryState(NPC_ID)`；订阅 `InteractionEvent`（威胁/击杀/捆绑等）触发 NPC 状态变化 |
 | **理智/愤怒系统 (Sanity/Rage)** | 数据发送 | 软依赖 | 接收被击杀 NPC 的 `Tag`（Enemy/Accomplice/Victim）以计算理智增减 |
 | **环境交互系统 (Environment Interaction)** | 事件接收 | 软依赖 | 接收环境交互触发的事件（如某扇门被打开），NPC 可能感知到并触发 SUSPECT |
+| **主角背景角色系统 (Character Background)** | 数据接收 | 硬依赖 | 接收 `AttitudeModifier`（NPC 对玩家的初始态度修正）和 `OldAcquaintanceBonus`（旧识关系枚举定义）用于计算 NPC 对玩家的初始态度 |
 
 ### 依赖关系矩阵
 

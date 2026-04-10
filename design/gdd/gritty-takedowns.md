@@ -14,6 +14,10 @@
 > - P1: `StaggerRecoveryThreshold` 安全范围补全（0.3 ~ 0.7）
 > - P1: `DeceptionBaseChance` 公式与 Tuning Knobs 关联明确化
 > - P2: `InteractionRange_Search` 默认值与安全范围统一
+> **2026-04-10 配合主角背景系统设计审查修复**：
+> - P0: 新增 `HasMetFaction[FACTION_ID]` 数据结构到下游依赖和本系统持有数据表
+> - P0: 新增 `KillSource` 和 `NPCIdentityType` 枚举定义到事件接口
+> - P1: 更新 `KillTagEvent` 负载同时携带 `NPCIdentityType` 和 `KillSource`
 
 ## Overview
 
@@ -420,6 +424,14 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 | **Clue & Journal 系统** | 软依赖 | 接收 `KnowledgeGainedEvent` 搜身/审问获取的线索 |
 | **Sanity/Rage 系统** | 软依赖 | 接收 `KillTagEvent` 击杀事件及 NPC 身份（异步后置） |
 | **沉浸式音频系统** | 软依赖 | 订阅 `InteractionEvent` 用于音效触发 |
+| **叙事系统 (Narrative System)** | 软依赖 | 接收 `KillTagEvent` 用于道德计算；接收 `TieUpEvent` 用于仁慈行为记录 |
+| **Character Background 系统** | 数据依赖 | 本系统持有并管理 `HasMetFaction[FACTION_ID]` flag，用于首次遭遇加成判定；Character Background 系统通过 `IFirstEncounterBonusProvider` 接口提供首次遭遇加成数据 |
+
+### 本系统持有的玩家状态数据
+
+| 数据结构 | 类型 | 说明 |
+|---------|------|------|
+| `HasMetFaction[FACTION_ID]` | bool | 标记玩家是否已与该派系发生过对峙/交互。首次遭遇时设为 `true`。用于 Character Background 系统首次遭遇加成计算。 |
 
 ### 核心事件接口
 
@@ -429,10 +441,26 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 |--------|------|------|------|
 | `InteractionEvent` | → 事件总线 → NPC AI/音频 | `{type, target_id, source, result}` | 所有交互的通用事件 |
 | `DamageRequest` | → Health 系统 | `{target_id, damage_type, penetration, source}` | 处决类交互的伤害请求；`penetration` 来自 WeaponData；`source` 来自 WeaponQueryResponse 的 `weapon_id` |
-| `KillTagEvent` | → Sanity 系统 | `{kill_tag: NPCIdentityType}` | 击杀事件（异步后置），携带被击杀NPC的身份标签 |
+| `KillTagEvent` | → Sanity 系统 | `{kill_tag: NPCIdentityType, kill_source: KillSource}` | 击杀事件（异步后置），携带被击杀NPC的身份标签和死亡方式。详见下方枚举定义 |
 | `KnowledgeGainedEvent` | → Clue 系统 | `{npc_id, knowledge_list}` | 搜身/审问获取的线索 |
 | `WeaponQueryRequest` | → 武器系统 | `{weapon_id}` | 环境处决前查询武器数据 |
 | `WeaponQueryResponse` | ← 武器系统 | `{weapon_id, WeaponData}` | 返回武器数据（含 damage_type、penetration、animation_tags）；`weapon_id` 用作 DamageRequest 的 `source` |
+
+**枚举定义**：
+
+| 枚举 | 值 | 说明 |
+|------|-----|------|
+| **NPCIdentityType** | `ENEMY` | 已标记为恶徒 |
+| | `ACCOMPLICE` | 已标记为帮凶 |
+| | `VICTIM` | 已标记为无辜者 |
+| | `UNKNOWN` | 未标记，击杀前未通过LOS监听确认身份 |
+| **KillSource** | `DIRECT_KILL` | 玩家直接攻击击杀 |
+| | `EXECUTION_KILL` | 环境处决 |
+| | `INDIRECT_KILL` | 玩家攻击导致倒地后环境致死 |
+| | `ACCIDENTAL_KILL` | 第三方NPC误杀 |
+| | `SELF_DEFENSE` | NPC自卫导致玩家死亡/NPC撤离 |
+
+> **KillSource 用途说明**：KillSource 用于追踪死亡责任，判断"收益丢失"等边缘情况。与 NPCIdentityType（用于理智惩罚计算）共同构成完整的击杀追踪体系。
 
 #### 本系统订阅的事件
 
@@ -488,6 +516,7 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 | LOS & Eavesdropping 系统 | 下游依赖：`玩家-NPC 交互系统`（身份标签查询） |
 | 环境交互系统 | 下游依赖：`玩家-NPC 交互系统`（物件效果调用） |
 | NPC AI 系统 | 上游依赖：本系统订阅其事件（解耦后） |
+| **叙事系统** | 下游依赖：`玩家-NPC 交互系统`（接收 KillTagEvent 和 TieUpEvent） |
 
 ## Tuning Knobs
 

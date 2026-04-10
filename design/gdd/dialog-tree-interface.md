@@ -53,7 +53,9 @@ JSON 格式（由策划编辑，NPC AI 系统反序列化）：
 {
   "dialogue_id": "string",
   "npc_id": "string",
+  "player_background": "enum (CIVILIAN/AGENT/MERCENARY)",
   "root_branch": "branch_id",
+  "variant_id": "string | null",
   "branches": {
     "branch_id": {
       "speaker": "string",
@@ -80,7 +82,9 @@ JSON 格式（由策划编辑，NPC AI 系统反序列化）：
 |------|------|------|
 | `dialogue_id` | string | 对话树唯一标识符 |
 | `npc_id` | string | 关联的 NPC ID |
+| `player_background` | enum | 玩家当前背景类型（CIVILIAN/AGENT/MERCENARY），用于 Gritty Takedowns 过滤不可用的对话选项（如旧识对话分支） |
 | `root_branch` | string | 起始分支 ID |
+| `variant_id` | string \| null | 当前变体 ID（MERCY/CRUEL/CALCULATING/CAUTIOUS），由 NPC AI 系统根据 `QueryDominantTrait()` 选择后填充，传递给 GrittyTakedowns 用于 UI 渲染 |
 | `branches` | object | 所有分支的字典 |
 | `speaker` | string | 说话者名称/ID |
 | `text` | string | 对话文本内容 |
@@ -121,13 +125,15 @@ JSON 格式（由策划编辑，NPC AI 系统反序列化）：
 │  Gritty Takedowns   │                              │    NPC AI System    │
 └──────────┬──────────┘                              └──────────┬──────────┘
            │                                                    │
-           │  1. ConfrontationStartRequest(npc_id)            │
+           │  1. ConfrontationStartRequest(npc_id, player_background) │
            │──────────────────────────────────────────────────►│
            │                                                    │
            │                                                    │  查询 DialogueTreeConfig
            │                                                    │  根据 npc_id 加载对应对话树
+           │                                                    │  根据 player_background 过滤旧识对话分支
            │                                                    │
            │  2. DialogueTreeConfig (JSON)                     │
+           │    （含 player_background 用于 UI 选项过滤）        │
            │◄──────────────────────────────────────────────────│
            │                                                    │
            │  3. 渲染对话 UI（显示 text + choices）              │
@@ -159,12 +165,18 @@ JSON 格式（由策划编辑，NPC AI 系统反序列化）：
 **步骤 1：发起对峙请求**
 
 ```
-ConfrontationStartRequest(npc_id: string) → Event
+ConfrontationStartRequest(npc_id: string, player_background: BackgroundType) → Event
 ```
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `npc_id` | string | 目标 NPC 的唯一标识符（与 NPC AI 系统中的 EntityID 一致） |
+| `player_background` | BackgroundType | 玩家当前背景类型（CIVILIAN/AGENT/MERCENARY），由 GrittyTakedowns 从 Character Background 系统获取，用于 NPC AI 系统过滤旧识对话分支 |
+
+> **BackgroundType 枚举定义**（来自 Character Background 系统）：
+> - `CIVILIAN`：普通人
+> - `AGENT`：特工
+> - `MERCENARY`：雇佣兵
 
 **触发条件**：
 - 玩家与 NPC 处于对峙距离（≤ 5 米）
@@ -185,7 +197,7 @@ DialogueTreeConfig → Event
 | `root_branch` | string | 起始分支 ID |
 | `branches` | object | 分支字典 |
 
-**数据来源**：NPC AI 系统根据 `npc_id` 查找对应的对话树 JSON 配置。
+**数据来源**：NPC AI 系统根据 `npc_id` 查找对应的对话树 JSON 配置，并根据 `player_background` 过滤旧识对话分支后返回。
 
 **步骤 3：渲染对话 UI**
 
@@ -193,6 +205,7 @@ Gritty Takedowns 系统负责：
 - 显示 NPC 台词气泡
 - 显示可用对话选项（2-4 个）
 - 选项根据 `requires_vulnerability` 过滤（未获取 vulnerability 时不显示）
+- 选项根据 `player_background` 过滤旧识对话选项（如特工专属的锈网旧识对话分支）
 
 **步骤 4：玩家选择**
 
@@ -327,6 +340,8 @@ DialogueResult {
 | 系统 | 接口类型 | 依赖性质 | 说明 |
 |------|---------|---------|------|
 | Gritty Takedowns | 事件发送 | 硬依赖 | 发送 `DialogueChoice`，接收 `DialogueResult`，渲染对话 UI |
+| **叙事系统 (Narrative System)** | 接口查询 | 硬依赖 | NPC AI 系统调用 `QueryDominantTrait()` 获取玩家主导特质，用于选择对话变体分支 |
+| **主角背景角色系统 (Character Background)** | 接口查询 | 硬依赖 | 接收 `BackgroundType`，用于判断对话选项的可见性和旧识对话分支的触发 |
 
 ### 依赖关系图
 
@@ -341,9 +356,46 @@ DialogueResult {
 │         │◄──── DialogueResult ◄──── DialogueChoice │            │
 │         │                                           │            │
 │         │◄──── InteractionEvent ◄──── (对话结束)   │            │
-│                                                              │
+│         │                                           │            │
+│         │◄── QueryDominantTrait() ─────────────────│            │
+│         │         (INarrativeMoralQuery 接口)              │
+│         │                                           │            │
+│         ▼                                           │            │
+│   ┌─────────────────────────────────────────┐      │            │
+│   │   叙事系统 (Narrative System)           │◄─────┘            │
+│   │   - Moral Profile                       │                   │
+│   │   - dominant_trait 计算                │                   │
+│   └─────────────────────────────────────────┘                   │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### dominant_trait 对话变体选择机制
+
+**概述**：DialogTree 系统通过 `INarrativeMoralQuery` 接口向叙事系统查询玩家的主导特质，用于在发起对话时选择正确的变体分支。
+
+**接口定义**（由叙事系统实现）：
+
+```csharp
+interface INarrativeMoralQuery {
+    MoralTrait QueryDominantTrait();     // 返回当前主导特质
+    int QueryMoralStanding();             // 返回当前道德立场值
+    bool QueryHasTrait(MoralTrait trait); // 检查是否具有特定特质
+}
+```
+
+**调用时机**：在 `ConfrontationStartRequest` 到达后、加载 `DialogueTreeConfig` 前，NPC AI 系统调用 `QueryDominantTrait()`。
+
+**流程**：
+
+| 步骤 | 执行者 | 动作 |
+|------|-------|------|
+| 1 | GrittyTakedowns | 发送 `ConfrontationStartRequest(npc_id)` |
+| 2 | NPC AI 系统 | 调用 `NarrativeSystem.QueryDominantTrait()` |
+| 3 | NPC AI 系统 | 根据 dominant_trait 选择对应分支，设置 `DialogueTreeConfig.variant_id` |
+| 4 | NPC AI 系统 | 返回 `DialogueTreeConfig`（包含变体信息） |
+| 5 | GrittyTakedowns | 渲染对话 UI，按 `variant_id` 显示对应变体 |
+
+**注意**：NPC AI 系统不直接访问叙事系统的内部状态，仅通过 `INarrativeMoralQuery` 接口查询。
 
 ### 循环依赖解决
 
@@ -451,3 +503,5 @@ AllegianceDelta = BaseChange * ContextMultiplier * RelationshipMultiplier
 | 日期 | 版本 | 修改内容 | 作者 |
 |------|------|---------|------|
 | 2026-04-08 | 0.1 | 初稿创建，定义 DialogTree 接口协议 | AI Programmer Agent |
+| 2026-04-10 | 0.2 | 设计审查修复：补充 dominant_trait 对话变体选择机制，添加 INarrativeMoralQuery 接口定义和调用流程说明；更新依赖关系图 | Claude Code |
+| 2026-04-10 | 0.3 | **P1修复**：DialogueTreeConfig 添加 variant_id 字段，解决与叙事系统的 variant_id 传递机制不一致问题 | Claude Code |

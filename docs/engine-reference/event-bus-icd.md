@@ -1,8 +1,8 @@
 # 接口控制文档：事件总线规范 (Event Bus ICD)
 
-> **版本**: 1.0.1
+> **版本**: 1.2.2
 > **创建日期**: 2026-04-07
-> **更新日期**: 2026-04-07
+> **更新日期**: 2026-04-10
 > **状态**: APPROVED - 已通过跨系统接口对齐会议确认
 > **基于**: 各系统 GDD 设计文档
 > **维护者**: 架构师 + 各系统设计者
@@ -86,10 +86,16 @@
 | 事件名称 | 拥有者 | 事件类型 | 说明 |
 |---------|-------|---------|------|
 | `PlayerDamagedEvent` | Health System | Health State | 玩家受到伤害 |
-| `NPCStateChangedEvent` | NPC AI System | Health State | NPC 状态变化（由 Health 触发，NPC AI 广播） |
+| `NPCStateChangedEvent` | Health System | Health State | NPC 状态变化（由 Health System 直接广播，NPC AI 消费） |
+| `ArmorDestroyedEvent` | Health System | Health State | NPC 护甲被破坏 |
+| `ExplosionAlertEvent` | Health System | Health State | 爆炸造成 NPC 死亡时的警报 |
+| `FriendlyFireExplosionEvent` | Health System | Health State | 友军误伤爆炸 |
 | `AlertStateChangedEvent` | NPC AI System | AI State | NPC 警觉状态变化 |
 | `PlayerSpottedEvent` | LOS System | Perception | 玩家被 NPC 发现 |
 | `KeywordCapturedEvent` | LOS System | Perception | 玩家捕获窃听关键词 |
+| `NPCIdentityConfirmedEvent` | LOS System | Perception | NPC 身份标签被确认 |
+| `PlayerMovementStateChangedEvent` | Player Controller | Player State | 玩家移动状态变化 |
+| `LightingStealthBonusChangedEvent` | Lighting System | World State | 阴影隐蔽加成变化 |
 | `InteractionEvent` | Gritty Takedowns | Gameplay | 玩家-NPC 交互通用事件 |
 | `DamageRequest` | Gritty Takedowns | Request | 伤害请求 |
 | `KillTagEvent` | Gritty Takedowns | Gameplay | 击杀标签（带 NPC 身份） |
@@ -107,6 +113,16 @@
 | `PsychologicalState` | Sanity/Rage | Event | 心理状态通知 |
 | `AudioHapticEvent` | Immersive Audio | Audio | 音频/震动事件触发确认 |
 | `AmbienceLayerChangedEvent` | Immersive Audio | Audio | 氛围音层变化 |
+| `SaveCompletedEvent` | Save System | Persistence | 存档完成事件 |
+| `LoadCompletedEvent` | Save System | Persistence | 加载完成事件 |
+| `SaveCorruptedEvent` | Save System | Persistence | 存档损坏事件 |
+| `PlayerJoinedEvent` | Network | Multiplayer | 玩家加入事件 |
+| `PlayerLeftEvent` | Network | Multiplayer | 玩家离开事件 |
+| `PlayerDisconnectedEvent` | Network | Multiplayer | 玩家断线事件 |
+| `PlayerReconnectedEvent` | Network | Multiplayer | 玩家重连成功事件 |
+| `ReconnectFailedEvent` | Network | Multiplayer | 重连失败事件 |
+| `ReconnectTimeoutEvent` | Network | Multiplayer | 重连超时事件 |
+| `HostMigrationStartedEvent` | Network | Multiplayer | Host 迁移开始事件 |
 
 ---
 
@@ -140,6 +156,43 @@ NPCStateChangedEvent:
     old_state: HealthState      // Healthy / Staggered / Downed / Dead
     new_state: HealthState
     damage_type: DamageType     // LETHAL / BLUNT / NONE（用于死亡）
+```
+
+#### ArmorDestroyedEvent
+
+**发送方**: Health System
+**订阅方**: VFX System, Audio System
+
+```csharp
+ArmorDestroyedEvent:
+    npc_id: int                 // NPC 实体 ID
+    position: Vector3          // 护甲破坏位置（用于视觉效果放置）
+```
+
+#### ExplosionAlertEvent
+
+**发送方**: Health System
+**订阅方**: NPC AI System, Audio System
+
+```csharp
+ExplosionAlertEvent:
+    position: Vector3          // 爆炸位置
+    radius: float             // 爆炸半径
+    victim_id: int            // 死亡 NPC 的 ID
+    killer_is_player: bool     // 凶手是否为玩家
+```
+
+#### FriendlyFireExplosionEvent
+
+**发送方**: Health System
+**订阅方**: Faction System, UI System
+
+```csharp
+FriendlyFireExplosionEvent:
+    victim_id: int            // 受害方 NPC ID
+    killer_id: int           // 攻击方 NPC ID（友军）
+    faction_relation: FactionRelation  // 派系关系
+    explosion_position: Vector3
 ```
 
 ---
@@ -196,6 +249,17 @@ KeywordCapturedEvent:
     location_id: string       // 当前位置 ID
     category: KeywordCategory // IDENTITY / LOCATION / RELATIONSHIP / ITEM / TRAGEDY
     capture_timestamp: float  // 捕获时间戳
+```
+
+#### NPCIdentityConfirmedEvent
+
+**发送方**: LOS System
+**订阅方**: NPC AI System, UI System
+
+```csharp
+NPCIdentityConfirmedEvent:
+    npc_id: int                    // NPC 实体 ID
+    identity_type: NPCIdentityType // ENEMY / ACCOMPLICE / VICTIM
 ```
 
 ---
@@ -336,6 +400,31 @@ NoiseEvent:
     duration: float          // 噪音持续时间（秒），默认 0.5s
     can_interrupt: bool      // 是否可被打断（默认 true）
     source_entity_id: int    // 产生噪音的实体 ID（玩家或其他）
+```
+
+#### PlayerMovementStateChangedEvent
+
+**发送方**: Player Controller
+**订阅方**: LOS System
+
+```csharp
+PlayerMovementStateChangedEvent:
+    old_state: PlayerMovementState  // IDLE / WALK / SPRINT / CROUCH / CROUCH_WALK / ACTION
+    new_state: PlayerMovementState
+```
+
+---
+
+### 5.8 Lighting System 事件
+
+#### LightingStealthBonusChangedEvent
+
+**发送方**: Lighting System
+**订阅方**: LOS System
+
+```csharp
+LightingStealthBonusChangedEvent:
+    exposure_multiplier: float  // 暴露值乘数（1.0 = 无加成，0.77 = 阴影中降低 23%）
 ```
 
 ---
@@ -586,25 +675,393 @@ enum ClueCategory:
 
 ---
 
-## 10. 修改日志
+## 10. 网络系统事件定义
+
+### 10.1 Save System 事件
+
+#### SaveCompletedEvent
+
+**发送方**: Save System
+**订阅方**: UI System
+
+```csharp
+SaveCompletedEvent:
+    slot_id: string          // 存档槽位 ID
+    is_auto_save: bool       // 是否为自动存档
+```
+
+#### SaveCorruptedEvent
+
+**发送方**: Save System
+**订阅方**: UI System
+
+```csharp
+SaveCorruptedEvent:
+    slot_id: string          // 损坏的存档槽位 ID
+    recovery_status: RecoveryStatus // SUCCESS / FAILED / NO_BACKUP
+```
+
+### 10.2 Network System 事件
+
+#### PlayerJoinedEvent
+
+**发送方**: Network
+**订阅方**: UI System, All Game Systems
+
+```csharp
+PlayerJoinedEvent:
+    player_id: int           // 玩家 ID
+    player_name: string     // 玩家名称
+    is_local: bool          // 是否为本地玩家
+```
+
+#### PlayerLeftEvent
+
+**发送方**: Network
+**订阅方**: UI System, All Game Systems
+
+```csharp
+PlayerLeftEvent:
+    player_id: int           // 离开的玩家 ID
+    reason: LeaveReason     // DISCONNECTED / KICKED / LEFT
+```
+
+#### PlayerDisconnectedEvent
+
+**发送方**: Network
+**订阅方**: UI System
+
+```csharp
+PlayerDisconnectedEvent:
+    player_id: int           // 断线的玩家 ID
+    reconnect_timeout: float // 重连超时时间（秒）
+```
+
+#### PlayerReconnectedEvent
+
+**发送方**: Network
+**订阅方**: UI System, All Game Systems
+
+```csharp
+PlayerReconnectedEvent:
+    player_id: int           // 重连成功的玩家 ID
+    reconnect_time: float    // 重连耗时（秒）
+```
+
+#### ReconnectFailedEvent
+
+**发送方**: Network
+**订阅方**: UI System
+
+```csharp
+ReconnectFailedEvent:
+    player_id: int           // 重连失败的玩家 ID
+    reason: string           // 失败原因
+```
+
+#### ReconnectTimeoutEvent
+
+**发送方**: Network
+**订阅方**: UI System
+
+```csharp
+ReconnectTimeoutEvent:
+    player_id: int           // 超时的玩家 ID
+    timeout_seconds: float   // 超时时间
+```
+
+#### HostMigrationStartedEvent
+
+**发送方**: Network
+**订阅方**: UI System, All Game Systems
+
+```csharp
+HostMigrationStartedEvent:
+    old_host_id: int         // 原 Host ID
+    new_host_id: int        // 新 Host ID
+    migration_duration: float // 预计迁移耗时
+```
+
+---
+
+## 11. World Map System 事件定义
+
+### 11.1 World Map System 事件所有权
+
+| 事件名称 | 拥有者 | 事件类型 | 说明 |
+|---------|-------|---------|------|
+| `LocationRevealedEvent` | Clue System | Narrative | 线索揭示新地点 |
+| `DiscoveryAnimationCompleteEvent` | UI System | UI | 揭示动画播放完毕 |
+| `AreaUnlockEvent` | Narrative System | World State | 解锁锁定地区 |
+| `AreaEnteredEvent` | World Map System | World State | 玩家进入地区 |
+| `AreaClearedEvent` | NPC AI System | World State | 地区内敌人全灭 |
+| `ThreatDissipatedEvent` | NPC AI System | World State | 危险区域威胁消散 |
+| `MapWaitingStartedEvent` | World Map System | UI | 玩家开始等待 |
+| `MapWaitingCancelledEvent` | World Map System | UI | 玩家取消等待 |
+| `LoadingScreenRequestEvent` | World Map System | System | 请求显示加载画面 |
+| `MapDisplayRequestEvent` | World Map System | UI | 请求显示世界地图 |
+| `AreaInfoRequestEvent` | World Map System | UI | 请求显示地区详情 |
+| `LoadCompletedEvent` | Loading Screen System | System | 加载完成，触发状态机转换 |
+| `CheckpointRestoreRequestEvent` | Checkpoint System | World State | 被捕后恢复请求 |
+
+---
+
+### 11.2 LocationRevealedEvent
+
+**发送方**: Clue System
+**订阅方**: World Map System, Save System
+
+```csharp
+LocationRevealedEvent:
+    location_id: string           // 新揭示的地点ID
+    source_clue_id: string        // 触发揭示的线索ID（可选）
+```
+
+---
+
+### 11.3 DiscoveryAnimationCompleteEvent
+
+**发送方**: UI System
+**订阅方**: World Map System
+
+```csharp
+DiscoveryAnimationCompleteEvent:
+    location_id: string           // 动画播放完毕的地点ID
+    was_interrupted: bool         // 是否被玩家中断
+```
+
+---
+
+### 11.4 AreaUnlockEvent
+
+**发送方**: Narrative System
+**订阅方**: World Map System
+
+```csharp
+AreaUnlockEvent:
+    area_id: string               // 被解锁的地区ID
+    unlock_condition: UnlockCondition  // 解锁条件类型
+```
+
+```csharp
+enum UnlockCondition:
+    STORY_PROGRESS    // 剧情进度解锁
+    ITEM_REQUIRED     // 需要持有特定道具
+    TIME_BASED        // 时间解锁（游戏天计数）
+```
+
+---
+
+### 11.5 AreaEnteredEvent
+
+**发送方**: World Map System
+**订阅方**: NPC AI System
+
+```csharp
+AreaEnteredEvent:
+    area_id: string               // 进入的地区ID
+    player_id: int                // 玩家实体ID
+```
+
+---
+
+### 11.6 AreaClearedEvent
+
+**发送方**: NPC AI System
+**订阅方**: World Map System
+
+```csharp
+AreaClearedEvent:
+    area_id: string               // 被清除的地区ID
+    enemy_count: int              // 本次清除的敌人数
+    is_full_clear: bool           // 是否为完全清除
+```
+
+---
+
+### 11.7 ThreatDissipatedEvent
+
+**发送方**: NPC AI System
+**订阅方**: World Map System, UI System
+
+```csharp
+ThreatDissipatedEvent:
+    area_id: string               // 威胁消散的地区ID
+    reason: DissipateReason       // 消散原因
+    wait_time_elapsed: float      // 实际等待时间
+```
+
+```csharp
+enum DissipateReason:
+    PROBABILITY_TRIGGER  // 概率触发（每次检测有 30% 概率消散）
+    MAX_WAIT_TIMEOUT     // 最大等待时间（30秒）超时后强制消散
+```
+
+---
+
+### 11.8 MapWaitingStartedEvent
+
+**发送方**: World Map System
+**订阅方**: UI System
+
+```csharp
+MapWaitingStartedEvent:
+    area_id: string               // 等待所在地区ID
+    max_wait_time: float          // 最大等待时间
+```
+
+---
+
+### 11.9 MapWaitingCancelledEvent
+
+**发送方**: World Map System
+**订阅方**: UI System
+
+```csharp
+MapWaitingCancelledEvent:
+    area_id: string               // 等待所在地区ID
+    reason: CancelReason          // 取消原因
+```
+
+```csharp
+enum CancelReason:
+    PLAYER_MOVED      // 玩家主动移动
+    PLAYER_ATTACKED   // 玩家被攻击
+    THREAT_ESCALATED  // 威胁升级
+```
+
+---
+
+### 11.10 LoadingScreenRequestEvent
+
+**发送方**: World Map System
+**订阅方**: Loading Screen System
+
+```csharp
+LoadingScreenRequestEvent:
+    destination: string           // 目标地区ID
+    destination_type: LocationType // 目标类型
+    source_location: string       // 来源位置ID
+```
+
+```csharp
+enum LocationType:
+    CITY        // 城市
+    AREA        // 地区
+    HIDDEN      // 隐藏地点
+    MAP         // 返回地图
+```
+
+---
+
+### 11.11 MapDisplayRequestEvent
+
+**发送方**: World Map System
+**订阅方**: UI System
+
+```csharp
+MapDisplayRequestEvent:
+    world_state: WorldDisplayState // 世界地图显示状态
+    highlighted_area: string      // 高亮显示的地区ID（可选）
+```
+
+```csharp
+class WorldDisplayState:
+    current_location: string       // 玩家当前位置
+    game_day_count: int           // 当前游戏天数
+    revealed_locations: List[string]  // 已揭示地点列表
+```
+
+---
+
+### 11.12 AreaInfoRequestEvent
+
+**发送方**: World Map System
+**订阅方**: UI System
+
+```csharp
+AreaInfoRequestEvent:
+    area_id: string               // 地区ID
+    include_enemy_info: bool     // 是否包含敌人密度信息
+```
+
+---
+
+### 11.13 CheckpointRestoreRequestEvent
+
+**发送方**: Checkpoint System
+**订阅方**: World Map System
+
+> **说明**：此事件由 CheckpointSystem（定义见 ADR-0009）发送，用于在被捕（ARRESTED）状态恢复时通知 World Map System。玩家被制服后，CheckpointSystem 记录检查点并发送此事件，World Map System 据此加载对应位置。
+
+```csharp
+CheckpointRestoreRequestEvent:
+    area_id: string               // 恢复目标地区ID
+    checkpoint_position: Vector3  // 检查点位置
+    arrest_location: Vector3     // 被捕位置（用于记录）
+```
+
+---
+
+### 11.14 LoadCompletedEvent
+
+**发送方**: Loading Screen System
+**订阅方**: World Map System
+
+> **说明**：`RETURNING_TO_MAP` 状态结束后，加载完成时由 Loading Screen System 发送此事件，通知 World Map System 将状态转换为 `MAP_MODE`。此事件替代原有的状态轮询机制，实现事件驱动的状态转换。
+
+```csharp
+LoadCompletedEvent:
+    destination: string           // 加载完成的目标位置ID
+    destination_type: LocationType // 目标位置类型（AREA/CITY）
+    was_successful: bool          // 加载是否成功
+```
+
+---
+
+### 11.15 LocationType 枚举
+
+```csharp
+public enum LocationType
+{
+    AREA,   // 地区级别
+    CITY    // 城市级别
+}
+```
+
+> **说明**：用于 `LoadingScreenRequestEvent` 和 `LoadCompletedEvent` 的 destination_type 字段，标识目标位置的地理层级。
+
+---
+
+## 12. 修改日志
 
 | 日期 | 版本 | 修改内容 | 作者 |
 |------|------|---------|------|
 | 2026-04-07 | 0.1 | 初稿创建 | 架构师 Agent |
 | 2026-04-07 | 1.0.1 | 通过跨系统接口对齐会议，确认所有事件命名规范并更新相关 GDD 文档 | 架构师 Agent |
+| 2026-04-10 | 1.1.0 | 补充新增事件定义：ArmorDestroyedEvent, ExplosionAlertEvent, FriendlyFireExplosionEvent, NPCIdentityConfirmedEvent, PlayerMovementStateChangedEvent, LightingStealthBonusChangedEvent；更新 NPCStateChangedEvent 所有权为 Health System | 架构师 Agent |
+| 2026-04-10 | 1.2.0 | 补充 World Map System 事件定义：LocationRevealedEvent, DiscoveryAnimationCompleteEvent, AreaUnlockEvent, AreaEnteredEvent, AreaClearedEvent, ThreatDissipatedEvent, MapWaitingStartedEvent, MapWaitingCancelledEvent, LoadingScreenRequestEvent, MapDisplayRequestEvent, AreaInfoRequestEvent | 架构师 Agent |
+| 2026-04-10 | 1.2.1 | 补充 CheckpointRestoreRequestEvent 事件定义，完善 World Map System 事件所有权表 | 架构师 Agent |
+| 2026-04-10 | 1.2.2 | 补充 DissipateReason 枚举完整定义（PROBABILITY_TRIGGER / MAX_WAIT_TIMEOUT） | 架构师 Agent |
+| 2026-04-10 | 1.2.3 | 新增 LoadCompletedEvent 和 LocationType 枚举，完善 World Map 状态转换触发机制 | 架构师 Agent |
 
 ---
 
-## 11. 待确认问题
+## 13. 待确认问题
 
 1. [x] `EnvironmentalEvent` 的 `EnvEventType` 枚举值 - ✅ 已定义
 2. [x] `KeywordCategory` 与 Clue System 的 `ClueCategory` - ✅ 已统一为 `ClueCategory`
 3. [ ] `InteractionEvent.type` 是否需要细分更多类型？ - 待确认
 4. [ ] `QueryNPCIdentity` 的 `confidence` 字段如何计算？ - 待确认
+5. [x] 网络系统事件定义 - ✅ 已添加（SaveCompletedEvent, PlayerDisconnectedEvent 等）
+6. [x] 存档系统事件定义 - ✅ 已添加（SaveCompletedEvent, SaveCorruptedEvent 等）
+7. [x] 新增 6 个跨 ADR 依赖事件定义 - ✅ 已补充
+8. [x] World Map System 事件定义 - ✅ 已添加（LocationRevealedEvent, AreaClearedEvent, CheckpointRestoreRequestEvent 等）
+9. [x] CheckpointRestoreRequestEvent - ✅ 已在 v1.2.1 中添加
 
 ---
 
-## 12. 参考文档
+## 13. 参考文档
 
 - `design/gdd/health-lethality.md`
 - `design/gdd/npc-ai-system.md`
@@ -615,3 +1072,5 @@ enum ClueCategory:
 - `design/gdd/sanity-rage-meter.md`
 - `design/gdd/immersive-audio-haptics.md`
 - `design/gdd/player-controller.md`
+- `docs/architecture/adr-0005-save-persistence-architecture.md` — 存档系统的技术架构
+- `docs/architecture/adr-0006-network-synchronization-architecture.md` — 网络同步的技术架构

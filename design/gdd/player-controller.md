@@ -152,16 +152,19 @@ RaycastResult:
 ## Tuning Knobs
 
 *   *这些参数将暴露给策划在 Unity Inspector 中直接调整，无需修改代码。*
-*   `BaseSpeed` (基础移速)
-*   `SprintMultiplier` (冲刺速度乘数)
-*   `CrouchMultiplier` (下蹲速度乘数)
-*   `MaxStamina` (最大体力值)
-*   `StaminaDrainRate` (冲刺时的体力消耗速率)
-*   `StaminaRegenRate` (体力恢复速率)
-*   `StaminaRegenDelay` (停止冲刺到开始恢复体力的延迟时间)
-*   `NoiseRadius_Walk` (行走时的噪音广播半径)
-*   `NoiseRadius_Sprint` (冲刺时的噪音广播半径)
-*   `NoiseRadius_Crouch` (潜行时的噪音广播半径，默认 0m，即静音)
+*   `BaseSpeed` (基础移速): **5.0 m/s**（安全范围: 3.0 - 8.0 m/s）
+*   `SprintMultiplier` (冲刺速度乘数): **1.6**（安全范围: 1.4 - 2.0）
+*   `CrouchMultiplier` (下蹲速度乘数): **0.5**（安全范围: 0.3 - 0.7）
+*   `MaxStamina` (最大体力值): **100**（安全范围: 50 - 200）
+*   `StaminaDrainRate` (冲刺时的体力消耗速率): **20/s**（安全范围: 10 - 40/s）
+*   `StaminaRegenRate` (体力恢复速率): **15/s**（安全范围: 10 - 30/s）
+*   `StaminaRegenDelay` (停止冲刺到开始恢复体力的延迟时间): **1.0 s**（安全范围: 0.5 - 2.0 s）
+*   `StaminaRegenPenaltyThreshold` (体力耗尽后恢复阈值): **30%**（安全范围: 20% - 50%）
+*   `NoiseRadius_Walk` (行走时的噪音广播半径): **3.0 m**（安全范围: 1.0 - 5.0 m）
+*   `NoiseRadius_Sprint` (冲刺时的噪音广播半径): **8.0 m**（安全范围: 5.0 - 15.0 m）
+*   `NoiseRadius_Crouch` (潜行时的噪音广播半径): **0.0 m**（静音）
+*   `RaycastLength` (射线检测长度): **2.0 m**（安全范围: 1.0 - 3.0 m）
+*   `RaycastConeAngle` (射线检测锥形角度): **60°**（安全范围: 30° - 90°）
 
 ## Visual/Audio Requirements
 

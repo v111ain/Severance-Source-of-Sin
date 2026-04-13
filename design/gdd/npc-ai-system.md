@@ -1,12 +1,15 @@
 # NPC AI系统 (NPC AI System)
 
-> **Status**: Approved (修订中)
+> **Status**: Approved
 > **Author**: [user + agents]
-> **Last Updated**: 2026-04-08
+> **Last Updated**: 2026-04-11
 > **Implements Pillar**: 致命的脆弱感 (Lethal Fragility)
 > **Revision Notes**: 根据团队评审进行全面修订。OQ-4、OQ-5 已解决；AC-19/20/24 移至 Alpha 阶段；修复多处一致性和完整性问题。
 >
 > **修订历史**：
+> - **2026-04-11** 苍白之手 BaseAllegiance 确认：
+>   - ✅ 确认 `BaseAllegiance_苍白之手 = -20`（由 Character Background 系统反向验证计算确认）
+>   - ✅ 在 Dependencies 下游依赖表中添加苍白之手 BaseAllegiance 确认说明
 > - **2026-04-08** 团队评审修订：
 >   - ✅ OQ-4 已解决：vulnerability 通过搜身/审问获取
 >   - ✅ OQ-5 已解决：NPC 唤醒后行为脚本（MVP 简化版）
@@ -791,6 +794,16 @@ EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
 | **理智/愤怒系统 (Sanity/Rage)** | 数据发送 | 软依赖 | 接收被击杀 NPC 的 `Tag`（Enemy/Accomplice/Victim）以计算理智增减 |
 | **环境交互系统 (Environment Interaction)** | 事件接收 | 软依赖 | 接收环境交互触发的事件（如某扇门被打开），NPC 可能感知到并触发 SUSPECT |
 | **主角背景角色系统 (Character Background)** | 数据接收 | 硬依赖 | 接收 `AttitudeModifier`（NPC 对玩家的初始态度修正）和 `OldAcquaintanceBonus`（旧识关系枚举定义）用于计算 NPC 对玩家的初始态度 |
+
+> **苍白之手 (The Pale Hand) BaseAllegiance 确认**：
+> 根据 Character Background 系统的反向验证计算（character-background.md Section 3 公式3），苍白之手对玩家的 `BaseAllegiance = -20`。
+> 验证计算：表2.1中特工 vs 苍白之手 = -10
+> - 公式3（NPC AI System内部计算）：`-10 = BaseAllegiance + AttitudeModifier_Agent(+15) + FactionModifier_苍白之手(-5) + OldAcquaintanceBonus(0)`
+> - 解得：`BaseAllegiance_苍白之手 = -20`
+>
+> ⚠️ **说明**：Character Background 系统引入了 BackgroundAdjustment 机制处理部分组合的计算差异，但 NPC AI System 的 `BaseAllegiance` 和 `FactionModifier` 值（苍白之手：-20 和 -5）保持不变。Character Background 提供的 BackgroundAdjustment 仅用于本系统内部的公式验证，不影响 NPC AI System 的态度计算。
+>
+> ✅ **已确认**：`BaseAllegiance_苍白之手 = -20`，`FactionModifier_苍白之手 = -5`
 
 ### 依赖关系矩阵
 

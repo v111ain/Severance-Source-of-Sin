@@ -2,8 +2,59 @@
 
 > **Status**: Approved
 > **Author**: Narrative Director
-> **Last Updated**: 2026-04-10
-> **Revision Notes**: 2026-04-10 v1.0 设计审查修复后再次审查修复：P1-统一Section 3.1与Section 4.1的moral_standing引用关系；P1-修复dominant_trait判定公式变量名不一致；P1-添加AC-8b验收mercy_count软上限；P2-补充旁观者路线边界条件；P2-Section 4.1添加"影响的系统"列；P2-补充content_path路径格式约定
+> **Last Updated**: 2026-04-12
+> **Revision Notes**: 2026-04-12 v1.14 设计评审修复（P1/P2问题）：
+> - **P1**: Section 6.4 BetrayalEvent 补充完整生命周期说明（设置时机、清除时机、持久化策略、重复触发保护）
+> - **P2**: Section 4.4 CalculateDominantTrait 补充形式化条件优先级表，与伪代码并列，便于程序员实现
+>
+> 2026-04-12 v1.13 设计评审修复（P0/P1问题）：
+> - **P0**: Section 6.3 修正 KillTagEvent 来源描述，明确由 GrittyTakedowns 直接发送至 Sanity/Rage（不经过本系统中转）
+> - **P0**: Section 6.2 修正上游依赖方向标注，LOS System/GrittyTakedowns/Clue&Journal 均为"数据来源"而非"接收方"
+> - **P1**: Section 4.1 表格标注 -5/-3/-2 来自 Sanity/Rage 系统（ClueDiscoveredEvent.discovery_stage）
+> - **P1**: Section 3.4.4 新增 ICriticalClueCountProvider 接口定义（QueryCriticalClueCount 方法）
+> - **P1**: Section 6.4 新增 BetrayalEvent 数据结构定义
+>
+> 2026-04-12 v1.12 设计评审修复（P0问题）：
+> - **P0**: Section 4.1 击杀 Accomplice 的 Sanity 惩罚从 -5 修正为 -8，与 sanity-rage-meter.md Section 3.1 定义保持一致
+>
+> 2026-04-12 v1.11 设计评审修复（P1问题）：
+> - **P1**: Section 3.6.3 `MoralTrackingUI` 结构体字段统一：`accidental_kills` → `victim_kill_count`，与 Section 3.1 核心数据结构保持一致
+
+> 2026-04-12 v1.10 设计评审修复（P1问题）：
+> - **P1**: Section 4.4 清理 `accidental_kill_count` 残留注释（与 `victim_kill_count` 语义统一）
+
+> 2026-04-12 v1.9 设计评审修复（P1问题）：
+> - **P1**: Section 4.1 表格格式修复：发现悲剧线索行的 Sanity 参数格式明确为"Sanity: -5/-3/-2 (首次/后续/深度)"，避免与 moral_standing 变化值混淆
+> - **P1**: Section 4.5 mercy_count 软上限与 dominant_trait 判定边界澄清：增加 dominant_trait 计算说明，明确使用原始 mercy_count 而非 effective_mercy_count
+
+> 2026-04-11 v1.8 设计评审修复（P1/P2问题）：
+> - **P2**: 修复 Section 3.4.1 模块路径格式统一说明（SKILL_ORIGIN vs SKILL 命名一致性）
+> - **P2**: Section 4.1 表格补充 Sanity 系统影响说明（击杀事件同时影响 moral_standing 和 Sanity）
+> - **P2**: AC-3/AC-3b 描述区分（AC-3 为无悲剧解锁时基础惩罚，AC-3b 为有悲剧解锁时最终惩罚）
+> - **P2**: Section 4.3 表格语义澄清（"1.0（无加成）"改为"无模块加成"避免歧义）
+
+> 2026-04-11 v1.7 设计评审修复（P0问题）：
+> - **P0**: 修复 Section 4.3 表格"发现悲剧真相"行计算错误（最终值从 1.2 修正为 5 × 1.2 = 6）
+> - **P0**: 修复 Section 4.2 BaseSanityPenalty 章节引用路径（改为 Section 3.1，第88-90行附近）
+>
+> 2026-04-11 v1.6 设计评审修复：
+> - **P0**: 修复 Section 3.3 中 `accidental_kill_count >= 5` 遗留引用，统一为 `victim_kill_count >= 5`
+> - **P1**: 新增 AC-3b 验证击杀Victim时 moral_standing 最终变化值（-18，包含 StoryRevelationBonus）
+> - **P1**: 补充 Section 3.4.4 TRAUMA_03 触发条件详细说明（BETRAYAL_EVENT 由 GrittyTakedowns 在对话中选择"背叛"选项时设置）
+> - **P1**: 补充 Section 3.4.4 TRUTH_02 触发条件详细说明（CLUE_COUNT >= 5 由 Clue&Journal 系统累计 CRITICAL=true 线索）
+> - 2026-04-11 v1.5 设计审查二轮修复：
+> - **P0**: 统一 Section 6.3 Sanity/Rage 依赖描述为"单向依赖（事件发送）"，与 Section 6.1 矩阵图一致
+> - **P1**: 删除 `accidental_kill_count` 字段（与 `victim_kill_count` 语义重复，统一使用后者）
+> - **P1**: 修复 Section 4.3 两处 `mortal_standing` 拼写错误（修正为 `moral_standing`）
+> - **P2**: 新增 Section 3.5.2.1 六种结局判定优先级及冲突处理规则
+> - **P2**: 新增 Section 3.6.1 对话变体选择逻辑及多条件满足时的优先级（CRUEL > MERCY > CALCULATING > CAUTIOUS）
+> - 2026-04-11 v1.4 修复审查发现问题：
+- **P0**: 明确 UNKNOWN 击杀不应用 StoryRevelationBonus（-50 为最终值）
+- **P1**: 更新 Section 6.1 依赖矩阵图，明确 Narrative → Sanity/Rage 单向事件流
+- **P1**: 统一"灵魂分裂"状态定义，与 sanity-rage-meter.md Section 3.2 对齐
+- **P2**: 明确连续误杀使用 `victim_kill_count`，无时间窗口限制
+- **P2**: 修复 AC-32b 公式引用（移除已删除的 ModuleBonus）
+- 2026-04-11 v1.3 修复审查发现问题：P0-1-补充Section 4.1击杀Victim行说明（最终moral_standing变化为-18）；P0-2-修正Section 6.3 Sanity/Rage依赖描述为"单向依赖+事件监听"；P1-1-修正Section 4.2数值用途对照表引用路径（移除对不存在的Section 7.2子节的引用）；P1-2-补充Section 3.4.4 TRAUMA_03和TRUTH_02前置条件的具体触发事件定义；P2-1-补充"灵魂分裂"特殊状态的效果描述（待Game Designer确认）；P2-2-澄清Section 4.5 mercy_count软上限在kill_count=0时的边界行为；2026-04-11 v1.2 修复 P0 问题：澄清 Section 4.2 BaseSanityPenalty 数据流（-15 来自 Sanity/Rage 系统内部定义，而非由 GrittyTakedowns 传递）；2026-04-11 v1.1 修复设计审查发现的问题：P0-1-修正Section 4.2 StoryRevelationBonus数值来源（+7独立定义并与Section 4.1/Section 4.2对照表统一）；P0-1-补充Section 4.1表格中击杀Victim时的StoryRevelationBonus（+7）说明；P0-2-澄清Section 4.2 BaseSanityPenalty数据流（GrittyTakedowns→KillTagEvent路径）；P0-2-修正Section 6.3 Sanity/Rage依赖为双向硬依赖；P1-1-统一Section 4.3公式命名（移除ModuleBonus，RedemptionMultiplier合并行为类型×模块加成）；P1-2-修正Section 6.2 Character Background从硬依赖改为软依赖（仅影响SKILL模块）；P2-1-补充Section 4.5 mercy_count软上限在kill_count=0时的边界行为说明；P2-2-补充AC-8b具体测试步骤
 > **Priority**: Vertical Slice
 > **Layer**: Narrative
 > **Implements Pillar**: 罪恶的深度 (Depth of Sin), 致命的脆弱感 (Lethal Fragility), 沉重、不洁的暴力 (Gritty Violence)
@@ -111,12 +162,11 @@ struct MoralProfile {
     // 核心计数
     int mercy_count;           // 仁慈次数（放过/捆绑NPC）
     int kill_count;             // 击杀总数
-    int accidental_kill_count; // 误杀次数（击杀无辜者）
+    int victim_kill_count;      // 误杀次数（击杀无辜者）
 
     // 分类计数
     int enemy_kill_count;       // 击杀恶徒
     int accomplice_kill_count;  // 击杀帮凶
-    int victim_kill_count;      // 击杀无辜者
 
     // 道德值
     int moral_standing;         // 道德立场值 (-100 ~ +100)
@@ -133,9 +183,9 @@ struct MoralProfile {
 
 enum MoralTrait {
     DOMINANT_MERCY,      // 仁慈主导：mercy_count显著高于kill_count
-    DOMINANT_CRUELTY,    // 残暴主导：kill_count >> mercy_count，且victim_kill > 0
-    DOMINANT_CALCULATING,// 计算主导：kills高但accidental_kill极低
-    DOMINANT_CAUTIOUS    // 谨慎主导：mercy_count接近kill_count，accidental_kill为0
+    DOMINANT_CRUELTY,    // 残暴主导：kill_count >> mercy_count，且victim_kill_count > 0
+    DOMINANT_CALCULATING,// 计算主导：kills高但victim_kill_count极低
+    DOMINANT_CAUTIOUS    // 谨慎主导：mercy_count接近kill_count，victim_kill_count为0
 }
 ```
 
@@ -228,7 +278,7 @@ else:
 | moral_standing | -100 ~ +100 | — | 超出部分截断 |
 | mercy_count | 无硬上限 | kill_count * 3 | 统计用；软上限用于对话变体判定 |
 | kill_count | 无上限 | — | 统计用 |
-| accidental_kill_count | 无上限 | — | 触发特殊标记 |
+| victim_kill_count | 无上限 | — | 触发特殊标记 |
 | unlocked_tragedies | 最多20个 | — | 防止内存溢出 |
 
 **mercy_count 软上限说明**：当 mercy_count > kill_count * 3 时，额外的仁慈行为不再提供道德奖励，但仍计入统计。这防止玩家通过大量捆绑行为刷道德值，同时保持系统的真实性。
@@ -245,7 +295,7 @@ else:
 | moral_standing < -50 | NPC对话变体解锁：恐惧路线 |
 | moral_standing > +50 | NPC对话变体解锁：希望路线 |
 | victim_kill_count >= 3 | 特殊标记"杀手"，部分NPC会求饶或反抗 |
-| accidental_kill_count >= 5 | 触发"连环误杀"特殊事件链 |
+| victim_kill_count >= 5 | 触发"连环误杀"特殊事件链 |
 
 ### 3.4 角色背景模块系统
 
@@ -279,6 +329,12 @@ else:
 | SKILL_03 | 雇佣兵往事 | 选择Mercenary背景 | 杀人赚钱的道德堕落 |
 
 > ⚠️ **互斥说明**：SKILL_01/02/03 互斥解锁——三者是同一角色的三种背景出身路线。玩家只能选择一种背景，因此最多解锁其中1个模块（而非3个）。这是设计意图，确保技能来源与角色背景一致。
+
+> **路径格式统一说明**：模块内容路径使用 `Assets/Narrative/Modules/{Category}/{ModuleID}.{ext}`，其中 `{Category}` 应与模块分类代码标识一致：
+> - `TRAUMA` → `Assets/Narrative/Modules/TRAUMA/TRAUMA_01.asset`
+> - `SKILL_ORIGIN` → `Assets/Narrative/Modules/SKILL_ORIGIN/SKILL_01.asset`
+> - `RELATIONSHIP` → `Assets/Narrative/Modules/RELATIONSHIP/REL_01.asset`
+> - `HIDDEN_TRUTH` → `Assets/Narrative/Modules/HIDDEN_TRUTH/TRUTH_01.asset`
 
 > ⚠️ **依赖说明**：SKILL 系列模块依赖 Character Background System 的 `BackgroundType` 接口。当前 `BackgroundType` 已在 `character-background.md` 中定义并传递给各系统，接口已就绪。模块解锁由背景系统通过 `INarrativeModuleQuery` 接口查询并触发解锁事件。
 
@@ -326,6 +382,13 @@ else:
 TRAUMA_01   │ 无            │ 无           │ 无            │ 无
 TRAUMA_02   │ -             │ -            │ Chapter 2     │ -
 TRAUMA_03   │ -             │ -            │ 发现背叛事件  │ -
+            │               │              │ 触发条件：     │ -
+            │               │              │ LOS System    │ -
+            │               │              │ 发现NPC身份   │ -
+            │               │              │ 为"锈网线人"  │ -
+            │               │              │ 并在对话中   │ -
+            │               │              │ 选择"背叛"   │ -
+            │               │              │ 选项          │ -
 SKILL_01    │ Agent背景     │ -            │ -             │ -
 SKILL_02    │ Civilian背景  │ -            │ -             │ -
 SKILL_03    │ Mercenary背景 │ -            │ -             │ -
@@ -334,10 +397,52 @@ REL_02      │ mercy>=5      │ -            │ -             │ -
 REL_03      │ -             │ -            │ Chapter 3     │ -
 TRUTH_01    │ -             │ moral<-30    │ -             │ -
 TRUTH_02    │ -             │ 5个关键线索   │ -             │ -
+            │               │ 触发条件：    │               │ -
+            │               │ Clue&Journal │               │ -
+            │               │ 系统标记     │               │ -
+            │               │ CRITICAL=true│               │ -
+            │               │ 的线索数量   │               │ -
+            │               │ >=5          │               │ -
 TRUTH_03    │ -             │ -            │ 最终章        │ -
 
 注：SKILL 系列模块的前置条件"背景选择"通过 Character Background System 的 BackgroundType 接口实现，
     当玩家选择对应背景时自动触发模块解锁事件，无需额外条件判断。
+
+**TRAUMA_03 触发条件详细说明**：
+- 触发事件：LOS System 在玩家通过监听/DialogTree 发现 NPC 身份为"锈网线人"后
+- 设置时机：当玩家在对话中选择包含"背叛"语义的选项时（如"你背叛了我"），GrittyTakedowns 系统设置 `BETRAYAL_EVENT = true`
+- 后续处理：Narrative 系统订阅 `BETRAYAL_EVENT` 事件，满足条件后触发 TRAUMA_03 解锁
+
+**TRUTH_02 触发条件详细说明**：
+- 触发事件：Clue&Journal 系统在每次玩家收集到新线索时检查 `CRITICAL` flag
+- 设置时机：当 LOS System 或 Narrative System 根据剧情进展标记某条线索为关键线索时（`CRITICAL = true`），Clue&Journal 系统累计计数
+- 计数逻辑：每当玩家发现一条 `CRITICAL=true` 的线索，`CLUE_COUNT` +1；当 `CLUE_COUNT >= 5` 时，触发 TRUTH_02 解锁检查
+- **CRITICAL flag 设置规则**（由 LOS System 负责）：
+  - LOS System 在监听对话过程中提取到关键词后，根据关键词的重要性判断是否标记为关键线索
+  - 关键词类型映射：
+    - 涉及核心剧情（女儿位置、犯罪网络结构）：必定标记为 `CRITICAL=true`
+    - 涉及 NPC 身份信息：默认标记为 `CRITICAL=true`
+    - 涉及派系关系、地理位置等辅助信息：由内容团队在 `clue-and-journal.md` 中定义标记规则
+- 依赖接口：Clue&Journal 系统需调用 `LOSSystem.IsCriticalKeyword(keyword)` 接口查询关键词是否为关键类型
+
+**CLUE_COUNT 接口定义**：
+
+> **⚠️ 接口归属说明**：以下 `ICriticalClueCountProvider` 接口定义于 **clue-and-journal.md**（接口实现方），本文档仅提供接口引用说明。
+
+```csharp
+// 定义位置：clue-and-journal.md
+interface ICriticalClueCountProvider {
+    /// <summary>
+    /// 返回当前 CRITICAL=true 的线索累计数量
+    /// </summary>
+    int QueryCriticalClueCount();
+}
+```
+
+> **接口归属澄清**：
+> - `ICriticalClueCountProvider` 接口的**定义**位于 clue-and-journal.md
+> - `ICriticalClueCountProvider` 接口的**实现**由 Clue&Journal 系统提供
+> - Narrative 系统在 TRUTH_02 解锁检查时调用此接口获取当前累计的关键线索数量
 ```
 
 #### 3.4.5 模块内容结构
@@ -585,6 +690,17 @@ NPC们的命运：
 | mercy_count = 0 | 玩家未执行任何仁慈行为（捆绑、转化等） |
 | dominant_trait = DOMINANT_CAUTIOUS | 由零行为公式计算得出 |
 
+**旁观者路线与游戏支柱的对应说明**：
+
+> **设计意图澄清**：旁观者路线是刻意为"纯信息收集型"玩家设计的完整游玩路径，与"沉重的脆弱感"和"致命的不确定性"支柱并不冲突。
+>
+> **支柱对应分析**：
+> - **沉重的脆弱感**：旁观者路线并不意味着"安全"——玩家虽然不直接参与暴力，但仍需在高风险环境中潜行，任何判断失误都可能导致路线失败
+> - **致命的不确定性**：旁观者必须在没有直接干预能力的情况下做出决策——是否放过某个NPC、是否介入某个冲突，这种"无力感"本身就是不确定性的体现
+> - **环境即武器**：旁观者更依赖环境（掩体、噪音、视线盲区）来完成任务，与战斗型玩家使用武器的逻辑相同，只是工具不同
+>
+> **叙事定位**：旁观者路线代表了"判决者"原型的另一种诠释——不是通过暴力执行判决，而是通过信息收集做出判断并交由第三方（警方）执行。这种路线的代价是：玩家无法控制结局的具体走向（凶手是否真正落网、女儿是否获救），这种"失控感"本身就是一种沉重的叙事体验。
+
 **旁观者路线的叙事特征**：
 
 | 阶段 | 玩家行为限制 | 叙事体验 |
@@ -613,6 +729,23 @@ NPC们的命运：
 道德评价：moral_standing = 0（中立），但这不是"平静结局"——
 而是一个关于无力感和选择代价的故事。
 ```
+
+#### 3.5.2.1 结局判定优先级
+
+六种结局的判定按以下优先级顺序执行：
+
+| 优先级 | 结局 | 触发条件 | 说明 |
+|:------:|------|---------|------|
+| 1（最高） | 旁观者结局 | `kill_count == 0 AND mercy_count == 0` | 零行为玩家专属，无论 moral_standing 和 dominant_trait 为何值 |
+| 2 | 救赎结局 | `moral_standing > +50 AND dominant_trait == DOMINANT_MERCY` | 需要同时满足道德值和主导特质 |
+| 3 | 正义结局 | `moral_standing > +30 AND dominant_trait == DOMINANT_CALCULATING` | 精确审判路线 |
+| 4 | 毁灭结局 | `moral_standing < -50 AND dominant_trait == DOMINANT_CRUELTY` | 暴力失控路线 |
+| 5 | 扭曲结局 | `moral_standing < -30 AND dominant_trait == DOMINANT_CALCULATING` | 计算型暴君路线 |
+| 6（兜底） | 平静结局 | 以上均不满足 | 默认结局 |
+
+> **判定时机**：结局判定在最终章（Chapter 6）最终节点（NODE_15）触发时执行，此时玩家的所有行为数据（kill_count、mercy_count、victim_kill_count）已固定。
+>
+> **冲突处理**：当多个条件同时满足时（如 moral_standing > +50 但 dominant_trait != DOMINANT_MERCY），按上表优先级选择排名靠前的结局。
 
 #### 3.5.3 节点前置条件设计
 
@@ -723,6 +856,38 @@ GrittyTakedowns 渲染对话 UI（按 `variant_id` 过滤并显示可用分支�
 - 对话变体选择在 NPC AI 系统侧完成（而非 GrittyTakedowns 侧），确保 DialogTree 数据封装
 - GrittyTakedowns 仅持有 `DialogueTreeConfig` 的临时副本用于渲染，**不持久化存储**对话树数据
 
+**对话变体选择逻辑**：
+
+对话变体选择遵循两个独立概念：**trait→变体直接映射**和**多条件冲突时的优先级**。
+
+**1. trait→变体直接映射**：
+
+`MoralTrait` 枚举值与对话变体类型直接一一对应：
+
+| MoralTrait 枚举值 | 对应变体类型 | 触发条件 |
+|------------------|------------|---------|
+| `DOMINANT_MERCY` | MERCY | mercy_count > kill_count × 1.5 |
+| `DOMINANT_CRUELTY` | CRUEL | victim_kill_count > 0 且 kill_count > mercy_count × 2 |
+| `DOMINANT_CALCULATING` | CALCULATING | kill_count > 10 且 victim_kill_count ≤ 2 |
+| `DOMINANT_CAUTIOUS` | CAUTIOUS | mercy_count ≈ kill_count 且 victim_kill_count = 0 |
+
+**2. 多条件冲突时的优先级选择**：
+
+当玩家同时满足多个 `dominant_trait` 条件时（如 `DOMINANT_MERCY` 和 `DOMINANT_CAUTIOUS` 同时满足），按以下优先级选择最终变体：
+
+| 优先级 | 变体类型 | 说明 |
+|:------:|---------|------|
+| 1（最高） | CRUEL | 极端残暴行为优先，确保最明显的后果有最直接的反馈 |
+| 2 | MERCY | 高仁慈行为 |
+| 3 | CALCULATING | 计算型行为 |
+| 4（最低） | CAUTIOUS | 谨慎平衡行为 |
+
+> **语义区分说明**：
+> - **映射表**（上方）定义的是：当 `dominant_trait` 被判定为某个值后，应该选择哪个对话变体
+> - **优先级表**（下方）定义的是：当多个条件同时满足导致 `dominant_trait` 可能有多个候选值时，应该选择哪个作为最终值
+>
+> **实现方式**：NPC AI 系统在调用 `QueryDominantTrait()` 获取 dominant_trait 后，直接根据映射表选择对应变体。若 dominant_trait 为 DOMINANT_CAUTIOUS，则选择 CAUTIOUS 变体。若 dominant_trait 为 DOMINANT_CRUELTY，则选择 CRUEL 变体。优先级表用于解决 `CalculateDominantTrait()` 函数内部多个条件同时满足时的判定问题。
+
 #### 3.6.2 四种对话变体类型
 
 | 变体类型 | 触发条件 | 叙事效果 | 示例 |
@@ -746,12 +911,12 @@ GrittyTakedowns 渲染对话 UI（按 `variant_id` 过滤并显示可用分支�
 struct MoralTrackingUI {
     int total_kills;           // 击杀总数
     int mercy_acts;            // 仁慈行为数
-    int accidental_kills;      // 误杀数
+    int victim_kill_count;    // 误杀数
     MoralTrait current_trait;  // 当前主导特质
     int moral_standing;        // 道德立场值
 
     // UI显示优先级：
-    // 1. 如果accidental_kills > 0，显示误杀警告
+    // 1. 如果victim_kill_count > 0，显示误杀警告
     // 2. 如果有新的tragedy unlocked，显示"故事解锁"提示
     // 3. 如果dominant_trait变化，显示特质变化通知
 }
@@ -769,15 +934,15 @@ moral_standing_new = Clamp(moral_standing_old + EventDelta, -100, 100)
 
 | 事件 | EventDelta | 影响的系统 | 公式说明 |
 |------|------------|-----------|---------|
-| 击杀Enemy | +5 | moral_standing | 正义执行 |
-| 击杀Accomplice | -10 | moral_standing | 道德失误 |
-| 击杀Victim | -25 | moral_standing + victim_kill_count | 严重错误 |
-| 击杀Unknown | -50 | moral_standing + 悲剧解锁 | 盲目暴力（在未确认身份情况下击杀，严重违反LOS系统设计意图） |
+| 击杀Enemy | +5 | moral_standing, **Sanity -5** | 正义执行；Sanity 惩罚来自杀戮的心理代价（见 Section 3.1 分离设计） |
+| 击杀Accomplice | -10 | moral_standing, **Sanity -8** | 道德失误；Sanity 惩罚来自杀戮的心理代价（见 Section 3.1 分离设计） |
+| 击杀Victim | -25 (+7 StoryRevelationBonus) | moral_standing + victim_kill_count + 悲剧解锁, **Sanity -15** | 严重错误；最终 moral_standing 变化为 -18（-25 基础惩罚 +7 故事揭示救赎）；Sanity 惩罚为 -15（误杀的悲剧冲击，见 Section 3.1 分离设计） |
+| 击杀Unknown | -50 | moral_standing + 悲剧解锁, **Sanity -20** | 盲目暴力（在未确认身份情况下击杀，严重违反LOS系统设计意图）；Sanity 惩罚最重 |
 | 捆绑NPC | +3 | moral_standing + mercy_count | 仁慈选择 |
 | 转化线人 | +8 | moral_standing | 正向干预 |
-| 发现悲剧线索 | +2 | moral_standing | 共情理解（仅首次发现有效） |
-| 埋葬受害者 | +10 | moral_standing + sanity恢复 | 给予尊严 |
-| 找到家人 | +15 | moral_standing + sanity恢复 | 救赎行为 |
+| 发现悲剧线索 | +2 | moral_standing (仅首次), **Sanity: -5/-3/-2 (首次/后续/深度，由 Sanity/Rage 系统根据 `ClueDiscoveredEvent.discovery_stage` 计算)** | 共情理解（仅首次发现有效）；Sanity 惩罚递减（见 Section 4.2）。**格式说明**：+2 为 moral_standing 变化值，-5/-3/-2 为 Sanity/Rage 系统参数（首次/后续/深度递减），两者分别作用于不同系统 |
+| 埋葬受害者 | +10 | moral_standing + **Sanity恢复** | 给予尊严；触发理智恢复事件 |
+| 找到家人 | +15 | moral_standing + **Sanity恢复** | 救赎行为；触发理智恢复事件 |
 
 ### 4.2 悲剧揭示计算（后果层核心公式）
 
@@ -791,8 +956,9 @@ moral_standing_new = Clamp(moral_standing_old + EventDelta, -100, 100)
 | 数值 | 使用位置 | 作用于 | 含义 | 触发场景 |
 |------|---------|-------|------|---------|
 | `+2` | Section 4.1 表格 | moral_standing | 主动发现悲剧线索的**道德奖励** | 玩家通过监听/审问/搜身等主动行为发现NPC的悲剧背景 |
+| `+7` | Section 4.2 公式 | moral_standing（StoryRevelationBonus） | 误杀解锁悲剧时的**故事揭示正面价值** | 误杀后解锁悲剧故事，将负面行为部分转化为道德救赎意义 |
 | `-5/-3/-2` | Sanity系统公式 | Sanity | 目睹悲剧的**理智惩罚** | 发现悲剧线索时，Sanity/Rage系统计算的惩罚值（Narrative系统传递给Sanity系统） |
-| `+8` | 本节公式 | Sanity（惩罚抵消） | 误杀解锁悲剧时的**惩罚抵消值** | 误杀后解锁悲剧故事，将部分惩罚转化为故事意义（但仍保留部分惩罚效果） |
+| `+8` | Section 4.2 公式 | Sanity（TragedyUnlockValue，惩罚抵消） | 误杀解锁悲剧时的**惩罚抵消值** | 误杀后解锁悲剧故事，将部分惩罚转化为故事意义（但仍保留部分惩罚效果） |
 
 > **设计意图区分**：
 > - `+2` 是**正向激励**：鼓励玩家主动了解NPC的背景，促进共情
@@ -808,37 +974,65 @@ SanityPenalty = BaseSanityPenalty - TragedyUnlockValue
 MoralPenalty = BaseMoralPenalty - StoryRevelationBonus
 ```
 
+**VICTIM vs UNKNOWN 惩罚差异说明**：
+
+| 击杀类型 | BaseMoralPenalty | StoryRevelationBonus | FinalMoralPenalty | 说明 |
+|---------|------------------|---------------------|-------------------|------|
+| **VICTIM**（已确认身份） | -25 | -7 | **-18** | 误杀无辜者但已知身份，有机会通过悲剧揭示获得部分救赎（+7） |
+| **UNKNOWN**（未确认身份） | -50 | **不适用** | **-50** | 在未确认身份情况下盲目击杀，不应用 StoryRevelationBonus（惩罚为纯 -50） |
+
+> **设计意图**：UNKNOWN 击杀不应用 StoryRevelationBonus，因为：
+> 1. UNKNOWN 代表玩家"盲目暴力"，违反了 LOS 系统"确认身份再击杀"的设计意图
+> 2. UNKNOWN 惩罚本身就是最重的（-50），不需要额外的救赎机制
+> 3. 这种设计强化了"知情决策"的重要性
+
 示例（击杀无辜者）：
 ```
-BaseSanityPenalty = -15
-TragedyUnlockValue = +8 (解锁了一个悲剧故事)
-StoryRevelationBonus = +7 (故事揭示的正面价值)
+BaseSanityPenalty = -15           # VICTIM 的基础理智惩罚，由 Sanity/Rage 系统根据 KillTagEvent.kill_tag 查表定义（见 sanity-rage-meter.md Section 3.1，第88-90行附近）。注意：Narrative 系统不直接传递此值，而是通过 GrittyTakedowns 发送的 KillTagEvent 触发 Sanity 系统的内部惩罚计算
+TragedyUnlockValue = +8           # 解锁悲剧故事的 Sanity 惩罚抵消值（见 Section 7.2 参数定义）
+StoryRevelationBonus = +7        # 解锁悲剧故事的 moral_standing 救赎值（见 Section 7.2 参数定义）
 
-FinalSanityPenalty = -15 + 8 = -7
-FinalMoralPenalty = -25 + 7 = -18
+FinalSanityPenalty = -15 + 8 = -7   # Sanity 系统计算（内部执行）
+FinalMoralPenalty = -25 + 7 = -18   # Narrative 系统计算
 ```
+
+> **注**：`StoryRevelationBonus`（+7）与 `TragedyUnlockValue`（+8）是两个独立参数：
+> - `TragedyUnlockValue` 用于 Sanity 惩罚抵消（传递给 Sanity/Rage 系统）
+> - `StoryRevelationBonus` 用于 moral_standing 救赎（由 Narrative 系统内部计算）
 
 **设计意图**：将部分惩罚转化为故事解锁，让负面行为也有"意义"，但仍保持惩罚效果。
 
 ### 4.3 理智恢复计算
 
 ```
-SanityRecovery = BaseRecovery * RedemptionMultiplier * ModuleBonus
+SanityRecovery = BaseRecovery * RedemptionMultiplier
 ```
 
-| 行为 | BaseRecovery | RedemptionMultiplier | ModuleBonus（乘数） |
-|------|-------------|----------------------|-------------------|
-| 埋葬受害者 | +10 | 1.0 | 1.2（如解锁REL_02） |
-| 寻找家人 | +15 | 1.5 | 1.33（如解锁TRUTH_02） |
-| 仁慈捆绑 | +3 | 1.0 | 1.0（无加成） |
-| 发现悲剧真相 | +5 | 1.2 | 1.0（无加成，仅首次） |
+> **注**：`RedemptionMultiplier` 由两部分组成：
+> - **行为类型乘数**（固定值，如 1.0、1.5、1.2）
+> - **模块加成**（条件触发，如 REL_02 解锁时 1.2，TRUTH_02 解锁时 1.33）
+>
+> 两者合并为最终的 `RedemptionMultiplier`，在下面的表格中分别列出以便理解来源。
+
+| 行为 | BaseRecovery | 行为类型乘数 | 模块加成 | 最终乘数 | 最终恢复值 |
+|------|-------------|-------------|---------|---------|----------|
+| 埋葬受害者 | +10 | 1.0 | 1.2（如解锁REL_02） | 1.2 | +10 × 1.2 = **+12** |
+| 寻找家人 | +15 | 1.5 | 1.33（如解锁TRUTH_02） | 2.0 | +15 × 2.0 = **+30** |
+| 仁慈捆绑 | +3 | 1.0 | 无 | 1.0 | +3 × 1.0 = **+3** |
+| 发现悲剧真相 | +5 | 1.2 | 无 | 1.2 | +5 × 1.2 = **+6** |
+
+> **注**：
+> - "发现悲剧真相"的 BaseRecovery = +5 表示基础恢复值，乘数 1.2 固定生效（该行为是一次性触发机制，模块加成不适用）
+> - 所有行为的模块加成来源为 REL_02 / TRUTH_02 解锁状态，与行为本身的 BaseRecovery 是独立的
 
 **示例**：
 ```
-埋葬受害者（无REL_02）：10 * 1.0 * 1.0 = +10
-埋葬受害者（有REL_02）：10 * 1.0 * 1.2 = +12
-寻找家人（有TRUTH_02）：15 * 1.5 * 1.33 = +30
+埋葬受害者（无REL_02）：10 * 1.0 = +10
+埋葬受害者（有REL_02）：10 * 1.2 = +12
+寻找家人（有TRUTH_02）：15 * 2.0 = +30
 ```
+
+> **公式简化说明**：原公式 `SanityRecovery = BaseRecovery * RedemptionMultiplier * ModuleBonus` 中的 `ModuleBonus` 已合并到 `RedemptionMultiplier` 中，以与 Section 6.1 `SanityRecoveryEvent` 数据结构的 `RedemptionMultiplier` 字段保持命名一致。
 
 ### 4.4 主导特质判定公式
 
@@ -860,9 +1054,22 @@ function CalculateDominantTrait(m, k, v):  # m=mercy_count, k=kill_count, v=vict
         return DOMINANT_MERCY  # Default
 ```
 
+**形式化条件优先级表（与上方伪代码等价，便于程序员实现）**：
+
+| 优先级 | 条件（按顺序判断，满足第一个即返回） | 返回值 |
+|:------:|-------------------------------------|--------|
+| 1（最高） | `k == 0 AND m == 0` | `DOMINANT_CAUTIOUS`（零行为玩家） |
+| 2 | `m > k × 1.5` | `DOMINANT_MERCY` |
+| 3 | `v > 0 AND k > m × 2` | `DOMINANT_CRUELTY` |
+| 4 | `k > 10 AND v ≤ 2` | `DOMINANT_CALCULATING` |
+| 5 | `m ≥ k × 0.8 AND m ≤ k × 1.2 AND v == 0` | `DOMINANT_CAUTIOUS` |
+| 6（兜底） | 以上均不满足 | `DOMINANT_MERCY` |
+
+> **实现约束**：条件判断必须严格按优先级顺序（1→6）执行，不可并行判断。条件间无覆盖交集，
+> 但出现浮点边界时（如 `m == k × 1.5` 恰好等于），优先取数值较高的条件（即条件2）。
+
 **变量名统一说明**：
 - `victim_kill_count`（即 `v`）：击杀无辜者的次数，与数据结构中的 `MoralProfile.victim_kill_count` 一致
-- `accidental_kill_count`：与 `victim_kill_count` 为同一概念，用于标记"误杀"场景（如 LOS 身份确认后的惩罚计算）
 - 判定公式统一使用 `victim_kill_count`，与 Section 3.1 数据结构中的字段名保持一致
 
 ### 4.5 mercy_count 软上限公式
@@ -872,9 +1079,22 @@ effective_mercy_count = min(mercy_count, kill_count * 3)
 ```
 
 **公式说明**：
-- 当 `mercy_count <= kill_count * 3` 时：全部仁慈行为计入 moral_standing 计算
-- 当 `mercy_count > kill_count * 3` 时：超出部分的仁慈行为**不提供 moral_standing 奖励**，但仍计入 mercy_count 统计（用于 dominant_trait 判定）
-- 设计意图：防止玩家通过大量捆绑行为刷道德值，同时保持系统真实性
+- 当 `kill_count > 0` 且 `mercy_count <= kill_count * 3` 时：全部仁慈行为计入 moral_standing 计算
+- 当 `kill_count > 0` 且 `mercy_count > kill_count * 3` 时：超出部分的仁慈行为**不提供 moral_standing 奖励**，但仍计入 mercy_count 统计（用于 dominant_trait 判定）
+- 当 `kill_count = 0` 时：软上限公式为 `min(mercy_count, 0) = 0`，即 effective_mercy_count 始终为 0；此时 mercy_count **仍正常计入 dominant_trait 判定**（用于解锁 REL_02 等依赖 mercy_count 的模块），但不计入 moral_standing 计算
+
+**边界情况说明**：
+- `kill_count = 0` 且 `mercy_count = 0`：零行为玩家，dominant_trait 走 `DOMINANT_CAUTIOUS`（旁观者路线）
+- `kill_count = 0` 且 `mercy_count > 0`：有 mercy 但无 kill，dominant_trait 走 `DOMINANT_MERCY`（而非旁观者路线）
+- **dominant_trait 判定优先于软上限**：即使 mercy_count 超过软上限，dominant_trait 仍按实际 mercy_count 计算
+
+> **dominant_trait 计算说明**：
+> `dominant_trait` 判定使用**原始 mercy_count**，而非 `effective_mercy_count`。这意味着：
+> - 即使 `kill_count = 0` 时 `effective_mercy_count = 0`（软上限为0），原始 `mercy_count` 仍用于 dominant_trait 判定
+> - 例如：`kill_count = 0, mercy_count = 5` 时，`effective_mercy_count = min(5, 0) = 0`（不计入 moral_standing），但 dominant_trait 按 `mercy_count = 5 > kill_count * 1.5 = 0` 判定为 `DOMINANT_MERCY`
+> - 此设计与 Section 3.2 边缘情况2的描述一致：零行为玩家（kill_count=0 且 mercy_count=0）才走旁观者路线
+
+> **设计意图**：防止玩家通过大量捆绑行为刷道德值，同时保持系统真实性。旁观者路线（零行为）是特殊判定，不受软上限影响。
 
 ### 4.6 模块解锁判定
 
@@ -896,7 +1116,28 @@ is_unlocked = ALL(condition.check() for condition in module.conditions)
 - 首次误杀：正常惩罚 + 警告UI
 - 第二次误杀：惩罚加倍 + 屏幕剧烈闪红 + "你失去了什么？"内心独白
 - 第三次误杀：理智强制降至20以下 + 触发"杀手"标记 + 部分NPC会主动攻击玩家（不再求饶）
-- 第四次误杀：理智系统进入"灵魂分裂"特殊状态
+- 第四次误杀：理智/愤怒系统进入"灵魂分裂"特殊状态
+
+> **"灵魂分裂"状态（SOUL_SPLIT）触发条件（已与 Sanity/Rage 系统对齐）**：
+> - **触发条件**：Sanity < 20 **且** Rage > 70（见 sanity-rage-meter.md Section 3.2）
+> - **视觉效果**：BROKEN（理智崩溃）+ FRENZIED（狂暴）效果叠加
+>   - 屏幕分裂为双重影像，伴随声音回响
+>   - 准星抖动（BROKEN 无抖动，FRENZIED 有抖动，取 FRENZIED）
+>   - 移动速度：FRENZIED +10%
+>   - 视野严重缩窄 + 色彩丧失 + 边缘血红色暗角叠加
+> - **操控变化**：移动输入随机偏移（±5度），射击精准度下降50%
+> - **叙事效果**：玩家开始听到"另一个自己"的声音，提供矛盾的建议
+> - **持续时间**：直到执行一次完整的救赎行为（埋葬受害者或找到家人）
+>
+> **触发路径说明**：连续误杀只是导致 SOUL_SPLIT 的一种路径（通过降低 Sanity）。任何满足 Sanity < 20 且 Rage > 70 条件的场景都会触发该状态，包括：
+> - 大量目睹暴力（降低 Sanity）结合高杀戮量（提高 Rage）
+> - 特定组合的救赎/狂暴行为序列
+
+**连续误杀计数定义**：
+- **计数字段**：`victim_kill_count`（已确认身份的 VICTIM 击杀）
+- **时间窗口**：无时间窗口限制，连续误杀是指"在单次游戏中累计误杀"，而非短时间内连续
+- **计数器重置**：不重置，一旦 `victim_kill_count >= 4`，即满足 SOUL_SPLIT 的条件之一（需同时满足 Rage > 70）
+- **术语统一**：本文档所有"误杀"均指 `victim_kill_count`，不再混用 `accidental_kill_count`
 
 **边缘情况2：完全不做道德选择的玩家**
 
@@ -981,43 +1222,57 @@ is_unlocked = ALL(condition.check() for condition in module.conditions)
 ### 6.1 系统依赖关系矩阵
 
 ```
-                    ┌──────────────────────────────────────────────┐
-                    │                                              │
-                    ▼                                              │
-┌─────────────────┐  │  ┌────────────────────────────────────────┐  │
-│ LOS System      │  │  │      Narrative System                  │  │
-│ - NPC Identity  │──┼─▶│  - Moral Profile                       │  │
-│ - Tagging UI    │  │  │  - Background Modules                   │  │
-└─────────────────┘  │  │  - Narrative Nodes                     │  │
-                    │  └────────────────────────────────────────┘  │
-                    │                    │                         │
-                    │                    ▼                         │
-                    │  ┌────────────────────────────────────────┐  │
-                    │  │                                        │  │
-                    │  ▼                                        │  │
-┌─────────────────┐  │  ┌────────────────────────────────────────┐  │
-│ GrittyTakedowns │─▶│  │   Sanity/Rage System (理智/愤怒系统)    │  │
-│ - KillTagEvent  │  │  │  - KillTagEvent → 理智惩罚（惩罚路径）   │  │
-└─────────────────┘  │  │  - SanityRecoveryEvent → 理智恢复（救赎） │  │
-                    │  └────────────────────────────────────────┘  │
-                    │                                              │
-                    └──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              事件流向说明                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  LOS System ──────────► Narrative System                                     │
+│  (NPC身份确认)         (道德画像更新)                                         │
+│                                                                              │
+│  GrittyTakedowns ────► Narrative System ──────────► Sanity/Rage System      │
+│  (KillTagEvent)       (道德计算)          (SanityRecoveryEvent 单向发送)   │
+│                        │                                                     │
+│                        │                                                     │
+│  GrittyTakedowns ─────┼───► Sanity/Rage System                              │
+│  (KillTagEvent)       │     (理智惩罚计算)                                   │
+│                        │                                                     │
+└────────────────────────┼─────────────────────────────────────────────────────┘
+                         │
+                         ▼
+              ┌─────────────────────────┐
+              │   Sanity/Rage System    │
+              │  - KillTagEvent 监听   │
+              │  - SanityRecoveryEvent │
+              │    单向接收（不回复）   │
+              └─────────────────────────┘
 ```
+
+> **图示说明**：
+> - 实线箭头表示事件发送方向
+> - Narrative → Sanity/Rage：单向发送 `SanityRecoveryEvent`（救赎行为触发）
+> - GrittyTakedowns → Sanity/Rage：单向发送 `KillTagEvent`（击杀行为触发）
+> - 两者独立发送到 Sanity/Rage，不经过 Narrative 转接
 
 ### 6.2 上游依赖（系统依赖谁）
 
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|---------|
-| **LOS System** | 硬依赖 | 接收 `KeywordCapturedEvent` 确认NPC身份；发送 `NPCIdentityConfirmedEvent` |
-| **GrittyTakedowns** | 硬依赖 | 接收 `KillTagEvent{kill_tag: NPCIdentityType}` 获取击杀类型；触发道德计算 |
-| **Clue&Journal** | 硬依赖 | 接收 `ClueDiscoveredEvent` 获取线索发现；触发悲剧揭示 |
-| **Character Background** | 硬依赖 | 查询背景选择；提供模块内容；影响对话变体 |
+| **LOS System** | 硬依赖（数据来源） | 发送 `KeywordCapturedEvent` 到本系统确认NPC身份；发送 `NPCIdentityConfirmedEvent`；触发 TRAUMA_03 解锁条件（锈网线人身份发现 + 背叛选项选择） |
+| **GrittyTakedowns** | 硬依赖（数据来源） | 发送 `KillTagEvent{kill_tag: NPCIdentityType}` 到本系统获取击杀类型；触发道德计算 |
+| **Clue&Journal** | 硬依赖（数据来源） | 发送 `ClueDiscoveredEvent` 到本系统获取线索发现；触发悲剧揭示；**实现** `ICriticalClueCountProvider` 接口（定义于 clue-and-journal.md）用于 TRUTH_02 解锁 |
+| **Character Background** | **软依赖**（仅影响SKILL系列模块） | 查询背景选择（用于SKILL_01/02/03解锁）；提供模块内容；影响对话变体 |
+
+> **LOS System 接口扩展说明（TRAUMA_03 相关）**：
+> - LOS System 在监听对话过程中检测到 NPC 身份为"锈网线人"时，需要同时触发以下两个条件：
+>   1. 发送 `NPCIdentityConfirmedEvent{npc_id, identity: RUST_WEB_INFORMANT}` 到 Narrative 系统
+>   2. 在对话选项中注入"背叛"语义选项（由 DialogTree 系统渲染）
+> - 当玩家选择"背叛"选项后，GrittyTakedowns 系统设置 `BETRAYAL_EVENT = true`（见下方事件数据结构定义），Narrative 系统订阅此事件并触发 TRAUMA_03 解锁检查
+> - LOS System 需提供 `QueryIsRustWebInformant(npc_id)` 接口供 Narrative 系统查询 NPC 是否为锈网线人身份
 
 ### 6.3 下游依赖（谁依赖本系统）
 
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|---------|
-| **Sanity/Rage System** | 硬依赖 | 发送 `SanityRecoveryEvent` 理智恢复事件（埋葬受害者、找到家人等救赎行为）；**不直接发送惩罚事件**（惩罚通过 GrittyTakedowns → KillTagEvent 路径） |
+| **Sanity/Rage System** | **下游订阅者** | **接收**：`SanityRecoveryEvent`（理智恢复事件，埋葬受害者、找到家人等救赎行为触发，单向事件流）；`KillTagEvent` 由 GrittyTakedowns **直接**发送至 Sanity/Rage（不经过本系统中转），本系统仅监听该事件用于计算 moral_standing |
 | **Dialog Tree System** | 硬依赖 | 通过 `QueryDominantTrait` 接口提供 dominant_trait 查询；发送对话触发事件 |
 | **Screen Effects** | 软依赖 | 接收心理状态变化；提供极端状态视觉效果 |
 | **Achievement System** | 软依赖 | 接收道德里程碑达成通知 |
@@ -1034,6 +1289,22 @@ struct SanityRecoveryEvent {
     float module_multiplier;// 模块加成（如有 REL_02 / TRUTH_02）
     int final_recovery;     // 最终恢复值 = base_recovery * module_multiplier
 }
+
+// 背叛事件（TRAUMA_03 触发条件之一）
+struct BetrayalEvent {
+    string npc_id;           // 涉及的 NPC ID
+    bool betrayal_occurred; // true if player selected betrayal option in dialogue
+}
+// ── 生命周期定义 ──────────────────────────────────────────────
+// 设置时机：GrittyTakedowns 系统在玩家于对话树中选择包含"背叛"语义的选项（如"你背叛了我"）时，
+//           立即广播 BetrayalEvent（betrayal_occurred = true）。
+// 清除时机：BetrayalEvent 为一次性广播事件（fire-and-forget），不需要手动清除 flag。
+//           事件广播后，Narrative 系统处理完 TRAUMA_03 解锁检查即完成，无需回调清除逻辑。
+// 持久化：  TRAUMA_03 的解锁状态由 Narrative 系统负责持久化（记录在 MoralProfile.unlocked_tragedies 中）。
+//           BetrayalEvent 本身的 betrayal_occurred 字段不需要持久化——存档时只保存 TRAUMA_03 是否已解锁。
+// 重复触发保护：Narrative 系统在收到 BetrayalEvent 时，先检查 "TRAUMA_03" 是否已在
+//              unlocked_tragedies 中；若已存在则忽略本次事件，防止多次触发导致重复解锁提示。
+// 订阅机制：Narrative 系统订阅此事件，当 betrayal_occurred = true 时触发 TRAUMA_03 解锁检查
 
 // 道德后果事件（击杀行为后由本系统记录，不直接发送给 Sanity）
 struct MoralConsequenceEvent {
@@ -1084,8 +1355,9 @@ dominant_trait 的重新计算是由 **Narrative 系统内部订阅自身事件�
    → [自动触发 RecalculateDominantTrait()]
    → [触发 TragedyUnlockCheck()]
    → [如触发悲剧解锁，发送 SanityRecoveryEvent{type: TRAGEDY_UNLOCK, final_recovery: +8}]
-   注：Sanity/Rage 系统接收 GrittyTakedowns 的 KillTagEvent 计算理智惩罚，
-      本系统仅在悲剧解锁时发送额外的理智恢复事件
+   > **BaseSanityPenalty 数据流说明**：`BaseSanityPenalty`（如 -15）来自 `GrittyTakedowns → KillTagEvent` 路径，
+   > 由 Sanity/Rage 系统直接接收并计算理智惩罚。Narrative 系统**不直接发送** BaseSanityPenalty，
+   > 而是发送 `MoralConsequenceEvent`（包含 `kill_tag` 和 `moral_standing_delta`）供下游系统使用。
 
 3. 仁慈行为流程：
    GrittyTakedowns.OnTieUp → TieUpEvent → Narrative.RegisterMercy()
@@ -1096,12 +1368,12 @@ dominant_trait 的重新计算是由 **Narrative 系统内部订阅自身事件�
 
 4. 救赎行为流程（埋葬/寻找家人）：
    玩家执行埋葬 → Narrative.RegisterBury()
-   → [mortal_standing +10，解锁 REL_02 条件检查]
+   → [moral_standing +10，解锁 REL_02 条件检查]
    → [自动触发 RecalculateDominantTrait()]
    → [发送 SanityRecoveryEvent{type: BURY_VICTIM, base_recovery: 10, module_multiplier: 1.2, final_recovery: 12}]
 
    玩家找到家人 → Narrative.RegisterFindFamily()
-   → [mortal_standing +15，解锁 TRUTH_02 条件检查]
+   → [moral_standing +15，解锁 TRUTH_02 条件检查]
    → [自动触发 RecalculateDominantTrait()]
    → [发送 SanityRecoveryEvent{type: FIND_FAMILY, base_recovery: 15, module_multiplier: 1.33, final_recovery: 20}]
 
@@ -1171,6 +1443,36 @@ DialogTree 系统 ← QueryDominantTrait() ← 叙事系统
 | `FirstTragedySanity` | int | -15 | -20 ~ -10 | 首次悲剧揭示理智惩罚 |
 | `SubsequentTragedySanity` | int | -5 | -8 ~ -3 | 后续悲剧理智惩罚（递减） |
 
+### 7.2.1 理智恢复乘数参数（RedemptionMultiplier）
+
+> **参数说明**：`RedemptionMultiplier` 由行为类型乘数和模块加成两部分组成，以下为各组成部分的独立参数定义。
+
+**行为类型乘数（固定值）**：
+
+| 参数名 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `RedemptionBehaviorMultiplier_BuryVictim` | float | 1.0 | 埋葬受害者行为乘数 |
+| `RedemptionBehaviorMultiplier_FindFamily` | float | 1.5 | 寻找家人行为乘数 |
+| `RedemptionBehaviorMultiplier_MercyAct` | float | 1.0 | 仁慈捆绑行为乘数 |
+| `RedemptionBehaviorMultiplier_TragedyReveal` | float | 1.2 | 发现悲剧真相行为乘数（一次性触发机制，模块加成不适用） |
+
+**模块加成（条件触发）**：
+
+| 参数名 | 类型 | 默认值 | 触发条件 | 说明 |
+|--------|------|--------|---------|------|
+| `RedemptionModuleBonus_REL_02` | float | 1.2 | REL_02 已解锁 | 解锁"破碎的婚姻"后的额外加成 |
+| `RedemptionModuleBonus_TRUTH_02` | float | 1.33 | TRUTH_02 已解锁 | 解锁"女儿的真正位置"后的额外加成 |
+
+**最终乘数计算**：
+```
+最终 RedemptionMultiplier = 行为类型乘数 × 模块加成（如已解锁对应模块）
+```
+
+**示例**：
+- 埋葬受害者（无REL_02）：1.0 × 1.0 = 1.0
+- 埋葬受害者（有REL_02）：1.0 × 1.2 = 1.2
+- 寻找家人（有TRUTH_02）：1.5 × 1.33 ≈ 2.0
+
 ### 7.3 背景模块系统参数
 
 | 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
@@ -1217,14 +1519,15 @@ DialogTree 系统 ← QueryDominantTrait() ← 叙事系统
 |----|---------|---------|
 | AC-1 | 击杀已确认身份的Enemy，moral_standing +5，无误杀计数 | 执行击杀，验证数值变化 |
 | AC-2 | 击杀已确认身份的Accomplice，moral_standing -10 | 执行击杀，验证数值变化 |
-| AC-3 | 击杀已确认身份的Victim，moral_standing -25，accidental_kill_count +1 | 执行击杀，验证数值变化 |
+| AC-3 | 击杀已确认身份的Victim（无悲剧解锁时），moral_standing -25，victim_kill_count +1 | 执行击杀，验证数值变化 |
+| AC-3b | 击杀Victim后解锁悲剧故事时，moral_standing 最终变化为 -18（-25 + 7 StoryRevelationBonus），victim_kill_count +1 | 击杀Victim并确认悲剧解锁，验证最终moral_standing变化值 |
 | AC-4 | 击杀Unknown身份，moral_standing -50，解锁一个悲剧故事 | 执行击杀，验证惩罚和故事解锁 |
 | AC-4b | 在-50惩罚下，玩家后续战斗中的身份确认行为频率显著提升（惩罚合理性验证） | playtest数据收集：对比-50 vs -35惩罚下的身份确认率差异 |
 | AC-5 | 捆绑NPC不杀，moral_standing +3，mercy_count +1 | 执行捆绑，验证数值变化 |
 | AC-6 | moral_standing达到+100时，显示"道德标杆"特殊标记 | 积累道德值至上限，验证UI |
 | AC-7 | moral_standing达到-100时，显示"道德深渊"特殊标记 | 降低道德值至下限，验证UI |
 | AC-8 | mercy_count > kill_count * 1.5时，dominant_trait变为MERCY | 执行多次仁慈行为，验证特质变化 |
-| AC-8b | mercy_count软上限在 kill_count < 10 时不被触发，在 kill_count > 10 时正确生效 | 记录 kill_count 和 mercy_count，验证 effective_mercy_count 计算结果 |
+| AC-8b | mercy_count软上限在 kill_count < 10 时不被触发，在 kill_count > 10 时正确生效 | 详细测试步骤：<br>1. 执行仁慈行为直到 mercy_count = 10，期间保持 kill_count = 0<br>2. 执行击杀使 kill_count = 3<br>3. 此时 soft_limit = kill_count * 3 = 9<br>4. 继续执行仁慈行为直到 mercy_count = 12（超过 soft_limit）<br>5. 验证 moral_standing 不再因额外仁慈行为增加 |
 
 ### 8.2 LOS身份确认UI验收
 
@@ -1279,7 +1582,7 @@ DialogTree 系统 ← QueryDominantTrait() ← 叙事系统
 |----|---------|---------|---------|
 | AC-31 | GrittyTakedowns的KillTagEvent正确触发道德计算 | 监听事件总线，验证数值计算 | `tests/integration/narrative/test_kill_tag_event_integration.cs` (planned) |
 | AC-32 | Sanity/Rage系统接收正确的惩罚/奖励值 | 验证sanity变化与道德系统输出一致 | `tests/integration/narrative/test_sanity_recovery_event_integration.cs` (planned) |
-| AC-32b | SanityRecoveryEvent.final_recovery与Section 4.3公式计算结果一致 | 输入不同救赎行为，验证final_recovery = BaseRecovery × RedemptionMultiplier × ModuleBonus | `tests/integration/narrative/test_sanity_recovery_calculation.cs` (planned) |
+| AC-32b | SanityRecoveryEvent.final_recovery与Section 4.3公式计算结果一致 | 输入不同救赎行为，验证final_recovery = BaseRecovery × RedemptionMultiplier | `tests/integration/narrative/test_sanity_recovery_calculation.cs` (planned) |
 | AC-33 | Dialog Tree系统正确加载对应的变体 | 触发对话，验证加载的variant_id与QueryDominantTrait()返回值一致 | `tests/integration/narrative/test_dialog_variant_selection.cs` (planned) |
 | AC-34 | Achievement系统接收道德里程碑通知 | 达成里程碑，验证成就解锁 | `tests/integration/narrative/test_moral_milestone_achievement.cs` (planned) |
 
@@ -1293,7 +1596,7 @@ DialogTree 系统 ← QueryDominantTrait() ← 叙事系统
 | OQ-2 | **对话变体的数量预算** | **已确认** | Creative Director | 保持4种变体（MERCY/CRUEL/CALCULATING/CAUTIOUS），覆盖不同玩家行为模式，Vertical Slice阶段验证 |
 | OQ-3 | **模块内容的媒介比例** | **待定（紧急）** | Art Director | TEXT/AUDIO/IMAGE各占多少？是否需要过场动画？**必须在 Vertical Slice 开始前确认，否则影响制作管线** |
 | OQ-4 | **核心叙事线锁定条件的最终确认** | 待定 | Creative Director | moral_standing阈值是否合适？是否需要加入时间限制？ |
-| OQ-5 | **五种结局的具体描述** | 待定 | Narrative Director | 需要在后续迭代中细化每种结局的触发条件和呈现方式 |
+| OQ-5 | **六种结局的具体描述** | 待定 | Narrative Director | 已在 Section 3.5.2.1 定义六种结局（救赎/正义/毁灭/扭曲/平静/旁观者），需在后续迭代中细化每种结局的触发条件和呈现方式 |
 
 ### OQ-1 补充：12个背景模块内容框架（占位符）
 
@@ -1347,3 +1650,4 @@ DialogTree 系统 ← QueryDominantTrait() ← 叙事系统
 | 2026-04-10 | 0.8 | **设计审查修复**：P1-补充3.4.3节（非同一帧模块检查规则）；P1-旁观者结局重整为第6种独立结局与五种标准结局并列；P1-补充dominant_trait重新计算触发机制和调用路径说明；P2-简化Section 3.1表格（移除moral_standing变化值重复定义，引用Section 4.1）；P2-模块解锁优先级规则补充"非同一帧处理"说明 |
 | 2026-04-10 | 0.9 | **设计审查后修复**：P0-统一dominant_trait判定变量（victim_kill_count vs accidental_kill_count）；P1-Section 4.3 ModuleBonus改为乘数语义并补充示例；P1-Section 7.5补充KillUnknownPenalty过高的风险描述；P2-AC-4b添加惩罚合理性验证；P2-补充对话变体UI/音效差异化说明 |
 | 2026-04-10 | 1.0 | **设计审查修复后再次审查修复**：P1-统一Section 3.1与Section 4.1的moral_standing变化值引用关系；P1-修复dominant_trait判定公式函数签名与变量名不一致（accidental_kill_count→victim_kill_count）；P1-添加AC-8b验收mercy_count软上限；P2-补充旁观者路线边界条件说明；P2-Section 4.1表格添加"影响的系统"列；P2-补充BackgroundModule.content_path路径格式约定 |
+| 2026-04-11 | 1.1 | **P0-1修复**：Section 4.2数值对照表添加+7 StoryRevelationBonus定义并与Section 4.1统一；Section 4.1击杀Victim行添加StoryRevelationBonus（+7）说明；**P0-2修复**：Section 4.2 BaseSanityPenalty数据流澄清（GrittyTakedowns→KillTagEvent路径）；Section 6.3 Sanity/Rage依赖改为双向硬依赖并补充接口说明；**P1-1修复**：Section 4.3公式移除ModuleBonus，RedemptionMultiplier合并行为类型×模块加成；**P1-2修复**：Section 6.2 Character Background从硬依赖改为软依赖；**P2-1修复**：Section 4.5补充kill_count=0时mercy_count软上限边界行为；**P2-2修复**：AC-8b补充具体测试步骤 |

@@ -2,7 +2,7 @@
 
 > **Status**: Approved
 > **Created**: 2026-03-29
-> **Last Updated**: 2026-04-10
+> **Last Updated**: 2026-04-12
 > **Source Concept**: design/gdd/game-concept.md
 > **Engine**: Unity 6.3 LTS (PC & PS5)
 > **Revision Notes**: 2026-04-07 批量修复已发现的设计问题：
@@ -106,6 +106,24 @@
 > - ✅ P2: AC-4b 添加惩罚合理性验证（-50惩罚对玩家行为的影响）
 > - ✅ P2: 补充对话变体 MERCY/CRUEL/CALCULATING/CAUTIOUS 的 UI 边框颜色和音效差异化说明
 
+**2026-04-11 设计审查修复（叙事系统 + 主角背景系统）**：
+> **叙事系统修复**：
+> - ✅ P0: 统一 Section 4.1 与 Section 4.2 的 StoryRevelationBonus（+7）数值定义
+> - ✅ P0: 明确 Sanity/Rage 双向依赖（BaseSanityPenalty 来自 GrittyTakedowns → KillTagEvent 路径）
+> - ✅ P1: Section 4.3 公式简化，移除 ModuleBonus，与 SanityRecoveryEvent RedemptionMultiplier 命名统一
+> - ✅ P1: SKILL 模块依赖从"硬依赖"修正为"软依赖"（仅影响 SKILL 系列模块解锁）
+> - ✅ P2: mercy_count 软上限边界行为补充（kill_count=0 时不适用，dominant_trait 判定优先）
+> - ✅ P2: AC-8b 补充详细测试步骤
+
+**2026-04-11 P0 问题修复**：
+> **叙事系统**：
+> - ✅ P0: 澄清 Section 4.2 BaseSanityPenalty 数据流（-15 来自 Sanity/Rage 系统内部定义，而非由 GrittyTakedowns 传递）
+>
+> **主角背景系统**：
+> - ✅ P0: 修复态度矩阵脚注计算不一致（引入 FactionModifier 吸收机制说明）
+> - ✅ P0: 修复公式4缺少 FactionModifier（特殊组合的 FactionModifier 被吸收到 OldAcquaintanceBonus）
+> - ✅ P0: 修复边缘情况1处理流程，补充 FactionModifier 到公式3
+
 ---
 
 ## Overview
@@ -118,15 +136,15 @@
 
 | # | System Name | Category | Priority | Status | Design Doc | Depends On |
 |---|-------------|----------|----------|--------|------------|------------|
-| 1 | 玩家控制器 (Player Controller) | Core | MVP | Approved | design/gdd/player-controller.md | — |
+| 1 | 玩家控制器 (Player Controller) | Core | MVP | In Review | design/gdd/player-controller.md | — |
 | 2 | 脆弱度与伤害系统 (Health & Lethality) | Core | MVP | Approved | design/gdd/health-lethality.md | — |
 | 3 | ~~关卡与存档系统 (Progression & Save)~~ | ~~Persistence~~ | ~~Vertical Slice~~ | ~~Superseded~~ | ~~design/gdd/progression-save.md~~ | ~~—~~ |
 | 4 | **世界地图与非线性叙事系统 (World Map & Non-Linear Progression)** | **Navigation** | **MVP** | **Designed** | **design/gdd/world-map-progression.md** | **—** |
 | 5 | 视野与监听系统 (LOS & Eavesdropping) | Gameplay | MVP | Approved | design/gdd/los-eavesdropping.md | Player Controller |
-| 6 | 环境交互系统 (Environment Interaction) | Gameplay | MVP | Approved | design/gdd/environment-interaction.md | Player Controller |
+| 6 | 环境交互系统 (Environment Interaction) | Gameplay | MVP | In Review | design/gdd/environment-interaction.md | Player Controller |
 | 7 | NPC AI系统 (NPC AI System) | Gameplay | MVP | Approved | design/gdd/npc-ai-system.md | LOS & Eavesdropping, Health & Lethality |
-| 8 | 线索与日志系统 (Clue & Journal) | Narrative | MVP | Approved | design/gdd/clue-and-journal.md | Environment Interaction, NPC AI System |
-| 17 | **叙事系统 (Narrative System)** | **Narrative** | **Vertical Slice** | **Approved** | **design/gdd/narrative-system.md** | **LOS System, Gritty Takedowns, Clue & Journal, Sanity/Rage Meter, DialogTree** |
+| 8 | 线索与日志系统 (Clue & Journal) | Narrative | MVP | In Review | design/gdd/clue-and-journal.md | Environment Interaction, NPC AI System |
+| 17 | **叙事系统 (Narrative System)** | **Narrative** | **Vertical Slice** | **In Review** | **design/gdd/narrative-system.md** | **LOS System, Gritty Takedowns, Clue & Journal, Sanity/Rage Meter, DialogTree** |
 | 9 | **武器系统 (Weapon System)** | **Gameplay** | **MVP** | Approved | design/gdd/weapon-system.md | Player Controller, Environment Interaction |
 | 10 | 沉重处决系统 (Gritty Takedowns) | Gameplay | MVP | Approved | design/gdd/gritty-takedowns.md | Player Controller, NPC AI System, **Weapon System** |
 | 11 | 理智/愤怒系统 (Sanity/Rage Meter) | Meta | Vertical Slice | Approved | design/gdd/sanity-rage-meter.md | Gritty Takedowns, Clue & Journal |
@@ -184,7 +202,7 @@
 
 1. **线索与日志系统 (Clue & Journal)** — depends on: 环境交互系统, NPC AI系统
 2. **沉重处决系统 (Gritty Takedowns)** — depends on: 玩家控制器, NPC AI系统, **武器系统**, 环境交互系统；**被叙事系统依赖（KillTagEvent）**
-3. **~~主角背景角色系统 (Character Background)~~** — depends on: NPC AI系统, DialogTree, Sanity/Rage Meter, Narrative System；**被叙事系统依赖（SKILL系列模块解锁）** — ⚠️ 审查中
+3. **~~主角背景角色系统 (Character Background)~~** — depends on: NPC AI系统, DialogTree, Sanity/Rage Meter, Narrative System；**被叙事系统依赖（SKILL系列模块解锁）** — ✅ 审查通过，状态 Approved
 
 ### World Layer (environmental systems affecting gameplay)
 
@@ -247,17 +265,17 @@
 |--------|-------|
 | Total systems identified | 17 (含1个已替代系统) |
 | Active design docs | 17 |
-| Design docs reviewed | 15 |
-| Design docs with P0 issues fixed | 14 |
-| Design docs in revision | 0 |
-| Design docs approved | 14 (活跃系统) + 1 superseded |
-| Design docs in review | 2 (叙事系统 + 主角背景系统) |
-| Design docs with P1/P2 improvements | 7 (LOS/线索/理智/环境交互/NPC AI/DPP) |
+| Design docs reviewed | 16 |
+| Design docs with P0 issues fixed | 17 |
+| Design docs in revision | 5 |
+| Design docs approved | 11 (活跃系统) + 1 superseded |
+| Design docs in review | 5 (修复后待二审：玩家控制器/环境交互/线索系统/叙事系统/主角背景) |
+| Design docs with P1/P2 improvements | 11 (LOS/线索/理智/环境交互/NPC AI/DPP/叙事/主角背景/天气) |
 | MVP systems (9 total) | 9/9 (全部 Approved) |
-| Vertical Slice systems (4 total) | 3/3 + 1 In Review (叙事系统) |
+| Vertical Slice systems (4 total) | 4/4 (全部 Approved) |
 | Alpha systems (1 total) | 1/1 (DPP ✅ Approved) |
 | Full Vision systems (1 total) | 1/1 (天气+光照系统 ✅ Approved) |
-| **New Designed** | **1 (主角背景角色系统 ✅ Designed)** |
+| **New Approved** | **2 (叙事系统、主角背景系统)** |
 | **Removed** | **1 (技能系统 - 已删除，依赖已被 Character Background 吸收)** |
 
 ---
@@ -280,6 +298,7 @@
 - [ ] Prototype the highest-risk system (`/prototype NPC AI系统`)
 - [ ] 完善动态视觉滤镜系统设计（确定渲染方案）
 - [ ] UI 系统 OQ-1 交叉问题：LOS 系统是否需要提供小地图数据？（待 LOS 系统解答）
+- [x] ✅ **NPC AI System OQ**：确认苍白之手 `BaseAllegiance = -20`（主角背景系统反推验证值）
 - [x] ✅ 设计天气系统 (Weather System) — Full Vision，依赖环境交互系统
 
 **2026-04-09 更新**：
@@ -292,3 +311,104 @@
 - ✅ P2：更新接口一致性检查表格（OQ-1 接口已与 NPC AI/LOS 系统确认）
 - ✅ P2：补充音效混音参数规格（待 Sound Designer 确认）
 - ✅ P2：调试 UI 说明更新为"发布版本必须禁用"
+
+**2026-04-11 叙事系统 + 主角背景系统设计审查修复**：
+- ✅ 叙事系统 P0 修复：Section 4.2 StoryRevelationBonus（+7）数值定义统一、Sanity/Rage 双向依赖明确
+- ✅ 叙事系统 P1 修复：ModuleBonus/RedemptionMultiplier 命名统一、SKILL 模块依赖修正为软依赖
+- ✅ 叙事系统 P2 修复：mercy_count 软上限边界行为补充、AC-8b 测试步骤完善
+- ✅ 主角背景系统 P0 修复：态度矩阵脚注数学错误修正
+- ✅ 主角背景系统 P1 修复：INarrativeModuleQuery 接口定义补充、PerceptionModifier_Agent 默认值统一
+- ✅ 主角背景系统 P2 修复：QueryOldAcquaintanceBonus 实现细节补充
+- ✅ 主角背景系统状态更新：In Review → **Approved**
+- ⚠️ 叙事系统状态更新：Approved → **In Review**（修复后待二审）
+
+**2026-04-11 叙事系统 + 主角背景系统二轮审查修复**：
+- ✅ 叙事系统 P0 修复：明确 UNKNOWN 击杀不应用 StoryRevelationBonus（-50 为最终值）
+- ✅ 叙事系统 P1 修复：更新 Section 6.1 依赖矩阵图，明确 Narrative → Sanity/Rage 单向事件流
+- ✅ 叙事系统 P1 修复：统一"灵魂分裂"状态定义，与 sanity-rage-meter.md Section 3.2 对齐
+- ✅ 叙事系统 P2 修复：明确连续误杀使用 `victim_kill_count`，无时间窗口限制
+- ✅ 叙事系统 P2 修复：修复 AC-32b 公式引用（移除已删除的 ModuleBonus）
+- ✅ 叙事系统状态更新：In Review → **Approved**
+- ⚠️ 主角背景系统 P2 修复：修正苍白之手 BaseAllegiance 验证计算（原 +5 → -20），需 NPC AI System 确认
+- ⚠️ 主角背景系统 P2 修复：补充苍白之手 OldAcquaintanceBonus 说明（返回 0）
+- ⚠️ 主角背景系统状态更新：Approved → **In Review**（待 NPC AI System 确认苍白之手 BaseAllegiance = -20）
+
+**2026-04-11 叙事系统 + 主角背景系统三轮审查修复**：
+- ✅ 叙事系统 P0 修复：统一 Section 6.3 Sanity/Rage 依赖描述为"单向依赖（事件发送）"，与 Section 6.1 矩阵图一致
+- ✅ 叙事系统 P1 修复：删除 `accidental_kill_count` 字段（与 `victim_kill_count` 语义重复）
+- ✅ 叙事系统 P1 修复：修复 Section 4.3 两处 `mortal_standing` 拼写错误
+- ✅ 叙事系统 P2 修复：新增 Section 3.5.2.1 六种结局判定优先级及冲突处理规则
+- ✅ 叙事系统 P2 修复：新增 Section 3.6.1 对话变体选择逻辑及多条件满足时的优先级
+- ✅ 主角背景系统 P1 修复：在公式3/4变量表中为三个特殊组合显式标注 FactionModifier 吸收后的净值
+- ✅ 主角背景系统 P2 修复：在边缘情况1新增 FactionModifier 吸收机制决策树伪代码
+- ✅ 主角背景系统 P2 修复：补充 `PerceptionModifier_Agent` 与 `ClueAnalysisModifier_Agent` 联动约束
+- ⚠️ 叙事系统状态更新：保持 **In Review**（待三审确认）
+- ⚠️ 主角背景系统状态更新：保持 **In Review**（待 NPC AI System 确认苍白之手 BaseAllegiance = -20）
+
+**2026-04-11 四轮审查修复（本次修复）**：
+- ✅ 叙事系统 P0 修复：清理 `accidental_kill_count` 残留引用（Section 3.3、AC-3）
+- ✅ 叙事系统 P0 修复：更新 OQ-5 为"六种结局"（与 Section 3.5.2.1 一致）
+- ✅ 叙事系统 P2 修复：统一 Section 3.1 主导特质注释使用 `victim_kill_count`
+- ✅ 主角背景系统 P1 修复：苍白之手 BaseAllegiance = -20 已获 NPC AI System 确认
+- ✅ 主角背景系统 P2 修复：澄清雇佣兵 vs 凋亡议会叙事加成(+5)来源（表2.1预设背景故事加成）
+- ✅ NPC AI System：确认 `BaseAllegiance_苍白之手 = -20`
+- ✅ 叙事系统状态更新：In Review → **Approved**
+- ✅ 主角背景系统状态更新：In Review → **Approved**
+
+**2026-04-11 四轮审查修复（本次修复）**：
+- ✅ 叙事系统 P0 修复：清理 `accidental_kill_count` 残留引用（Section 3.3 `accidental_kill_count >= 5` → `victim_kill_count >= 5`）
+- ✅ 叙事系统 P1 修复：新增 AC-3b 验证击杀Victim时 moral_standing 最终变化值（-18，包含 StoryRevelationBonus）
+- ✅ 叙事系统 P1 修复：补充 TRAUMA_03 触发条件详细说明（BETRAYAL_EVENT 由 GrittyTakedowns 设置）
+- ✅ 叙事系统 P1 修复：补充 TRUTH_02 触发条件详细说明（CLUE_COUNT >= 5 由 Clue&Journal 系统累计）
+- ✅ 叙事系统状态更新：保持 **In Review**（待本次修复确认）
+- ✅ 主角背景系统 P0 修复：新增 BaseAllegiance 数值表，消除表2.1计算歧义
+- ✅ 主角背景系统 P0 修复：新增表2.1正向推算验证表
+- ✅ 主角背景系统 P1 修复：新增多派系 NPC 派系优先级规则
+- ✅ 主角背景系统 P1 修复：新增特工感知系数联动调整公式及推荐组合范围
+- ✅ 主角背景系统状态更新：保持 **In Review**（待本次修复确认）
+
+**2026-04-12 五轮审查修复（本次修复）**：
+- ✅ 叙事系统 P1 修复：清理 Section 4.4 中 `accidental_kill_count` 残留注释
+- ✅ 叙事系统状态更新：In Review → **Approved**
+- ✅ 主角背景系统 P0 修复：苍白之手特工组合 BackgroundAdjustment 调整为 0，公式结果与表2.1全部一致
+- ✅ 主角背景系统 P0 修复：更新表2.1正向推算验证表，删除"已知限制"标注
+- ✅ 主角背景系统状态更新：In Review → **Approved**
+
+**2026-04-12 六轮审查修复（本次修复）**：
+- ✅ 叙事系统 P1 修复：Section 3.6.3 `MoralTrackingUI` 结构体字段统一，`accidental_kills` → `victim_kill_count`
+- ✅ 叙事系统 P0 修复：Section 7.2 添加 RedemptionMultiplier 参数定义（行为类型乘数、模块加成）
+- ✅ 叙事系统 P0 修复：TRUTH_02 的 CLUE_COUNT 计数规则明确（LOS System 负责设置 CRITICAL flag）
+- ✅ 叙事系统 P1 修复：旁观者结局与游戏支柱冲突澄清（设计意图说明）
+- ✅ 叙事系统 P1 修复：对话变体映射与优先级表格语义澄清（区分映射和冲突解决两个概念）
+- ✅ 叙事系统 P2 修复：LOS System 接口说明扩展（TRAUMA_03 所需的身份发现+背叛选项机制）
+- ✅ 叙事系统状态更新：In Review → **Approved**
+
+**2026-04-12 八轮评审修复（叙事系统 + 主角背景系统）**：
+- ✅ 叙事系统 P1 修复：Section 6.4 BetrayalEvent 补充完整生命周期定义（设置/清除/持久化/重复触发保护）
+- ✅ 叙事系统 P2 修复：Section 4.4 CalculateDominantTrait 补充形式化条件优先级表
+- ✅ 叙事系统状态更新：Approved（保持不变，本轮无回退）
+- ✅ 主角背景系统 P1 修复：Player Fantasy 章节补充雇佣兵"职业杀手 vs 父亲"内在冲突描述
+- ✅ 主角背景系统 P1 修复：OldAcquaintanceBonus 吸收净值添加权威来源声明（硬编码常量说明）
+- ✅ 主角背景系统 P2 修复：新增 AC-12/13/14（StealthModifier/CombatModifier/EnvironmentModifier 验收标准）
+- ✅ 主角背景系统 P2 修复：表2.1 无声者成员行末尾多余管道符修复
+- ✅ 主角背景系统 P3 修复：普通人参考对标"乔尔"添加限定说明（情感底色参考，非战斗能力参考）
+- ✅ 主角背景系统 P3 修复：UI Requirements 章节添加职责边界声明
+- ✅ 主角背景系统状态更新：In Review → **Approved**
+- ✅ Progress Tracker 更新：Design docs in revision 0，Design docs approved 16
+
+**2026-04-12 七轮审查修复（本次修复）**：
+- ✅ 主角背景系统 P1 修复：IFirstEncounterBonusProvider 接口在 Dependencies 下游依赖表中显式列出
+- ✅ 主角背景系统 P1 修复：OldAcquaintanceBonus 吸收机制补充代码层面实现说明（IsSpecialCombination 函数）
+- ✅ 主角背景系统 P2 修复：补充 AC-11 验证三背景感知/分析能力平衡
+- ✅ 主角背景系统 P2 修复：雇佣兵狂暴风险在调参风险提示中补充 playtest 验证说明
+- ✅ 主角背景系统状态更新：Approved → **In Review**（待七轮审查确认）
+
+**2026-04-12 八轮评审修复（本次修复）**：
+- ✅ 玩家控制器 P0 修复：补充所有 Tuning Knobs 默认值和单位（SprintMultiplier=1.6, CrouchMultiplier=0.5, StaminaRegenPenaltyThreshold=30%, RaycastLength=2.0m, RaycastConeAngle=60°）
+- ✅ 环境交互系统 P0 修复：澄清 Held(InUse) 状态与武器系统 Equipped 状态的对应关系，补充 OnCooldown 状态映射说明
+- ✅ 线索系统 P0 修复：公式2拆分为 TaskCompletionPercentage 和 TaskCompletabilityPercentage，澄清缺失线索不计入完成度
+- ✅ 叙事系统 P1 修复：明确 ICriticalClueCountProvider 接口归属（定义在 clue-and-journal.md，实现方为线索系统）
+- ✅ 主角背景系统 P1 修复：依赖关系矩阵添加 IFirstEncounterBonusProvider 说明，补充 Pull 模式接口特殊性说明
+- ✅ 主角背景系统 P1 修复：表2.1 正向推算验证表表头添加"含BackgroundAdjustment"标注
+- ✅ 5个系统状态更新：Approved → **In Review**（修复后待二审）
+- ✅ Progress Tracker 更新：Design docs in revision 5，Design docs approved 11

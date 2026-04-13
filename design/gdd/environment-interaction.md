@@ -146,9 +146,15 @@
 | 环境交互系统状态 | 武器系统状态 | 说明 |
 |----------------|-------------|------|
 | Available | `Available` | 物件在场景中，未被拾取 |
-| InUse | `Held` | 物件被玩家持有（武器系统使用"Held"作为对外接口） |
-| OnCooldown | `Held` 或 `Used` | 根据物件类型判断：消耗品→Used，非消耗品→Held |
+| InUse | `Equipped` | 物件被玩家持有（武器系统使用"Equipped"作为对外接口，与本系统的"InUse"状态语义对应） |
+| OnCooldown | `Holstered` 或 `Used` | 根据物件类型判断：消耗品（爆炸物引爆后）→Used，非消耗品（可重复使用）→Holstered |
 | Depleted | `Depleted` | 物件被摧毁/消耗完毕 |
+
+> **Held 状态语义澄清**：
+> - 本系统的 `InUse` 状态表示物件正在被使用（拾取动画、放置动画等执行中）
+> - 武器系统使用 `Equipped`/`Holstered`/`Used` 等状态管理物件的装备/使用状态
+> - 两者通过 `ObjectStateChangedEvent` 事件同步：当本系统状态变为 `InUse` 时，武器系统将物件状态更新为 `Equipped`（手持武器）或根据物件类型更新为对应状态
+> - 简言之：`InUse` 是"交互执行中"状态，`Equipped` 是"装备持有"状态，两者通过事件驱动进行状态映射
 
 **玩家交互状态机**
 

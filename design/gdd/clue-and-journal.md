@@ -279,15 +279,27 @@ CanUnlock = All(precondition_clue_ids.every(clue_id =>
 
 其中 `precondition_clue_ids` 来自线索数据结构的 `prerequisites` 字段。
 
-**公式2：任务完成度计算**
+**公式2：任务完成度与可完成度计算**
 
 ```
 TaskCompletionPercentage = (
-    clues_discovered_count + clues_missing_count
+    clues_discovered_count
+) / total_clues_in_task * 100
+
+TaskCompletabilityPercentage = (
+    clues_discovered_count + clues_obtainable_count
 ) / total_clues_in_task * 100
 ```
 
-注意：`missing_reason != null` 的线索计入已完成基数，但不计入可用线索。
+> **语义说明**：
+> - `TaskCompletionPercentage`：玩家实际获取的线索进度（仅计入 DISCOVERED/UNLOCKED/COMPLETED 状态的线索），代表玩家"已完成"的比例
+> - `TaskCompletabilityPercentage`：在补偿机制生效后，任务是否可完成的进度（计入可通过补偿路径获取的线索），代表任务"可完成"的比例
+> - `clues_missing_count`（`missing_reason != null` 的线索）**不计入**上述两个指标，因为它们是永久缺失的
+>
+> **补偿机制与完成度关系**：
+> - 当 `TaskCompletabilityPercentage >= 100%` 且 `TaskCompletionPercentage < 100%` 时，说明玩家可以通过补偿路径完成任务
+> - 当 `TaskCompletionPercentage >= min_clues_required` 时，任务直接完成
+> - 当关键线索缺失且 `TaskCompletabilityPercentage < min_clues_required` 时，触发补偿机制
 
 **公式3：补偿触发判定**
 

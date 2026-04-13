@@ -1,13 +1,13 @@
 # ADR-0017: 理智/愤怒系统 (Sanity/Rage Meter) 架构决策
 
 ## Status
-**Accepted**
+**Proposed** (v5: 更新视觉效果请求接口，改用 ADR-0023 的统一 ScreenEffectRequestEvent)
 
 ## Date
 2026-04-10
 
 ## Last Updated
-2026-04-10
+2026-04-12 (v5: 更新视觉效果请求接口，改用 ADR-0023 的统一 ScreenEffectRequestEvent；shared-types.md §12.3 中的独立事件已标记为废弃)
 
 ## Context
 
@@ -30,8 +30,15 @@
   > - 持续高强度噪点（NoiseIntensity = 1.0）
   > - 极端暗角（VignetteIntensity = 1.0，视野几乎全黑）
   > - 色彩完全褪去（SaturationMultiplier = 0.0）
-  > - 无准星抖动（FRENZIED 不激活）
+  > - **无准星抖动**（因为 FRENZIED 不激活，ShakeIntensity = 0）
   > - 玩家仍可移动和行动，但视觉几乎完全依赖记忆
+  >
+  > **Sanity = 0 与 Health 系统并行兼容性**：
+  > 当 Health=满 且 Sanity=0 时，两个系统同时生效但互不干扰：
+  > - ScreenEffects 的极端效果（倒置/噪点/暗角/褪色）完全覆盖游戏画面
+  > - HUD 元素（如体力槽、理智槽、愤怒槽）通过**半透明叠加层**显示，确保玩家仍能获取关键游戏信息
+  > - 半透明叠加层的透明度通过 `HUDOverlayOpacityRequest` 事件由 UI 系统控制（默认 0.3 opacity），既保证信息可读性，又不与极端视觉效果产生视觉冲突
+  > - Health 系统不受 Sanity = 0 影响；后续受到伤害时正常触发受伤动画和 Health 变化
 - **衰减约束**：愤怒消散期间如果玩家再次击杀，必须立即停止消散并从当前值累加
 
 ### Requirements
@@ -39,7 +46,8 @@
 - **必须**：定义双轨计量系统（Sanity 0-100，Rage 0-100）
 - **必须**：定义 6 档心理状态（CALM / UNEASY / AGITATED / BROKEN / FRENZIED / SOUL_SPLIT）
 - **必须**：定义状态阈值锁定机制（Frenzy Threshold Lock）
-- **必须**：定义与 ScreenEffects 的视觉效果请求接口（Vignette / Noise / Saturation / Shake）
+- **必须**：定义与 ScreenEffectsManager 的视觉效果请求接口（通过 ADR-0023 定义的 ScreenEffectRequestEvent）
+- **必须**：定义与 UI 系统的 HUDOverlayOpacityRequest 接口
 - **必须**：定义与 Clue&Journal 的事件订阅接口（ClueDiscoveredEvent）
 - **必须**：定义愤怒消散互斥机制（消散期间击杀立即停止消散）
 
@@ -113,20 +121,29 @@
 
 #### 心理状态枚举
 
+> **类型定义说明**：`PsychologicalState` 枚举已统一定义于 shared-types.md §12.1，实现时应从 shared-types 引用。
+
 ```csharp
+// 引用位置：Assets/Game/Features/SanityRage/Types/PsychologicalState.cs
+// 引用方式：using PsychState = SharedTypes.PsychologicalState;
+
 public enum PsychologicalState
 {
     CALM,       // Sanity >= 70 且 Rage <= 30
     UNEASY,     // (Sanity 40-69 OR Rage 31-50) AND NOT AGITATED/FRENZIED/BROKEN/SOUL_SPLIT
     AGITATED,   // (Sanity 20-39 OR Rage 51-70) AND NOT FRENZIED/BROKEN/SOUL_SPLIT
     BROKEN,     // Sanity < 20 AND Rage <= 70
-    FRENZIED,   // Rage >= 71 AND Sanity < 70
-    SOUL_SPLIT  // Sanity < 20 AND Rage > 70
+    FRENZIED,   // Rage >= 71 AND Sanity < 70  ← 注：Rage = 71 时触发（闭区间）
+    SOUL_SPLIT  // Sanity < 20 AND Rage > 70   ← 注：Rage > 70 时触发（开区间）
 }
+```
 
-/// <summary>
-/// 心理状态变更事件 Payload
-/// </summary>
+> **类型定义说明**：`PsychologicalStateEvent` 事件已统一定义于 shared-types.md §12.2，实现时应从 shared-types 引用。
+
+```csharp
+// 引用位置：Assets/Game/Features/SanityRage/Events/SanityRageEvents.cs
+// 引用方式：从 shared-types 引用，而非在本系统重复定义
+
 public struct PsychologicalStateEvent
 {
     public PsychologicalState State;
@@ -165,7 +182,14 @@ SOUL_SPLIT 是极端双轨状态，**同时叠加 FRENZIED 和 BROKEN 的所有�
 - ShakeIntensity = FRENZIED 规则计算（Rage 高时增加）
 - MovementSpeedBonus = +10%（取 FRENZIED 的正向加成，不执行 BROKEN 的 -5% 惩罚）
 
-> **SOUL_SPLIT 速度加成设计意图**：理智崩溃时反而跑更快看似矛盾，实则是"肾上腺素"机制——极端情绪下人体会释放大量肾上腺素，暂时忽略生理极限。这是《泰坦 Souls》等游戏"受苦美学"的体现：玩家在最低谷时仍有一线生机（跑得快），但代价是视野完全崩溃（Noise + Vignette 双重debuff）。
+> **SOUL_SPLIT 速度加成设计意图澄清**：
+> 这个 +10% 速度提升是**有意为之的矛盾体验**，而非设计失误：
+> 1. **肾上腺素机制**：极端情绪下人体会释放大量肾上腺素，暂时忽略生理极限。"跑得更快但完全看不见"正是这种机制的体现——玩家的肉体被强迫超越极限，但精神已经完全崩溃。
+> 2. **受苦美学**：《泰坦 Souls》等游戏"受苦美学"的体现——玩家在最低谷时仍有一线生机（跑得快），但代价是视野完全崩溃（Noise + Vignette 双重 debuff）。
+> 3. **战术权衡**：速度提升 + 视野崩溃 = 玩家可以快速逃离危险区域，但无法精确导航。这创造了"本能逃跑 vs 精准定位"的张力。
+> 4. **玩家体验循环**：在 SOUL_SPLIT 状态下，玩家可能：a) 乱冲乱撞地逃跑（速度优势），或 b) 停下来试图恢复理智（主动降 Rage/Sanity）。这种两难选择增加了情感深度。
+>
+> **设计意图确认**：如果 playtest 反馈表明这个机制体验不佳，可通过 Tuning Knob `SOUL_SPLIT_SpeedBonus` 调整（安全范围 0%~+15%），或完全禁用（设为 0%）。
 
 **MovementSpeedBonus 计算公式**：
 ```
@@ -212,16 +236,16 @@ void Update()
 
 > **为什么不直接用 Timer**：直接用固定 timer 会产生时间累积误差。使用 `_rageDecayAccumulator` 累积真实时间差，确保无论帧率高低，**平均**消散速率始终为 `RAGE_DECAY_AMOUNT / RAGE_DECAY_INTERVAL` (约 0.67/秒)。
 
-### IsInCombat 判定逻辑（内联定义）
+### IsInCombat 判定逻辑
 
-> **引用说明**：以下判定逻辑基于 ADR-0004 中定义的 `AlertState` 枚举（UNDETECTED/SUSPECT/SEARCH/ALERT/ESCAPE/COMBAT）。为避免跨文档耦合，将完整判定规则内联于此。
+> **权威来源说明**：IsInCombat 的判定逻辑在 NPCManager 中实现（见 ADR-0004 §7），以下仅作为参考说明。
 
 **IsInCombat 判定条件**：
 - **进入战斗**：任意 NPC 的 AlertState 进入 `ALERT` 或以上状态（发现玩家），或玩家受到任意伤害
 - **退出战斗**：所有 NPC 的 AlertState 回到 `UNDETECTED` 且 10 秒内无伤害事件
 - **设计意图**：战斗状态表示玩家处于潜在威胁中，愤怒应该维持高位而非消散
 
-> **接口对齐说明**：ADR-0004 定义了 AlertState 枚举（UNDETECTED/SUSPECT/SEARCH/ALERT/ESCAPE/COMBAT）。此处使用 `UNDETECTED` 而非"IDLE"，因为 NPC AI 系统中不存在 IDLE 状态。
+> **接口调用说明**：实际实现时应调用 `NPCManager.Instance.IsAnyNPCInCombat()` 接口，而非重复实现判定规则。本文档仅作为参考说明，方便阅读而非作为实现依据。
 
 **Frenzy Threshold Lock（狂暴阈值锁定）**：
 
@@ -232,6 +256,7 @@ void Update()
 | `RAGE_DECAY_INTERVAL` | 3 秒 | 愤怒消散检查间隔 |
 | `RAGE_DECAY_AMOUNT` | 2 点 | 每次消散减少量 |
 | `COMBAT_EXIT_DELAY` | 10 秒 | 战斗状态退出延迟 |
+| `SOUL_SPLIT_SPEED_BONUS` | 10% | SOUL_SPLIT 状态移动速度加成（安全范围 0%~+15%） |
 
 - **锁定触发**：当 Rage **首次**超过 70 进入 FRENZIED 状态时，触发阈值锁定，同时记录锁定开始时间
 - **重入规则**：锁定期间内，如果玩家再次触发 FRENZIED（通过消散后再积累或直接击杀），**不重置**锁定计时器，锁定时间保持首次触发时的计时
@@ -243,6 +268,14 @@ void Update()
 **消散期间击杀行为**：
 - 立即停止消散
 - 从**当前值**开始累加新击杀的愤怒值（不抵消之前消散的愤怒）
+
+**连续战斗场景补充说明**：
+> 如果玩家在消散期间（`_rageDecayAccumulator > 0`）再次进入战斗，行为如下：
+> 1. `_rageDecayAccumulator` 被清除为 0（按照 §消散判定逻辑）
+> 2. 战斗状态持续期间不执行消散
+> 3. 战斗结束后，消散从 0 开始重新累积（而非从战斗前的累积时间继续）
+>
+> 这是**预期行为**：战斗状态表示玩家无暇顾及愤怒消散，每次战斗都是独立的情绪高峰。
 
 ### 公式定义
 
@@ -323,18 +356,20 @@ MovementSpeedBonus = Lerp(0.0, 0.1, Rage/100)  // 最高 +10%
 | 事件 | 来源 | 处理逻辑 |
 |------|------|----------|
 | `KillTagEvent{kill_tag: NPCIdentityType}` | GrittyTakedowns | 根据击杀目标身份计算理智/愤怒变化 |
-| `ClueDiscoveredEvent{clue_id, clue_category, discovery_stage, narrative_significance}` | Clue&Journal | 根据线索类别和发现阶段计算理智变化 |
+| `ClueDiscoveredEvent{clue_id, clue_category, discovery_stage, narrative_significance}` | Clue&Journal | 根据线索类别和发现阶段计算理智变化。**事件定义见 shared-types.md §11.4** |
 | `PlayerDamagedEvent{damage_type, is_lethal}` | Health&Lethality | 根据受伤程度计算理智/愤怒变化 |
 | `CombatStateChangedEvent{is_in_combat}` | NPC AI 系统 | 订阅此事件判断是否退出战斗状态 |
 
+> **类型定义说明**：`ClueDiscoveredEvent` 及其相关的 `ClueCategory`（§11.1）、`DiscoveryStage`（§11.2）、`NarrativeSignificance`（§11.3）已统一定义于 shared-types.md，实现时应从 shared-types 引用。
+
 #### CombatStateChangedEvent 接口定义
 
+> **权威来源说明**：`CombatStateChangedEvent` 的权威定义位于 ADR-0004（NPC AI 行为架构）§7 事件订阅与发布关系部分。ADR-0017 仅作为消费者引用此事件，不重复定义。
+
 ```csharp
-/// <summary>
-/// NPC AI 系统发布的战斗状态变更事件
-/// 由 NPCManager 在检测到任意 NPC AlertState 进入 ALERT 及以上状态时发布
-/// 在所有 NPC 都回到 UNDETECTED 状态时也发布一次（is_in_combat = false）
-/// </summary>
+// 引用位置：ADR-0004 §7（权威定义）
+// 消费者：SanityRageMeter (ADR-0017)
+
 public struct CombatStateChangedEvent
 {
     /// <summary>
@@ -351,26 +386,26 @@ public struct CombatStateChangedEvent
 }
 ```
 
+**IsInCombat 判定逻辑说明**：
+> IsInCombat 的实际判定逻辑在 NPCManager 中实现（ADR-0004），Sanity/Rage 系统仅通过事件订阅接收结果，不重复实现判定逻辑。实际实现时应调用：
+> ```csharp
+> bool isInCombat = NPCManager.Instance.IsAnyNPCInCombat();
+> ```
+> 而非在 Sanity/Rage 系统中内联判定规则。
+
 #### 事件发布（Outputs）
 
 | 事件 | 目标 | 数据内容 | 接口类型 |
 |------|------|----------|----------|
-| `VignetteRequest{intensity}` | ScreenEffects | 理智低时增加边缘暗角 | 事件发布 |
-| `NoiseRequest{intensity}` | ScreenEffects | 理智极低时增加视觉噪点 | 事件发布 |
-| `SaturationRequest{multiplier}` | ScreenEffects | 理智低时降低色彩饱和度 | 事件发布 |
-| `ShakeRequest{intensity}` | ScreenEffects | 愤怒高时增加准星抖动 | 事件发布 |
+| `ScreenEffectRequestEvent` | ScreenEffectsManager | 屏幕后处理效果请求（暗角/噪点/饱和度/抖动/模糊）。**事件定义见 ADR-0023** | 事件发布 |
+| `HUDOverlayOpacityRequest{opacity}` | UI System | Sanity=0 时 HUD 半透明叠加层透明度。**事件定义见 shared-types.md §12.3.1** | 事件发布 |
 | `MovementSpeedMultiplier{multiplier}` | PlayerController | 愤怒高时轻微增加移动速度 | 事件发布 |
-| `PsychologicalState{state}` | DynamicPostProcessing | 通知后处理系统当前心理状态 | 事件发布 |
+| `PsychologicalStateEvent{state}` | DynamicPostProcessing | 通知后处理系统当前心理状态。**事件定义见 shared-types.md §12.2** | 事件发布 |
 
-> **接口类型说明**：所有输出均通过**事件发布**（EventBus）实现。ScreenEffects 和 PlayerController 订阅对应事件。事件 Payload 结构如下：
-> ```csharp
-> public struct VignetteRequest { public float Intensity; }
-> public struct NoiseRequest { public float Intensity; }
-> public struct SaturationRequest { public float Multiplier; }
-> public struct ShakeRequest { public float Intensity; }
-> public struct MovementSpeedMultiplier { public float Multiplier; }
-> public struct PsychologicalStateEvent { public PsychologicalState State; }
-> ```
+> **接口类型说明**：
+> - 屏幕后处理效果（暗角/噪点/饱和度/抖动/模糊）通过统一的 `ScreenEffectRequestEvent` 发送，由 ScreenEffectsManager（ADR-0023）集中处理
+> - HUD 透明度请求保持独立（`HUDOverlayOpacityRequest`），因为它是 UI 层特效，不通过 ScreenEffectsManager
+> - 其他事件直接发布到 EventBus
 
 ---
 
@@ -441,15 +476,15 @@ public struct CombatStateChangedEvent
 
 本系统的实现依赖于以下 ADR 定义的系统：
 
-| 依赖系统 | 依赖关系 | 说明 |
-|----------|----------|------|
-| [ADR-0001: 事件驱动架构](./adr-0001-event-driven-architecture.md) | 必须 | 所有事件订阅/发布基于 EventBus |
-| [ADR-0004: NPC AI 行为架构](./adr-0004-npc-ai-behavior-architecture.md) | 必须 | CombatStateChangedEvent 来源；AlertState 枚举定义 |
-| [ADR-0008: 脆弱度与伤害系统](./adr-0008-health-lethality-architecture.md) | 必须 | PlayerDamagedEvent 定义 |
-| [ADR-0011: 沉重处决系统](./adr-0011-gritty-takedowns-architecture.md) | 必须 | KillTagEvent 定义 |
-| [ADR-0016: 线索与日志系统](./adr-0016-clue-journal-architecture.md) | 必须 | ClueDiscoveredEvent 来源（上游依赖）。注：此为接口声明式依赖，非实现依赖；两系统通过 EventBus 解耦，无循环引用问题 |
-| [ADR-0015: UI 系统](./adr-0015-ui-system-architecture.md) | 必须 | ScreenEffects 消费者；PsychologicalStateEvent 订阅 |
-| Shared Types: 伤害与命中类型 | 必须 | NPCIdentityType 枚举定义 |
+| 依赖系统 | 依赖关系 | 说明 | 最小接口集 |
+|----------|----------|------|------------|
+| [ADR-0001: 事件驱动架构](./adr-0001-event-driven-architecture.md) | 必须 | 所有事件订阅/发布基于 EventBus | - |
+| [ADR-0004: NPC AI 行为架构](./adr-0004-npc-ai-behavior-architecture.md) | 必须 | CombatStateChangedEvent 来源；AlertState 枚举定义 | `NPCManager.IsAnyNPCInCombat(): bool`<br>`NPCManager.GetAlertState(npcId): AlertState`<br>注：以 ADR-0004 实际签名为准 |
+| [ADR-0008: 脆弱度与伤害系统](./adr-0008-health-lethality-architecture.md) | 必须 | PlayerDamagedEvent 定义 | - |
+| [ADR-0011: 沉重处决系统](./adr-0011-gritty-takedowns-architecture.md) | 必须 | KillTagEvent 定义 | - |
+| [ADR-0016: 线索与日志系统](./adr-0016-clue-journal-architecture.md) | 必须 | ClueDiscoveredEvent 来源（上游依赖）。注：此为接口声明式依赖，非实现依赖；两系统通过 EventBus 解耦，无循环引用问题 | - |
+| [ADR-0015: UI 系统](./adr-0015-ui-system-architecture.md) | 必须 | ScreenEffects 消费者；PsychologicalStateEvent 订阅；Sanity=0 时 HUD 半透明叠加显示 | - |
+| Shared Types: 伤害与命中类型 | 必须 | NPCIdentityType 枚举定义 | - |
 
 ---
 
@@ -482,9 +517,9 @@ public struct CombatStateChangedEvent
 | VC-10 | Sanity = 19, Rage = 70 → 状态为 BROKEN | 边界条件：Rage <= 70 时为 BROKEN |
 | VC-11 | Sanity = 19, Rage = 71 → 状态为 SOUL_SPLIT | 边界条件：同时满足极端值 |
 | VC-12 | SOUL_SPLIT 状态下 Noise + Shake 同时生效 | 验证两个效果叠加 |
-| VC-13 | Rage 单次变化不超过 15 | 快速连续击杀时验证 Clamp 生效 |
+| VC-13 | Rage 单次变化不超过 15 | **单元测试（正向）**：创建测试用例，模拟 `RageDelta = BaseValue * MomentumMultiplier = 20 * 1.5 = 30`，验证实际 RageDelta 被 Clamp 为 15。<br>**单元测试（负向）**：模拟 `RageDelta = BaseValue * MomentumMultiplier = -20 * 1.5 = -30`，验证实际 RageDelta 被 Clamp 为 -15。<br>**集成测试**：快速连续击杀两个 VICTIM（BaseValue=-15，×1.3 Momentum），验证第二次击杀的 RageDelta 不超过 15。 |
 | VC-14 | CombatStateChangedEvent 触发战斗状态判断 | 模拟 NPC 进入 ALERT，验证 IsInCombat = true |
-| VC-15 | SOUL_SPLIT 状态下移动速度 +10% 符合设计意图 | **长期观察项（非单元测试）**：Playtest 验证玩家在 SOUL_SPLIT 状态反馈是否为"肾上腺素"体验（速度提升有感但视觉 debuff 明显），如不符合则调整 MovementSpeedBonus 数值 |
+| VC-15 | SOUL_SPLIT 状态下移动速度 +10% 符合设计意图 | **[Future Validation]** Playtest 验证玩家在 SOUL_SPLIT 状态反馈是否为"肾上腺素"体验（速度提升有感但视觉 debuff 明显），如不符合则调整 MovementSpeedBonus 数值。此验证项需要在完整可玩的 milestone 版本中进行，当前阶段仅做代码逻辑验证。 |
 
 ---
 
@@ -496,5 +531,6 @@ public struct CombatStateChangedEvent
 - [ADR-0011: 沉重处决系统](./adr-0011-gritty-takedowns-architecture.md) — KillTagEvent 定义；TieUp 转化线人机制
 - [ADR-0014: DialogTree 接口协议](./adr-0014-dialog-tree-interface-architecture.md) — 转化线人流程通过 DialogTree 实现
 - [ADR-0016: 线索与日志系统](./adr-0016-clue-journal-architecture.md) — ClueDiscoveredEvent 定义
-- [ADR-0015: UI 系统](./adr-0015-ui-system-architecture.md) — ScreenEffects 效果请求消费者
+- [ADR-0015: UI 系统](./adr-0015-ui-system-architecture.md) — HUDOverlayOpacityRequest 消费者
+- [ADR-0023: 屏幕特效系统](./adr-0023-screen-effects-system-architecture.md) — ScreenEffectRequestEvent 统一接口；ScreenEffectsManager 集中处理屏幕后处理效果
 - [Shared Types: 伤害与命中类型](./shared-types.md) — NPCIdentityType 枚举定义

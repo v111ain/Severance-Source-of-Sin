@@ -7,7 +7,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-10 (v2: 修复动画变体数量不一致，明确冷却计时规则)
+2026-04-11 (v4: 确认 §13.5 为 InteractionState 统一定义位置；补充 ChainRadius 与 ScaleMultiplier 交互规则的物件类别枚举说明；明确 EventQueueCapacity 与性能目标的约束关系)
 
 ## Context
 
@@ -65,7 +65,9 @@
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │                   InteractiveObject (Component)                       │   │
 │  │  - ObjectCategory: 物件类别                                          │   │
-│  │  - ObjectState: Available / InUse / OnCooldown / Depleted           │   │
+│  │  - InteractionState: Available / InUse / OnCooldown / Depleted     │   │
+│  │    （注意：此状态与 shared-types.md §3.5 的 ObjectState 不同，       │   │
+│  │     现已统一定义为 InteractionState，见 shared-types.md §13.5）       │   │
 │  │  - InteractionRadius: 交互半径 (0.5m - 2.5m)                          │   │
 │  │  - FieldOfView: 前向角度 (45° - 180°)                                 │   │
 │  │  - AnimationTags: 动画标签列表                                        │   │
@@ -91,14 +93,23 @@
 │  | `THROW_SM` | 小型投掷物 | 硬币、瓶盖、小石子 | 2 |
 │  | `OBSTACLE_PUSH` | 可推动障碍物 | 箱子、桶、椅子 | 2 |
 │  | `MECH_SWITCH` | 开关类机关 | 电灯开关、电路闸门 | 2 |
-│  | `INTEL_PICKUP` | 情报类物件拾取 | 手机、账本、文件 | 1 |
+│  | `INTEL_PICKUP` | 情报类物件拾取 | 手机、账本、文件 | 1 |（MVP 阶段情报类物件交互变化较少，单变体足够。如后续需要更多变体，可复用 DESTRUCT_GLASS 的玻璃破碎动画标签作为"情报物件破坏获取"的备选）
 │                                                                          │
-│  > **MVP 限制**：每个标签类别最多 3 种独特变体，超出限制必须复用现有标签。  │
+│  > **MVP 限制**：每个标签类别最多 3 种独特变体，超出限制必须复用现有标签。
+>
+> **INTEL_PICKUP 动画复用说明**：`INTEL_PICKUP`（情报类物件拾取）的动画变化较少，MVP 阶段单变体足够。如后续需要更多变体，可按以下优先级扩展：
+> 1. 复用 `THROW_SM`（小型投掷物）的抬手/释放动画序列，调整物件轨迹
+> 2. 复用 `DESTRUCT_GLASS`（玻璃制品破坏）的破碎粒子效果
+> 3. 新增独立 `INTEL_PICKUP` 动画变体
+>
+> 当前 MVP 采用方案 1（复用 THROW_SM），避免跨类别复用带来的语义混淆。  │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 物件状态机
+
+> **状态命名说明**：本 ADR 中的 `Available / InUse / OnCooldown / Depleted` 状态已统一定义为 `InteractionState`（shared-types.md §13.5），以区别于 shared-types §3.5 中的 `ObjectState`（物件生命周期状态）。
 
 ```
 [Available] ──玩家交互──▶ [InUse] ──动画完成──▶ [OnCooldown]
@@ -145,6 +156,30 @@ EventRadius = BaseRadius * Object.ScaleMultiplier * DistanceFalloff
 DistanceFalloff = Clamp(1.0 - (DistanceToObject / EventRadius), 0.0, 1.0)
 ```
 
+**ScaleMultiplier 与 ChainRadius 的交互规则**：
+> 当物件具有 `ChainTriggerable = true` 时，ChainRadius 按照以下规则与 ScaleMultiplier 交互：
+> - **爆炸类物件**（ObjectCategory = FireExtinguisher / GasolineCan / PropaneTank / Grenade / C4）：`EffectiveChainRadius = ChainRadius * ScaleMultiplier`
+>   - 原因：大型爆炸物（ScaleMultiplier > 1.0）应触发更远的连锁反应，符合物理直觉
+>   - 小型爆炸物（ScaleMultiplier < 1.0）连锁半径按比例缩小
+> - **非爆炸类物件**（ObjectCategory = Brick / MetalPipe / GlassBulb 等）：`ChainRadius` 不受 ScaleMultiplier 影响，保持固定值
+>   - 原因：推动障碍物等物件的连锁效果与尺寸无关
+>
+> **爆炸类物件类别枚举**（定义于 shared-types.md §3.2 ObjectCategory）：
+> ```csharp
+> public enum ObjectCategory
+> {
+>     // 爆炸类物件
+>     FireExtinguisher,  // 灭火器
+>     GasolineCan,       // 汽油桶
+>     PropaneTank,       // 丙烷罐
+>     Grenade,           // 手榴弹
+>     C4,                // C4 炸弹
+>     // ... 其他类别
+> }
+> ```
+>
+> **示例**：丙烷罐（BaseChainRadius = 3.0m, ScaleMultiplier = 1.5）爆炸时，EffectiveChainRadius = 4.5m，可引爆 4.5m 内的其他可连锁物件。
+
 ---
 
 ## Edge Cases
@@ -155,9 +190,9 @@ DistanceFalloff = Clamp(1.0 - (DistanceToObject / EventRadius), 0.0, 1.0)
 | EC-2 | 物件交互时 NPC 正看着该物件 | 物件仍可交互，NPC 立即发现玩家动作（Alert 状态） |
 | EC-3 | 动作锁定状态中尝试交互 | 输入被忽略，必须等待动画完成 |
 | EC-4 | 冷却中物件的远程触发 | OnCooldown → 触发无效但消耗弹药；Depleted → 无响应 |
-| EC-5 | 连锁爆炸 | ChainTriggerable + ChainRadius，每级 0.5s 延迟，限 MaxChainDepth 层 |
+| EC-5 | 连锁爆炸 | ChainTriggerable + ChainRadius，每级 0.5s 延迟，限 MaxChainDepth 层。<br><br>**EventQueue 行为与合并规则**：<br>- **队列容量**：EventQueue 最大容量为 10 个事件（EventQueueCapacity = 10）<br>- **入队时机**：新事件到达时直接入队，队列未满则正常添加<br>- **合并触发时机**：当新事件到达时队列已满（已有 10 个事件），该新事件不直接入队，而是触发合并流程<br>- **合并规则**：<br>  1. 同类型事件（均为 EXPLOSION）→ 合并为单个事件，intensity 叠加，duration 取最大值<br>  2. 不同类型事件 → 合并为 `EnvironmentalEvent{type=CHAOS, intensity=sum_of_intensities, duration=max_duration}`，NPC AI 系统收到 CHAOS 事件时额外增加 3 秒混乱持续时间<br><br>合并后的事件视为已处理完毕，下一帧可继续正常入队。 |
 | EC-6 | 投掷物飞行中玩家被攻击 | 投掷物保持轨迹落地，玩家按 Health 规则处理 |
-| EC-7 | 关卡重置时物件状态 | 全部恢复 Available，Depleted 超30秒可自动刷新。<br><br>**计时规则**：Depleted 计时为**连续计时**（玩家离开区域后计时不暂停），防止玩家反复进出刷新的 exploits。若需要暂停计时（如玩家死亡后重新读取检查点），CheckpointSystem 发送 `CheckpointRestoreRequestEvent` 时附带 `ResetCooldownTimers = true`，EnvironmentInteractionSystem 收到后重置所有计时器。<br><br>**与 World Map 系统集成**：当 `AreaClearedEvent` 触发时（NPC AI 系统检测到地区内敌人全灭），EnvironmentInteractionSystem 重置所有物件为 Available 状态。若需要立即重置（如玩家撤离后重新进入），由 CheckpointSystem 发送 `CheckpointRestoreRequestEvent` 触发地区初始化流程，EnvironmentInteractionSystem 订阅此事件完成物件重置。详见 ADR-0012。 |
+| EC-7 | 关卡重置时物件状态 | 全部恢复 Available。<br><br>**三状态超时刷新规则**：<br>- **Available**：无超时机制，持续保持可用<br>- **OnCooldown**：冷却计时器独立运行，当 `TimeSinceUsed >= CooldownDuration` 时自动刷新为 Available（由 EC-6 的冷却公式 `RemainingCooldown = Max(0, CooldownDuration - TimeSinceUsed)` 驱动）<br>- **Depleted**：独立于 OnCooldown 机制，采用 30 秒连续计时刷新为 Available<br><br>**计时器行为**：Depleted 计时为**连续计时**（玩家离开区域后计时不暂停），防止玩家反复进出刷新的 exploits。OnCooldown 计时同样为连续计时，不受玩家位置影响。<br><br>**计时器重置**：若需要暂停计时（如玩家死亡后重新读取检查点），CheckpointSystem 发送 `CheckpointRestoreRequestEvent` 时附带 `ResetCooldownTimers = true`，EnvironmentInteractionSystem 收到后重置所有 OnCooldown 和 Depleted 计时器。<br><br>**与 World Map 系统集成**：当 `AreaClearedEvent` 触发时（NPC AI 系统检测到地区内敌人全灭），EnvironmentInteractionSystem 重置所有物件为 Available 状态。若需要立即重置（如玩家撤离后重新进入），由 CheckpointSystem 发送 `CheckpointRestoreRequestEvent` 触发地区初始化流程，EnvironmentInteractionSystem 订阅此事件完成物件重置。详见 ADR-0012。 |
 
 ---
 
@@ -175,7 +210,11 @@ DistanceFalloff = Clamp(1.0 - (DistanceToObject / EventRadius), 0.0, 1.0)
 | 事件队列 | `EventQueueCapacity` | 10 | 3 - 10 |
 | 效果半径 | `SoundRadius_Explosion` | 8.0m | 5.0m - 25.0m |
 
-> **注**：`EventQueueCapacity = 10` 表示队列最大容量为 10 个事件。当队列满时，超出的事件被合并为一个"混乱"事件（增加 NPC 混乱持续时间）。性能指标"单帧处理 10 个环境事件"即为 EventQueueCapacity 的最大值。
+> **注**：`EventQueueCapacity = 10` 是事件队列的最大容量约束，与性能目标"单帧处理 10 个环境事件"是同一个约束的两方面描述：
+> - **容量视角**：EventQueue 最多同时容纳 10 个待处理事件
+> - **性能视角**：系统在单帧内可处理的上限为 10 个事件
+>
+> 当队列满（已有 10 个事件）时，新到达的事件不直接入队，而是触发合并流程，合并为一个"混乱"事件（CHAOS 类型），确保事件处理不会无限积压。
 
 ---
 

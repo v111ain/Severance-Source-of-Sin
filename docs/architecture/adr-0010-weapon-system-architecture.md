@@ -3,11 +3,34 @@
 ## Status
 **Proposed**（依赖 shared-types.md 的 APPROVED 类型定义）
 
+> **v1.4.1 更新**：修复以下评审问题
+> - CategoryToWeaponId 数据驱动改造
+> - 投掷物命中概率边界计算修正
+> - weapon_id 唯一性验证
+> - TryGetTemplate 方法新增
+> - HapticFeedbackManager 依赖注入说明修正
+> - GasolineCan/PropaneTank 映射补充
+> - WeaponQueryRequest 空值验证
+
+> **shared-types.md 类型完整性验证**：以下类型已在 shared-types.md（v1.3.0, APPROVED）中正确定义：
+> - `DamageType`（§2.1）✅
+> - `DamageRequest`（§2.3）✅
+> - `ExplosionEvent`（§2.4）✅
+> - `WeaponCategory`（§3.1）✅
+> - `RangeType`（§3.1.1）✅
+> - `AmmoType`（§3.1.2）✅
+> - `DetonationType`（§3.1.3）✅
+> - `ObjectCategory`（§3.2）✅
+> - `WeaponState`（§3.3）✅
+> - `WeaponStateChangedEvent`（§3.4）✅
+> - `ObjectStateChangedEvent`（§3.5）✅
+> - `WeaponQueryRequest/WeaponQueryResponse`（§3.8）✅
+
 ## Date
 2026-04-10
 
 ## Last Updated
-2026-04-10
+2026-04-11 (v1.4.2 — 评审修复)
 
 ## Context
 
@@ -46,63 +69,111 @@
 
 采用**组件化数据模型 + 事件驱动状态同步 + 爆炸计算委托**架构：
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Weapon System 架构                               │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                    WeaponSystem (Feature Layer)                       │   │
-│  │  - 管理所有武器数据模板（WeaponTemplateLibrary）                     │   │
-│  │  - 管理玩家持有武器的状态追踪                                       │   │
-│  │  - 处理武器切换逻辑（Tab/Q/E/X）                                    │   │
-│  │  - 订阅环境交互系统事件同步物件状态                                  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                    │                                      │
-│          ┌─────────────────────────┴─────────────────────────┐          │
-│          ▼                                                   ▼          │
-│  ┌───────────────────┐                           ┌───────────────────┐   │
-│  │  WeaponData       │                           │  WeaponStateMachine│   │
-│  │  (组件化数据模型)  │                           │  (玩家持有武器状态) │   │
-│  │                   │                           │                   │   │
-│  │ - DamageComponent │                           │ Stored          │   │
-│  │ - RangeComponent  │                           │ Equipped       │   │
-│  │ - AmmoComponent   │                           │ Holstered      │   │
-│  │ - ExplosiveComp.  │                           │ Used           │   │
-│  │ - AnimationTags   │                           │ Empty          │   │
-│  │                   │                           │ Reloading      │   │
-│  └───────────────────┘                           └───────────────────┘   │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                     Event Subscriptions                             │   │
-│  │  - ObjectStateChangedEvent (环境交互系统) → 同步物件状态            │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                     Event Publications                              │   │
-│  │  - WeaponStateChangedEvent → UI系统                                │   │
-│  │  - DamageRequest → Health系统（伤害计算由Health执行）                │   │
-│  │  - ExplosionEvent → Health系统（ExplosionHandler在Health System）   │   │
-│  │  - WeaponAwareness → NPC AI系统                                    │   │
-│  │  - WeaponUsedEvent → 音频系统                                      │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  ⚠️ 爆炸伤害计算由 Health System 的 ExplosionHandler 执行                │
-│     Weapon System 仅发送位置参数，不进行伤害计算                          │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-
 ### 1. WeaponData 组件化数据模型
 
 > **⚠️ 初始化时序说明（已知限制）**：WeaponData 作为 ScriptableObject，其引用字段在第一次访问时可能尚未初始化。
 > WeaponTemplateLibrary 通过 `Awake()` 构建映射表，但 ScriptableObject 的加载顺序在不同平台可能不一致。
 >
-> **Mitigation**：所有查询方法都包含防御性检查（null 返回而非异常），确保安全返回。
-> 这是 Unity ScriptableObject 系统的已知限制，接受为合理的工程权衡。
+> **Enhanced Mitigation（v1.2）**：
+> 1. 所有查询方法都包含防御性检查（null 返回而非异常），确保安全返回
+> 2. 添加 `IPreprocessBuild` 预处理，在打包前强制调用 `RebuildLookupMaps()` 验证映射表完整性
+> 3. 提供 Editor 工具 `[ValidateWeaponLibrary]` MenuItem，一键验证所有 WeaponData 引用完整性
+> 4. 构建时自动输出验证报告，列出所有孤立或缺失的 WeaponData 引用
 >
-> **验证方式**：通过 `WeaponTemplateLibrary.RebuildLookupMaps()` Editor menu item 手动重建映射表，确保编辑器下数据一致。
+> **验证方式**：
+> - Editor 下：右键 `WeaponTemplateLibrary` → **Validate Weapon Library**
+> - 打包前：`Unity Editor` → **Build → Validate Weapon System** 自动验证
+>
+> 这是 Unity ScriptableObject 系统的已知限制，通过多层防护缓解。
 
+```csharp
+// 验证工具（Editor only）
+#if UNITY_EDITOR
+[UnityEditor.MenuItem("Game/Weapons/Validate Weapon Library")]
+public static void ValidateWeaponLibrary()
+{
+    var library = UnityEditor.Selection.activeObject as WeaponTemplateLibrary;
+    if (library == null) return;
 
+    var issues = new List<string>();
+    var allIds = library.GetAllTemplateIds().ToList();
+
+    foreach (var id in allIds)
+    {
+        var template = library.GetTemplate(id);
+        if (template == null)
+            issues.Add($"[MISSING] weapon_id '{id}' has no corresponding WeaponData");
+    }
+
+    if (issues.Count == 0)
+        UnityEditor.EditorUtility.DisplayDialog("Validation Passed",
+            $"All {allIds.Count} weapons validated successfully.", "OK");
+    else
+    {
+        string message = string.Join("\n", issues);
+        UnityEditor.EditorUtility.DisplayDialog("Validation Failed",
+            $"Found {issues.Count} issues:\n\n{message}", "OK");
+    }
+}
+
+// 打包前验证（IPreprocessBuild）
+public class WeaponSystemPreprocessBuild : IPreprocessBuild
+{
+    public int callbackOrder => 0;
+
+    public void OnPreprocessBuild(BuildTarget target, string path)
+    {
+        var libraries = UnityEditor.AssetDatabase.FindAssets("t:WeaponTemplateLibrary")
+            .Select(guid => UnityEditor.AssetDatabase.LoadAssetAtPath<WeaponTemplateLibrary>(
+                UnityEditor.AssetDatabase.GUIDToAssetPath(guid)))
+            .Where(l => l != null);
+
+        foreach (var library in libraries)
+        {
+            library.RebuildLookupMaps();
+            var allIds = library.GetAllTemplateIds().ToList();
+
+            // 检查 weapon_id 唯一性（重复时抛出 Error 而非仅 Warning）
+            if (_duplicateWeaponIds.Count > 0)
+            {
+                throw new BuildFailedException(
+                    $"[WeaponSystem] Duplicate weapon_id(s) found: {string.Join(", ", _duplicateWeaponIds)}. " +
+                    "Each weapon_id must be unique across hotWeapons and environmentalWeapons.");
+            }
+
+            foreach (var id in allIds)
+            {
+                if (library.GetTemplate(id) == null)
+                    throw new BuildFailedException(
+                        $"[WeaponSystem] Missing WeaponData for weapon_id: {id}");
+            }
+
+            // 检查 Legacy 模式是否遗漏爆炸物
+            CheckLegacyModeCompleteness(library);
+        }
+    }
+
+    private void CheckLegacyModeCompleteness(WeaponTemplateLibrary library)
+    {
+        // Legacy 字段中缺少 GasolineCan 和 PropaneTank
+        // 如果使用 Legacy 字段（列表为空），发出警告
+        var usingLegacyFields = (library.hotWeapons == null || library.hotWeapons.Count == 0) &&
+                                (library.environmentalWeapons == null || library.environmentalWeapons.Count == 0);
+
+        if (usingLegacyFields)
+        {
+            // 检查 Legacy 字段中是否包含 GasolineCan 和 PropaneTank
+            // 由于 Legacy 字段使用 PascalCase 命名（如 GasolineCan），我们需要检查 WeaponData 引用
+            // 如果需要支持这两个爆炸物，必须迁移到列表方式
+            UnityEngine.Debug.LogWarning(
+                "[WeaponSystem] Using Legacy field assignment mode. " +
+                "Note: GasolineCan and PropaneTank are NOT available in Legacy fields. " +
+                "If you need these explosives, migrate to the list-based approach (hotWeapons/environmentalWeapons).");
+        }
+    }
+}
+#endif
+```
 
 ```csharp
 // WeaponData.cs
@@ -147,47 +218,9 @@ public class RangeComponent
 public class AmmoComponent
 {
     public AmmoType ammo_type;       // 定义见 shared-types.md §3.1.2
-    public int ammo_capacity;
-
-    [SerializeField]
-    [Tooltip("当前弹药数（通过 CurrentAmmo 属性访问）")]
-    private int _currentAmmo;         // 私有字段，公开属性访问
-
-    /// <summary>
-    /// 当前弹药数（属性访问器，防止外部意外修改）
-    /// </summary>
-    /// <remarks>
-    /// <b>线程安全说明</b>：此属性在主线程独占环境下是安全的。
-    /// 如果游戏存在 Job System 多线程访问需求，请使用以下方案之一：
-    /// 1. 使用 <c>System.Threading.Interlocked</c> 包装整数操作
-    /// 2. 使用 <c>volatile</c> 声明 <c>_currentAmmo</c> 字段
-    /// Unity 主线程独占访问场景下无需修改。
-    /// </remarks>
-    public int CurrentAmmo
-    {
-        get => _currentAmmo;
-        private set => _currentAmmo = Mathf.Clamp(value, 0, ammo_capacity);
-    }
-
-    /// <summary>
-    /// 消耗弹药（返回实际消耗数量）
-    /// </summary>
-    public int Consume(int amount)
-    {
-        int consumed = Mathf.Min(amount, _currentAmmo);
-        _currentAmmo -= consumed;
-        return consumed;
-    }
-
-    /// <summary>
-    /// 填充弹药
-    /// </summary>
-    public void Refill(int amount = -1)
-    {
-        _currentAmmo = amount < 0 ? ammo_capacity : Mathf.Min(amount, ammo_capacity);
-    }
-
-    public float reload_time;       // 秒
+    public int ammo_capacity;        // 弹匣容量
+    public int current_ammo;         // 当前弹药数
+    public float reload_time;         // 换弹时间（秒）
 }
 
 // 爆炸组件（爆炸物）
@@ -223,22 +256,46 @@ public class WeaponTemplateLibrary : ScriptableObject
 
     [Header("Legacy Field Assignments (Deprecated)")]
     [Tooltip("保留以兼容旧版数据迁移。新项目请使用上面的列表方式。")]
-    public WeaponData brick;
-    public WeaponData metal_pipe;
-    public WeaponData fire_extinguisher;
-    public WeaponData glass_bulb;
-    public WeaponData wire;
-    public WeaponData broken_glass;
-    public WeaponData pistol;
-    public WeaponData rifle;
-    public WeaponData shotgun;
-    public WeaponData grenade;
-    public WeaponData c4;
+    public WeaponData Brick;              // PascalCase 命名（兼容 C# 规范）
+    public WeaponData MetalPipe;
+    public WeaponData FireExtinguisher;
+    public WeaponData GlassBulb;
+    public WeaponData Wire;
+    public WeaponData BrokenGlass;
+    public WeaponData Pistol;
+    public WeaponData Rifle;
+    public WeaponData Shotgun;
+    public WeaponData Grenade;
+    public WeaponData C4;
 
     // 按 ID 查询模板（返回 null 如果不存在，不会抛异常）
     public WeaponData GetTemplate(string weapon_id)
     {
-        if (string.IsNullOrEmpty(weapon_id)) return null;
+        if (TryGetTemplate(weapon_id, out var template))
+            return template;
+        return null;
+    }
+
+    /// <summary>
+    /// 尝试获取武器模板（推荐方法）
+    /// </summary>
+    /// <param name="weapon_id">武器 ID</param>
+    /// <param name="template">输出模板（如果存在）</param>
+    /// <returns>true = 模板存在，false = 模板不存在或 weapon_id 为空</returns>
+    /// <remarks>
+    /// <b>设计理由</b>：此方法明确区分"不存在"和"初始化失败"两种情况。
+    /// 当返回 false 时，调用方可通过 <c>template == null</c> 判断为"不存在"；
+    /// 若初始化失败（_initialized == false 但仍然无法获取），则应抛出异常而非静默返回。
+    /// </remarks>
+    public bool TryGetTemplate(string weapon_id, out WeaponData template)
+    {
+        template = null;
+
+        if (string.IsNullOrEmpty(weapon_id))
+        {
+            Debug.LogWarning($"[WeaponTemplateLibrary] TryGetTemplate called with null/empty weapon_id");
+            return false;
+        }
 
         // 防御性检查：确保映射表已初始化
         if (!_initialized)
@@ -247,13 +304,19 @@ public class WeaponTemplateLibrary : ScriptableObject
         // 启动时构建映射表，运行时 O(1) 查询
         // 热武器
         if (_hotWeaponMap.TryGetValue(weapon_id, out var hotWeapon))
-            return hotWeapon;
+        {
+            template = hotWeapon;
+            return true;
+        }
 
         // 环境物件
         if (_environmentalMap.TryGetValue(weapon_id, out var envWeapon))
-            return envWeapon;
+        {
+            template = envWeapon;
+            return true;
+        }
 
-        return null;
+        return false;
     }
 
     // 按类别映射到 WeaponData（供环境交互系统调用）
@@ -265,32 +328,131 @@ public class WeaponTemplateLibrary : ScriptableObject
     }
 
     /// <summary>
-    /// 将 ObjectCategory 转换为对应默认武器 ID
+    /// 将 ObjectCategory 转换为对应默认武器 ID（数据驱动方式）
     /// </summary>
+    /// <remarks>
+    /// <b>设计理由</b>：相较于硬编码 switch 语句，数据驱动方式：
+    /// 1. 新增 ObjectCategory 枚举值时无需修改此方法（遵循开闭原则）
+    /// 2. 映射关系集中管理，便于维护
+    /// 3. 支持运行时动态配置（如通过 ScriptableObject 定义特殊映射）
+    ///
+    /// <b>默认映射表</b>：
+    /// | ObjectCategory | weapon_id |
+    /// |----------------|-----------|
+    /// | Brick | brick |
+    /// | MetalPipe | metal_pipe |
+    /// | FireExtinguisher | fire_extinguisher |
+    /// | GlassBulb | glass_bulb |
+    /// | Wire | wire |
+    /// | BrokenGlass | broken_glass |
+    /// | Pistol | pistol |
+    /// | Rifle | rifle |
+    /// | Shotgun | shotgun |
+    /// | Grenade | grenade |
+    /// | C4 | c4 |
+    /// | GasolineCan | gasoline_can |
+    /// | PropaneTank | propane_tank |
+    ///
+    /// <b>扩展方式</b>：如需新增映射，可通过 Inspector 配置 categoryToWeaponIdMapping 列表，
+    /// 或重写 <c>CategoryToWeaponId</c> 方法自定义映射逻辑。
+    /// </remarks>
     private string CategoryToWeaponId(ObjectCategory category)
     {
-        return category switch
-        {
-            ObjectCategory.Brick => "brick",
-            ObjectCategory.MetalPipe => "metal_pipe",
-            ObjectCategory.FireExtinguisher => "fire_extinguisher",
-            ObjectCategory.GlassBulb => "glass_bulb",
-            ObjectCategory.Wire => "wire",
-            ObjectCategory.BrokenGlass => "broken_glass",
-            ObjectCategory.Pistol => "pistol",
-            ObjectCategory.Rifle => "rifle",
-            ObjectCategory.Shotgun => "shotgun",
-            ObjectCategory.Grenade => "grenade",
-            ObjectCategory.C4 => "c4",
-            _ => null
-        };
+        if (_categoryToWeaponIdMap == null)
+            BuildCategoryToWeaponIdMap();
+
+        return _categoryToWeaponIdMap.TryGetValue(category, out var weaponId) ? weaponId : null;
     }
+
+    /// <summary>
+    /// 类别到武器 ID 的映射表（支持运行时配置）
+    /// </summary>
+    [Tooltip("ObjectCategory 到 weapon_id 的映射表，可通过 Inspector 配置")]
+    [SerializeField]
+    private List<CategoryWeaponMapping> categoryToWeaponIdMapping = new();
+
+    /// <summary>
+    /// 运行时映射缓存（避免每次查询都遍历列表）
+    /// </summary>
+    private Dictionary<ObjectCategory, string> _categoryToWeaponIdMap;
+
+    /// <summary>
+    /// 类别-武器映射结构
+    /// </summary>
+    [System.Serializable]
+    public class CategoryWeaponMapping
+    {
+        public ObjectCategory category;
+        public string weaponId;
+    }
+
+    /// <summary>
+    /// 构建类别到武器 ID 的映射缓存
+    /// </summary>
+    /// <remarks>
+    /// 优先使用 Inspector 配置的映射表（categoryToWeaponIdMapping），
+    /// 如果为空则回退到硬编码的默认映射（向后兼容）。
+    /// </remarks>
+    private void BuildCategoryToWeaponIdMap()
+    {
+        _categoryToWeaponIdMap = new Dictionary<ObjectCategory, string>();
+
+        // 如果 Inspector 配置了映射，使用配置的映射
+        if (categoryToWeaponIdMapping != null && categoryToWeaponIdMapping.Count > 0)
+        {
+            foreach (var mapping in categoryToWeaponIdMapping)
+            {
+                if (mapping.category != ObjectCategory.Unknown)
+                    _categoryToWeaponIdMap[mapping.category] = mapping.weaponId;
+            }
+        }
+        else
+        {
+            // 回退到硬编码默认映射（确保基本功能可用）
+            _categoryToWeaponIdMap[ObjectCategory.Brick] = "brick";
+            _categoryToWeaponIdMap[ObjectCategory.MetalPipe] = "metal_pipe";
+            _categoryToWeaponIdMap[ObjectCategory.FireExtinguisher] = "fire_extinguisher";
+            _categoryToWeaponIdMap[ObjectCategory.GlassBulb] = "glass_bulb";
+            _categoryToWeaponIdMap[ObjectCategory.Wire] = "wire";
+            _categoryToWeaponIdMap[ObjectCategory.BrokenGlass] = "broken_glass";
+            _categoryToWeaponIdMap[ObjectCategory.Pistol] = "pistol";
+            _categoryToWeaponIdMap[ObjectCategory.Rifle] = "rifle";
+            _categoryToWeaponIdMap[ObjectCategory.Shotgun] = "shotgun";
+            _categoryToWeaponIdMap[ObjectCategory.Grenade] = "grenade";
+            _categoryToWeaponIdMap[ObjectCategory.C4] = "c4";
+            _categoryToWeaponIdMap[ObjectCategory.GasolineCan] = "gasoline_can";
+            _categoryToWeaponIdMap[ObjectCategory.PropaneTank] = "propane_tank";
+        }
+    }
+
+#if UNITY_EDITOR
+    [ContextMenu("Rebuild Category-Weapon Mapping")]
+    private void RebuildCategoryWeaponMapping()
+    {
+        BuildCategoryToWeaponIdMap();
+    }
+#endif
 
     // 启动时构建 ID → WeaponData 映射表
     private Dictionary<string, WeaponData> _hotWeaponMap = new();
     private Dictionary<string, WeaponData> _environmentalMap = new();
     private bool _initialized = false;
 
+    /// <summary>
+    /// 存储重复的 weapon_id（用于警告/Error）
+    /// </summary>
+    private List<string> _duplicateWeaponIds = new();
+
+    /// <summary>
+    /// 调用层级说明：
+    /// - Play Mode: Awake() → BuildLookupMaps() → _initialized = true
+    /// - Editor Inspector 修改: OnValidate() → delayCall → BuildLookupMaps()
+    /// - Editor ContextMenu: RebuildLookupMaps() → BuildLookupMaps()
+    ///
+    /// 注意：OnValidate 使用 delayCall 异步调用，避免在 Inspector 修改过程中过早触发。
+    /// 在 Play Mode 下，Awake() 会首先执行并设置 _initialized = true，
+    /// 后续 OnValidate 的 delayCall 会检查 _initialized 状态，如果已初始化则直接返回。
+    /// </summary>
     private void Awake()
     {
         BuildLookupMaps();
@@ -320,14 +482,36 @@ public class WeaponTemplateLibrary : ScriptableObject
     {
         _hotWeaponMap.Clear();
         _environmentalMap.Clear();
+        _duplicateWeaponIds.Clear();
 
         void Register(WeaponData data)
         {
             if (data == null) return;
+            if (string.IsNullOrEmpty(data.weapon_id))
+            {
+                Debug.LogWarning($"[WeaponTemplateLibrary] WeaponData with null/empty weapon_id found, skipping registration");
+                return;
+            }
+
+            // 检查 weapon_id 唯一性
             if (data.category == WeaponCategory.HotWeapon)
+            {
+                if (_hotWeaponMap.ContainsKey(data.weapon_id))
+                {
+                    Debug.LogWarning($"[WeaponTemplateLibrary] Duplicate weapon_id '{data.weapon_id}' found in hotWeapons. Last occurrence will be used.");
+                    _duplicateWeaponIds.Add(data.weapon_id);
+                }
                 _hotWeaponMap[data.weapon_id] = data;
+            }
             else
+            {
+                if (_environmentalMap.ContainsKey(data.weapon_id))
+                {
+                    Debug.LogWarning($"[WeaponTemplateLibrary] Duplicate weapon_id '{data.weapon_id}' found in environmentalWeapons. Last occurrence will be used.");
+                    _duplicateWeaponIds.Add(data.weapon_id);
+                }
                 _environmentalMap[data.weapon_id] = data;
+            }
         }
 
         // 优先使用列表方式注册（推荐）
@@ -343,17 +527,19 @@ public class WeaponTemplateLibrary : ScriptableObject
         if ((hotWeapons == null || hotWeapons.Count == 0) ||
             (environmentalWeapons == null || environmentalWeapons.Count == 0))
         {
-            Register(pistol);
-            Register(rifle);
-            Register(shotgun);
-            Register(grenade);
-            Register(c4);
-            Register(brick);
-            Register(metal_pipe);
-            Register(fire_extinguisher);
-            Register(glass_bulb);
-            Register(wire);
-            Register(broken_glass);
+            Register(Pistol);
+            Register(Rifle);
+            Register(Shotgun);
+            Register(Grenade);
+            Register(C4);
+            Register(Brick);
+            Register(MetalPipe);
+            Register(FireExtinguisher);
+            Register(GlassBulb);
+            Register(Wire);
+            Register(BrokenGlass);
+            // ⚠️ 注意：GasolineCan 和 PropaneTank 在 Legacy 字段中不存在
+            // 如果需要支持这些爆炸物，请使用列表方式（hotWeapons/environmentalWeapons）添加
         }
 
         _initialized = true;
@@ -376,49 +562,39 @@ public class WeaponTemplateLibrary : ScriptableObject
 public class WeaponStateMachine
 {
     private Dictionary<string, WeaponState> _weaponStates = new();
-    private string _equippedHotWeaponId = string.Empty;  // 确保只有一把热武器处于 Equipped
+    private string _equippedHotWeaponId = string.Empty;
+
+    // WeaponTemplateLibrary 作为状态机的内部依赖，确保热武器独占性检查始终生效
+    private WeaponTemplateLibrary _library;
+
+    public WeaponStateMachine(WeaponTemplateLibrary library)
+    {
+        _library = library ?? throw new System.ArgumentNullException(nameof(library));
+    }
 
     /// <summary>
     /// 判断指定武器是否为热武器
     /// </summary>
-    /// <param name="weapon_id">武器 ID</param>
-    /// <param name="library">
-    /// 武器模板库引用。调用方需确保传入非 null 的 library，
-    /// 否则热武器独占性检查将无法执行（hasWeapon 视为 false）。
-    /// </param>
-    private bool IsHotWeapon(string weapon_id, WeaponTemplateLibrary library)
+    private bool IsHotWeapon(string weapon_id)
     {
-        var template = library?.GetTemplate(weapon_id);
+        var template = _library?.GetTemplate(weapon_id);
         return template?.category == WeaponCategory.HotWeapon;
     }
 
     /// <summary>
-    /// 设置武器状态（无热武器独占性检查的重载）
+    /// 设置武器状态（热武器独占性检查内置于状态机，无需外部调用方传参）
     /// </summary>
     /// <remarks>
-    /// 仅在不涉及热武器切换时使用（如环境物件状态更新）。
-    /// 热武器切换请使用 <see cref="SetState(string, WeaponState, WeaponTemplateLibrary)"/>。
+    /// <b>热武器独占性保证</b>：状态机内部维护 <c>_equippedHotWeaponId</c>，
+    /// 当任意热武器被设为 Equipped 时，之前处于 Equipped 状态的热武器自动转为 Holstered。
+    /// 此逻辑在状态机内部执行，调用方无需感知。
     /// </remarks>
     public void SetState(string weapon_id, WeaponState newState)
     {
-        SetState(weapon_id, newState, null);
-    }
-
-    /// <summary>
-    /// 设置武器状态（带热武器独占性检查）
-    /// </summary>
-    /// <param name="weapon_id">武器 ID</param>
-    /// <param name="newState">新状态</param>
-    /// <param name="library">
-    /// 武器模板库引用（用于热武器独占性检查）。
-    /// 传入 null 时热武器检查将被跳过。
-    /// </param>
-    public void SetState(string weapon_id, WeaponState newState, WeaponTemplateLibrary library)
-    {
         var oldState = _weaponStates.GetValueOrDefault(weapon_id, WeaponState.Stored);
 
-        // 热武器独占性检查
-        if (newState == WeaponState.Equipped && IsHotWeapon(weapon_id, library))
+        // 热武器独占性检查（内置于状态机）
+        if (newState == WeaponState.Equipped && IsHotWeapon(weapon_id))
         {
             // 将之前的热武器设为 Holstered
             if (!string.IsNullOrEmpty(_equippedHotWeaponId) && _equippedHotWeaponId != weapon_id)
@@ -484,8 +660,12 @@ public void TriggerExplosion(string weapon_id, Vector3 position)
 // ThrowableHandler.cs
 public class ThrowableHandler
 {
-    // 硬编码默认值（fallback）
-    private const float DEFAULT_MIN_HIT_CHANCE = 0.3f;
+    private readonly WeaponTuningSO _tuning;
+
+    public ThrowableHandler(WeaponTuningSO tuning)
+    {
+        _tuning = tuning ?? throw new System.ArgumentNullException(nameof(tuning));
+    }
 
     /// <summary>
     /// 计算投掷物命中概率
@@ -493,23 +673,30 @@ public class ThrowableHandler
     /// <param name="range">实际投掷距离</param>
     /// <param name="melee_range">近战判定距离</param>
     /// <param name="throw_range">最大投掷距离</param>
-    /// <param name="min_hit_chance">最小命中概率（可由 TuningSO 配置，传 null 使用默认值）</param>
     /// <returns>命中概率 [0, 1]</returns>
-    public float CalculateHitChance(float range, float melee_range, float throw_range, float? min_hit_chance = null)
+    public float CalculateHitChance(float range, float melee_range, float throw_range)
     {
+        // 近战范围内必中
         if (range <= melee_range)
-            return 1.0f;  // 近战范围内必中
+            return 1.0f;
 
-        float minChance = min_hit_chance ?? DEFAULT_MIN_HIT_CHANCE;
-        return Mathf.Clamp(
-            1 - (range - melee_range) / (throw_range - melee_range),
-            minChance,
-            1.0f);
+        // 超过最大投掷距离，返回最小概率
+        if (range >= throw_range)
+            return _tuning?.minHitChance ?? 0.3f;
+
+        // 从 TuningSO 获取最小命中概率配置
+        float minChance = _tuning?.minHitChance ?? 0.3f;
+
+        // 线性插值：近距离（melee_range）为 100%，远距离（throw_range）为 minChance
+        float t = (range - melee_range) / (throw_range - melee_range);
+        float hitChance = Mathf.Lerp(1.0f, minChance, t);
+        return Mathf.Clamp(hitChance, minChance, 1.0f);
     }
 }
 ```
 
-> **注意**：`min_hit_chance` 优先使用 TuningSO 配置值（见 §8），未配置时使用默认值 0.3f。
+> **配置来源**：`min_hit_chance` 由 `WeaponTuningSO.minHitChance`（见 §8）配置。
+> 未配置时使用默认值 0.3f。
 
 ### 5.1 投掷物轨迹计算
 
@@ -556,6 +743,17 @@ public class ThrowableTrajectory
     /// <param name="maxTime">最大飞行时间（秒）</param>
     /// <param name="layerMask">碰撞检测层掩码</param>
     /// <returns>命中点位置（未命中返回 null）</returns>
+    /// <remarks>
+    /// <b>步长计算说明</b>：
+    /// 步长通过 <c>Mathf.Clamp(0.05f / (speed / 5f), 0.01f, 0.05f)</c> 计算。
+    /// - 速度 5m/s 时步长为 50ms（Nyquist 采样）
+    /// - 速度 25m/s 时步长为 10ms（最小步长，防止漏检）
+    /// - 速度更快时步长仍为 10ms（钳制在最大步长 50ms 与最小步长 10ms 之间）
+    ///
+    /// <b>调用限制</b>：建议投掷速度控制在 2.5m/s ~ 25m/s 范围内。
+    /// 低于 2.5m/s 时步长固定为 50ms（可能漏检超近目标）；
+    /// 高于 25m/s 时步长仍为 10ms（计算量增加但不漏检）。
+    /// </remarks>
     public static Vector3? RaycastThrow(Vector3 origin, Vector3 direction, float speed, float maxTime, LayerMask layerMask)
     {
         // 自适应步长：速度越快，步长越小，确保高速投掷物不漏检
@@ -587,6 +785,66 @@ public class ThrowableTrajectory
 
 > **注意**：投掷物轨迹计算由 Weapon System 维护，供 ThrowableHandler 在计算命中概率时使用。
 > 轨迹计算不涉及伤害判定，伤害由 Health System 的 DamageRequest 处理。
+
+### 6.1 ThrowableHandler / ThrowableTrajectory 归属说明
+
+> **⚠️ 接口声明**：以下接口供其他系统调用
+>
+> **跨系统调用方式**：Gritty Takedowns 等其他系统需要使用投掷物判定逻辑时，应通过以下方式：
+> 1. **WeaponQueryRequest/WeaponQueryResponse（事件驱动）**：通过事件总线查询 WeaponData
+> 2. **WeaponUsedEvent（事件驱动）**：订阅 WeaponSystem 发布的相关事件
+>
+> **设计理由**：投掷物判定涉及武器配置（throw_range、min_hit_chance 等），这些参数属于 WeaponSystem 的职责范围。事件驱动方式保持系统间松耦合，与 shared-types.md §3.8 定义的契约一致。
+
+#### 6.1.1 WeaponQuery 接口（事件驱动方式）
+
+> **⚠️ 接口实现方式统一**：Weapon System 采用**事件驱动**方式提供 WeaponQuery 接口。
+> 与 Gritty Takedowns（ADR-0011）的 `WeaponQueryRequest/WeaponQueryResponse`（shared-types.md §3.8）保持一致。
+>
+> **设计理由**：
+> - 事件驱动保持系统间松耦合
+> - 与 shared-types.md 中定义的 `WeaponQueryRequest/WeaponQueryResponse` 契约一致
+> - 便于跨系统追踪和调试
+
+```csharp
+// WeaponSystem.cs - 订阅 WeaponQueryRequest
+public void OnWeaponQueryRequest(WeaponQueryRequest request)
+{
+    // ⚠️ 验证请求的 weapon_id 不为空
+    if (string.IsNullOrEmpty(request.weapon_id))
+    {
+        Debug.LogWarning($"[WeaponSystem] WeaponQueryRequest with null/empty weapon_id ignored");
+        return;
+    }
+
+    var weaponData = GetWeaponData(request.weapon_id);
+
+    // 如果模板存在，验证返回的 weapon_id 与请求的匹配
+    // 防止数据配置错误导致返回错误数据
+    if (weaponData != null && weaponData.weapon_id != request.weapon_id)
+    {
+        Debug.LogError($"[WeaponSystem] WeaponData weapon_id mismatch: " +
+            $"requested '{request.weapon_id}', got '{weaponData.weapon_id}'. " +
+            $"This indicates a data configuration error in WeaponTemplateLibrary.");
+    }
+
+    EventBus.Instance.Publish(new WeaponQueryResponse
+    {
+        weapon_id = request.weapon_id,
+        data = weaponData
+    });
+}
+
+// WeaponSystem.cs - 查询接口（内部实现）
+public WeaponData GetWeaponData(string weapon_id)
+{
+    return _library?.GetTemplate(weapon_id);
+}
+```
+
+> **调用方式**：Gritty Takedowns（或其他系统）通过事件总线发送 `WeaponQueryRequest`，
+> Weapon System 订阅并返回 `WeaponQueryResponse`。
+> 详见 shared-types.md §3.8 和 ADR-0011 §7。
 
 ### 6. 事件接口定义
 
@@ -654,7 +912,20 @@ Assets/Game/
 │       └── WeaponTuningSO.cs            # 调参配置
 ```
 
-### 8. 手柄震动反馈抽象层
+### 8. 调参配置（WeaponTuningSO）
+
+```csharp
+// Config/WeaponTuningSO.cs
+[CreateAssetMenu(menuName = "Game/Weapons/Tuning")]
+public class WeaponTuningSO : ScriptableObject
+{
+    [Header("投掷物参数")]
+    [Tooltip("投掷物最小命中概率（默认 0.3）")]
+    public float minHitChance = 0.3f;
+}
+```
+
+### 9. 手柄震动反馈抽象层
 
 ```csharp
 // HapticFeedbackConfig.cs
@@ -667,45 +938,48 @@ public interface IHapticFeedback
 }
 
 /// <summary>
-/// 手柄震动反馈单例实现（可在运行时替换为平台特定实现）
+/// 手柄震动反馈管理器
+/// 支持通过构造函数注入平台特定实现，默认使用通用平台实现
 /// </summary>
-public class HapticFeedbackManager : MonoBehaviour, IHapticFeedback
+/// <remarks>
+/// <b>依赖注入方式</b>：通过构造函数注入 <c>IHapticFeedback</c> 实现。
+/// 如果不注入，则使用 <c>DefaultHapticFeedback</c>（PC/通用平台）。
+///
+/// <b>使用示例</b>：
+/// <code>
+/// // 注入 PS5 特定实现
+/// var ps5Haptic = new PS5HapticFeedback();
+/// var hapticManager = new HapticFeedbackManager(ps5Haptic);
+///
+/// // 使用默认实现（PC）
+/// var defaultManager = new HapticFeedbackManager();
+/// </code>
+///
+/// <b>Feature Layer 规范</b>：通过构造函数注入依赖，而非使用单例模式，
+/// 便于单元测试时替换为 Mock 实现。
+/// </remarks>
+public class HapticFeedbackManager : IHapticFeedback
 {
-    public static IHapticFeedback Instance { get; private set; }
+    // 平台特定实现
+    private readonly IHapticFeedback _implementation;
 
-    private void Awake()
+    public HapticFeedbackManager(IHapticFeedback implementation = null)
     {
-        // 确保只有一个实例存在
-        if (Instance != null)
-        {
-            Destroy(gameObject);
-            return;
-        }
-        Instance = this;
-        DontDestroyOnLoad(gameObject);
+        // 默认实现（PC/通用平台），可注入平台特定实现
+        _implementation = implementation ?? new DefaultHapticFeedback();
     }
 
-    private void OnEnable()
+    public void PlayFeedback(HapticPattern pattern, float intensity)
     {
-        // Scene 切换时自动重新注册
-        UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
+        _implementation?.PlayFeedback(pattern, intensity);
     }
+}
 
-    private void OnDisable()
-    {
-        UnityEngine.SceneManagement.SceneManager.sceneLoaded -= OnSceneLoaded;
-    }
-
-    private void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
-    {
-        // Scene 切换后确保 Instance 仍然有效
-        // 如果当前实例被销毁但 Instance 未清空（理论上不会发生），进行修复
-        if (this != null && Instance == null)
-        {
-            Instance = this;
-        }
-    }
-
+/// <summary>
+/// 默认震动反馈实现（PC/通用平台）
+/// </summary>
+public class DefaultHapticFeedback : IHapticFeedback
+{
     public void PlayFeedback(HapticPattern pattern, float intensity)
     {
         // 平台特定实现（示例：PS5 DualSense）
@@ -713,7 +987,7 @@ public class HapticFeedbackManager : MonoBehaviour, IHapticFeedback
         {
             // PS5-specific haptic call
         }
-        // 其他平台...
+        // 其他平台使用默认实现
     }
 }
 
@@ -757,18 +1031,42 @@ public class HapticFeedbackConfig : ScriptableObject
         };
     }
 }
-```
 
-// WeaponSystem.cs - 调用示例
-public void TriggerHaptic(HapticPattern pattern)
+// WeaponSystem.cs - 依赖注入示例
+public class WeaponSystem
 {
-    var platform = Application.platform;
-    var intensity = _hapticConfig.GetIntensity(pattern, platform);
-    IHapticFeedback.Instance?.PlayFeedback(pattern, intensity);
+    private readonly HapticFeedbackManager _hapticManager;
+    private readonly HapticFeedbackConfig _hapticConfig;
+
+    /// <summary>
+    /// 构造函数（依赖注入）
+    /// </summary>
+    /// <param name="library">武器模板库（必须）</param>
+    /// <param name="hapticConfig">震动反馈配置（可选，为 null 时使用默认实现）</param>
+    public WeaponSystem(WeaponTemplateLibrary library, HapticFeedbackConfig hapticConfig = null)
+    {
+        _library = library ?? throw new System.ArgumentNullException(nameof(library));
+        _hapticConfig = hapticConfig;
+
+        // 通过构造函数注入 HapticFeedbackManager，而非硬编码 new
+        // 这样可以支持平台特定实现和单元测试 Mock
+        _hapticManager = new HapticFeedbackManager(_hapticConfig);
+    }
+
+    public void TriggerHaptic(HapticPattern pattern)
+    {
+        var platform = Application.platform;
+        var intensity = _hapticConfig != null
+            ? _hapticConfig.GetIntensity(pattern, platform)
+            : 0.5f;  // 默认强度
+        _hapticManager.PlayFeedback(pattern, intensity);
+    }
 }
 ```
 
-**相关文件**：`Assets/Game/Features/WeaponSystem/Config/HapticFeedbackConfig.cs`
+**相关文件**：
+- `Assets/Game/Features/WeaponSystem/Config/WeaponTuningSO.cs`
+- `Assets/Game/Features/WeaponSystem/Config/HapticFeedbackConfig.cs`
 
 ---
 
@@ -884,7 +1182,7 @@ public void TriggerHaptic(HapticPattern pattern)
 2. **环境物件状态同步**：订阅 ObjectStateChangedEvent 后，拾取/丢弃物件状态正确更新
 3. **武器切换机制**：Tab/Q/E/X 按键正确切换热武器/环境物件
 4. **爆炸事件发送**：ExplosionEvent 正确发送到 Health 系统，由 Health 执行伤害计算
-5. **投掷物命中判定**：远距离命中率不低于 DEFAULT_MIN_HIT_CHANCE (0.3f)
+5. **投掷物命中判定**：远距离命中率不低于 `WeaponTuningSO.minHitChance`（默认 0.3f）
 6. **热武器弹药**：弹药耗尽正确转入 Empty 状态，换弹时间符合 ReloadTime
 7. **WeaponQuery 接口**：Gritty Takedowns 查询返回正确的 WeaponData（含 weapon_id）
 8. **事件广播**：WeaponStateChangedEvent/DamageRequest/ExplosionEvent 正确发送到目标系统
@@ -915,3 +1213,17 @@ public void TriggerHaptic(HapticPattern pattern)
 - [共享类型定义](./shared-types.md) — **DamageRequest、ExplosionEvent、ObjectCategory 等跨 ADR 类型统一定义在此**
 - [Weapon System GDD](../../design/gdd/weapon-system.md) — 本 ADR 的设计依据
 - [事件总线 ICD](../../engine-reference/event-bus-icd.md) — 事件定义的权威文档
+
+## 附录：v1.4.x 修改日志
+
+| 日期 | 版本 | 修改内容 | 评审修复 |
+|------|------|---------|----------|
+| 2026-04-11 | v1.4.2 | IPreprocessBuild 中 weapon_id 重复升级为 Error | - |
+| 2026-04-11 | v1.4.2 | Validation 工具添加 Legacy 模式 GasolineCan/PropaneTank 警告 | - |
+| 2026-04-11 | v1.4.2 | BuildLookupMaps 调用层级说明补充 | - |
+| 2026-04-11 | v1.4.1 | CategoryToWeaponId 改为数据驱动，支持配置化映射 | #1 修复 |
+| 2026-04-11 | v1.4.1 | CalculateHitChance 边界计算修正 | #2 修复 |
+| 2026-04-11 | v1.4.1 | BuildLookupMaps 添加 weapon_id 唯一性验证 | #3 修复 |
+| 2026-04-11 | v1.4.1 | 新增 TryGetTemplate 方法，明确返回语义 | #5 修复 |
+| 2026-04-11 | v1.4.1 | HapticFeedbackManager 依赖注入说明修正 | #8 修复 |
+| 2026-04-11 | v1.4.1 | GasolineCan/PropaneTank 映射添加到默认映射表 | #9 修复 |

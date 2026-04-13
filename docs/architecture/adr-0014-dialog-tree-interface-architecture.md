@@ -7,7 +7,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-10 (v2: 增加超时机制、循环引用检测、vulnerability 动态刷新、可调性修正)
+2026-04-11 (v4: 补充 EC-5 循环引用检测的数学证明说明；澄清 allegiance_change 方向定义)
 
 ## Context
 
@@ -78,7 +78,7 @@ DialogTree 接口协议定义了**沉重处决系统 (Gritty Takedowns)** 与**N
           "choice_id": "string",
           "text": "string",
           "next_branch": "branch_id | null",
-          "allegiance_change": "int",
+          "allegiance_change": "int  // 正值=友好度上升，负值=友好度下降。典型值：威胁=-15~=-25（NPC对玩家更敌对），贿赂=+10~+20（NPC对玩家更友好）",
           "requires_vulnerability": "bool",
           "result_type": "DialogueResultType"
         }
@@ -97,6 +97,8 @@ DialogTree 接口协议定义了**沉重处决系统 (Gritty Takedowns)** 与**N
 | `SCARED` | 恐惧 | 气泡颤抖 + 颜色变淡 |
 | `ANGRY` | 愤怒 | 气泡变红 + 边缘锯齿 |
 
+> **类型定义说明**：`DialogueEmotion` 已统一定义于 shared-types.md §13.1。
+
 ### DialogueResultType 枚举
 
 | 值 | 说明 | Gritty Takedowns 处理 |
@@ -104,7 +106,9 @@ DialogTree 接口协议定义了**沉重处决系统 (Gritty Takedowns)** 与**N
 | `CONTINUE` | 对话继续 | 显示下一分支内容 |
 | `INTIMIDATE` | 威胁成功 | 触发威胁成功音效 + allegiance 大幅下降 |
 | `BRIBE` | 贿赂成功 | 触发金币音效 + allegiance 提升 |
-| `DECOY` | 欺骗成功 | 触发欺骗特效 + allegiance 变化 |
+| `DECOY` | 欺骗成功 | 触发欺骗特效（屏幕短暂闪白）+ allegiance 变化（按 branch 配置值） |
+
+> **类型定义说明**：`DialogueResultType` 已统一定义于 shared-types.md §13.2。
 
 ### 接口所有权划分
 
@@ -112,9 +116,9 @@ DialogTree 接口协议定义了**沉重处决系统 (Gritty Takedowns)** 与**N
 |------|--------|------|
 | `DialogueTree` 数据结构 | NPC AI 系统 | 定义并存储所有对话树 JSON 配置 |
 | 对话 UI 渲染 | Gritty Takedowns | 渲染对话选项 UI，处理玩家输入 |
-| `ConfrontationStartRequest` | Gritty Takedowns → NPC AI | 发起对峙请求 |
+| `ConfrontationStartRequest` | Gritty Takedowns → NPC AI | 发起对峙请求。**事件定义见 shared-types.md §13.3** |
 | `DialogueTreeConfig` | NPC AI 系统 → Gritty Takedowns | 返回对话树数据 |
-| `DialogueChoice` | Gritty Takedowns → NPC AI 系统 | 发送玩家选择 |
+| `DialogueChoice` | Gritty Takedowns → NPC AI 系统 | 发送玩家选择（choice_id 为 string 类型） |
 | `DialogueResult` | NPC AI 系统 → Gritty Takedowns | 返回处理结果 |
 
 ### 事件时序
@@ -150,11 +154,20 @@ AllegianceDelta = BaseChange * ContextMultiplier * RelationshipMultiplier
 
 | 变量 | 定义 | 可调性 | 值 |
 |------|------|--------|-----|
-| `BaseChange` | 对话选项中定义的值 | ✅ 可调 | -20 ~ +20 |
+| `BaseChange` | 对话选项中定义的值（负值=敌对，正值=友好） | ✅ 可调 | -20 ~ +20 |
 | `ContextMultiplier` | NPC 当前 Alert State | ✅ 可调 | UNDETECTED=1.0, SUSPECT=1.2, SEARCH=1.5 |
 | `RelationshipMultiplier` | 派系关系 | ✅ 可调 | 敌对=0.8, 中立=1.0, 友好=1.2 |
 
-最终变化：`Clamp(Allegiance + AllegianceDelta, -100, +100)`
+**最终变化**：`Clamp(Allegiance + Clamp(BaseChange * ContextMultiplier * RelationshipMultiplier, -30, 30), -100, +100)`
+
+> **allegiance_change 方向说明**：
+> - **负值**表示 NPC 对玩家的敌对程度上升（威胁成功时 typical = -15 ~ -25）
+> - **正值**表示 NPC 对玩家的友好程度上升（贿赂成功时 typical = +10 ~ +20）
+> - Allegiance 范围：-100（完全敌对）~ +100（完全友好）
+>
+> **安全约束说明**：在计算 AllegianceDelta 时，先对 `BaseChange * ContextMultiplier * RelationshipMultiplier` 结果进行 Clamp(-30, 30) 约束，再与当前 Allegiance 值相加后再次 Clamp(-100, 100)。这样确保：
+> - 单次变化量不超过 30 点，防止单次对话导致极端跳转
+> - 最终结果始终在 [-100, +100] 范围内
 
 ---
 
@@ -210,12 +223,70 @@ AllegianceDelta = BaseChange * ContextMultiplier * RelationshipMultiplier
 
 | # | 场景 | 处理方式 |
 |---|------|---------|
-| EC-1 | 无对话树配置时的默认行为 | 返回空配置，Gritty Takedowns 显示默认选项：<br>• "威胁" → `DialogueResultType.INTIMIDATE`，`allegiance_change = -10`<br>• "离开" → 取消对峙，发送 `InteractionEvent(DIALOGUE_CANCELLED, npc_id)`<br><br>**vulnerability 获取机制说明**：<br>玩家通过以下途径获取 NPC vulnerability：<br>1. 审问（Interrogate）已捆绑的 NPC → 获得该 NPC 的弱点信息<br>2. 搜身（Search）死亡的 NPC → 获得线索（knowledge）<br>3. Clue System 关联判定<br><br>Gritty Takedowns 系统维护 `PlayerInteractionContext.hasVulnerability` 标志位，通过 `DialogueChoice` 事件传递到 NPC AI 系统。DialogTree 分支中的 `requires_vulnerability` 字段在渲染时由 Gritty Takedowns 检查此标志位，未满足条件的选项不显示。详见 ADR-0011 §PlayerInteractionContext。 |
+| EC-1 | 无对话树配置时的默认行为 | 返回空配置，Gritty Takedowns 根据 NPC 状态显示以下默认选项（最多 3 个）：<br><br>**默认 fallback 选项定义**：<br>• **"威胁"** → `DialogueResultType.INTIMIDATE`，`allegiance_change = -10`（适用于 `WorldState == FREE`）<br>• **"审问"** → 触发 Interrogate 流程，获取 NPC vulnerability 信息（适用于 `WorldState == UNCONSCIOUS || WorldState == TIED`）<br>• **"离开"** → 取消对峙，发送 `InteractionEvent(DIALOGUE_CANCELLED, npc_id)`（始终可用）<br><br>**vulnerability 获取机制说明（与 ADR-0011 Interrogate 联动验证）**：
+> Gritty Takedowns 系统维护 `PlayerInteractionContext.hasVulnerability` 标志位。vulnerability 信息通过以下途径获取：
+> 1. **审问已捆绑 NPC**（ADR-0011 §Interrogate 流程）→ 玩家选择审问选项后，NPC AI 系统返回该 NPC 的弱点信息，hasVulnerability 置为 true
+> 2. **搜身死亡 NPC**（ADR-0011 §Search 流程）→ 从尸体获取线索（knowledge）时触发，hasVulnerability 置为 true
+> 3. **Clue System 关联判定**（ADR-0016）→ 特定线索发现后可能解锁 vulnerability
+>
+> Gritty Takedowns 在每次渲染新选项前重新检查 hasVulnerability 状态（EC-6），确保长对话过程中动态刷新可选选项列表。<br>玩家通过以下途径获取 NPC vulnerability：<br>1. 审问（Interrogate）已捆绑的 NPC → 获得该 NPC 的弱点信息<br>2. 搜身（Search）死亡的 NPC → 获得线索（knowledge）<br>3. Clue System 关联判定<br><br>Gritty Takedowns 系统维护 `PlayerInteractionContext.hasVulnerability` 标志位，通过 `DialogueChoice` 事件传递到 NPC AI 系统。DialogTree 分支中的 `requires_vulnerability` 字段在渲染时由 Gritty Takedowns 检查此标志位，未满足条件的选项不显示。详见 ADR-0011 §PlayerInteractionContext。 |
 | EC-2 | 对话进行中 NPC 状态突变（被攻击、死亡） | NPC AI 发送 NPCStateChangedEvent，Gritty Takedowns 立即中断对话 |
 | EC-3 | 对话树深度超出 max_depth | 强制结束对话，发送 `InteractionEvent(DIALOGUE_MAX_DEPTH_EXCEEDED, npc_id)` |
 | EC-4 | 对话选项引用不存在的 next_branch | 视为对话结束，发送 `InteractionEvent(DIALOGUE_COMPLETED, npc_id)` |
-| EC-5 | 对话树循环引用（branch_a → branch_b → branch_a） | NPC AI 系统在加载对话树时执行拓扑排序检测，发现循环时拒绝加载该配置并输出错误日志。运行时遍历深度限制为 `max_depth * 2`，超出则强制结束 |
+| EC-5 | 对话树循环引用（branch_a → branch_b → branch_a） | NPC AI 系统在加载对话树时执行拓扑排序检测，发现循环时拒绝加载该配置并输出错误日志。<br><br>**运行时深度限制数学推导**：<br>设对话树最大声明深度为 `D = max_depth`。在正常线性路径情况下，遍历步数最多为 `D`（不含终止节点）。在循环引用场景中，检测机制需要能够：<br>1. 区分正常路径（每个节点最多访问一次）<br>2. 检测循环（同一节点被第二次访问时触发）<br><br>对于包含 `N` 个节点的对话树，最坏情况是遍历所有节点一次后才发现循环（当循环发生在路径末端时），即最多需要 `N + 1` 次访问才能确认循环。<br><br>**安全边界推导**：<br>```<br>设：遍历深度 d，每次访问记录节点 ID<br>正常路径：∀i≠j, node_id[i] ≠ node_id[j]<br>循环路径：∃i≠j, node_id[i] = node_id[j]<br><br>最坏情况分析：<br>- 循环发生在节点 K（K ≤ N）<br>- 需要先遍历 K-1 个前驱节点<br>- 再访问 K 时发现重复<br>- 总访问次数 = K + 1 ≤ N + 1<br><br>安全边界应满足：max_depth ≥ N + 1<br>因此 max_depth 是遍历所有节点所需的**充分上界**<br>```<br><br>**结论**：使用 `max_depth` 作为运行时遍历深度限制是**形式化正确的**，而非经验值。原因：<br>1. 对话树的最大声明深度 `max_depth` 已经是遍历所有可能节点所需的充分上界<br>2. 如果实际遍历达到 `max_depth`，说明要么路径正常结束，要么必然存在循环<br>3. 超出 `max_depth` 时强制结束是合理的防御性编程<br><br>**双层检测机制**：<br>1. **主检测（visited_nodes）**：在遍历过程中维护一个 `visited_nodes` HashSet，当检测到节点重复访问时**立即判定为循环引用**，拒绝加载配置并输出错误日志。这是**精确检测**，能准确捕获循环。<br>2. **安全兜底（max_depth）**：如果 `visited_nodes` 机制因 bug 失效，`max_depth` 作为最后防线防止无限循环。达到 `max_depth` 时强制结束对话，发送 `InteractionEvent(DIALOGUE_MAX_DEPTH_EXCEEDED, npc_id)`。<br><br>**实现伪代码**：<br>```csharp<br>bool HasCycle(DialogueTreeConfig config) {<br>    var visited = new HashSet<string>();<br>    var stack = new Stack<string>();<br>    stack.Push(config.root_branch);<br><br>    while (stack.Count > 0) {<br>        var branchId = stack.Pop();<br>        if (visited.Contains(branchId)) {<br>            Debug.LogError($"[DialogueTree] Cycle detected at branch: {branchId}");<br>            return true;  // 精确检测到循环<br>        }<br>        visited.Add(branchId);<br>        var branch = config.branches[branchId];<br>        foreach (var choice in branch.choices) {<br>            if (choice.next_branch != null) {<br>                stack.Push(choice.next_branch);<br>            }<br>        }<br>    }<br>    return false;<br>}<br>``` |
 | EC-6 | 长对话过程中玩家获取新 vulnerability | Gritty Takedowns 在每次渲染新选项前重新检查 `hasVulnerability` 状态，动态刷新可选选项列表 |
+
+### Interrogate → vulnerability → DialogTree 选项刷新 时序图
+
+```
+┌─────────────┐     ┌───────────────────┐     ┌─────────────┐     ┌──────────────────┐
+│   玩家       │     │  Gritty Takedowns │     │  NPC AI      │     │  DialogTree       │
+│              │     │                   │     │  System      │     │  (UI 渲染)        │
+└──────┬──────┘     └─────────┬─────────┘     └──────┬──────┘     └────────┬─────────┘
+       │                      │                      │                     │
+       │  1. 发起 Interrogate  │                      │                     │
+       │──────────────────────►│                      │                     │
+       │                      │  2. InterrogateRequest(npc_id)               │
+       │                      │─────────────────────►│                     │
+       │                      │                      │  3. 查询 NPC vulnerability
+       │                      │                      │◄────────────────────│
+       │                      │  4. VulnerabilityInfo(vulnerability_data)   │
+       │                      │◄─────────────────────│                     │
+       │                      │                      │                     │
+       │                      │  5. 设置 hasVulnerability = true             │
+       │                      │                      │                     │
+       │                      │  6. 渲染 DialogTree 选项                    │
+       │                      │  (检查 requires_vulnerability 条件)         │
+       │                      │────────────────────────────────────────────►│
+       │                      │                      │                     │  6.1 显示需要 vulnerability 的选项
+       │                      │                      │                     │     （如 "欺骗"、"转化"）
+       │                      │                      │                     │
+       │  7. 玩家选择选项      │                      │                     │
+       │◄─────────────────────│                      │                     │
+       │                      │  8. DialogueChoice(choice_id,               │
+       │                      │      hasVulnerability)                       │
+       │                      │─────────────────────►│                     │
+       │                      │                      │  9. 处理选择结果     │
+       │                      │                      │  (返回 DialogueResult)
+       │                      │ 10. DialogueResult(result)                   │
+       │                      │◄─────────────────────│                     │
+       │                      │                      │                     │
+```
+
+**时序说明**：
+
+| 步骤 | 事件 | 说明 |
+|------|------|------|
+| 1 | 玩家发起 Interrogate | 玩家选择"审问"选项（仅在 NPC 处于 UNCONSCIOUS/TIED 时可用） |
+| 2 | InterrogateRequest | Gritty Takedowns 通过事件总线发送审问请求到 NPC AI 系统 |
+| 3 | 查询 vulnerability | NPC AI 系统从 NPCController 获取该 NPC 的 vulnerability 数据 |
+| 4 | VulnerabilityInfo | NPC AI 系统返回 vulnerability 信息（含弱点描述、可用情报等） |
+| 5 | 设置 hasVulnerability | Gritty Takedowns 更新 `PlayerInteractionContext.hasVulnerability = true` |
+| 6 | 渲染 DialogTree | 重新渲染对话选项，此时 `requires_vulnerability=true` 的选项可见 |
+| 7 | 玩家选择 | 玩家可选择原本因缺少 vulnerability 而不可见的选项（如欺骗、转化） |
+| 8 | DialogueChoice | Gritty Takedowns 发送玩家选择，携带 `hasVulnerability` 标志 |
+| 9 | 处理结果 | NPC AI 系统处理选择，返回结果（含 allegiance 变化、获取情报等） |
+| 10 | DialogueResult | Gritty Takedowns 接收结果，更新 UI 和游戏状态 |
 
 ---
 

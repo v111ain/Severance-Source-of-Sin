@@ -7,7 +7,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-10 (v2: 修复 Lerp 参数顺序，补充 InputMask 定义、游戏暂停职责归属、超时处理)
+2026-04-11 (v6: 确认 shared-types §12.2/12.3 引用路径正确性；补充 UI 系统分辨率自适应实现方式说明)
 
 ## Context
 
@@ -109,19 +109,33 @@ UI 系统订阅以下事件以响应玩家心理状态变化（事件定义见 A
 
 | 事件 | 来源系统 | UI 响应 |
 |------|---------|---------|
-| `PsychologicalState{state}` | Sanity/Rage 系统 | 根据心理状态调整 HUD 色调（FRENZIED 时脉冲红色，SOUL_SPLIT 时双重效果） |
-| `VignetteRequest{intensity}` | Sanity/Rage 系统 | 低理智时 HUD 边缘暗角增强 |
-| `ShakeRequest{intensity}` | Sanity/Rage 系统 | 高愤怒时 HUD 准星抖动 |
+| `PsychologicalStateEvent{state}` | Sanity/Rage 系统 | 根据心理状态调整 HUD 色调（FRENZIED 时脉冲红色，SOUL_SPLIT 时双重效果）。**事件定义见 shared-types.md §12.2** |
+| `VignetteRequest{intensity}` | Sanity/Rage 系统 | 低理智时 HUD 边缘暗角增强。**事件定义见 shared-types.md §12.3** |
+| `BlurRequest{intensity}` | Sanity/Rage 系统 | 低理智时 HUD 模糊效果增强。**事件定义见 shared-types.md §12.3** |
+| `HUDOverlayOpacityRequest{opacity}` | Sanity/Rage 系统 | Sanity=0 时 HUD 半透明叠加层显示（确保信息可读）。**事件定义见 shared-types.md §12.3** |
+| `ShakeRequest{intensity}` | Sanity/Rage 系统 | 高愤怒时 HUD 准星抖动。**事件定义见 shared-types.md §12.3** |
 
-> **事件来源说明**：`PsychologicalState` / `VignetteRequest` / `ShakeRequest` 事件由 ADR-0017 (Sanity/Rage 系统) 发布，UI 系统作为消费者订阅这些事件。
+> **事件来源说明**：`PsychologicalState` / `VignetteRequest` / `BlurRequest` / `HUDOverlayOpacityRequest` / `ShakeRequest` 事件由 ADR-0017 (Sanity/Rage 系统) 发布，UI 系统作为消费者订阅这些事件。
 
 **色调调整公式**：
 > **参数说明**：Sanity 值范围为 0-100（详见 ADR-0017 §双轨计量系统）
 
 ```
 HUDTintColor = Lerp(NormalColor, AlertColor, 1.0 - Sanity/100)
+// 说明：Sanity=100 时返回 NormalColor（正常），Sanity=0 时返回 AlertColor（警报）
+// 此公式与 ADR-0017 的 VignetteRequest 风格保持一致（都是 Lerp(min, max, ratio)）
 HUDBlurIntensity = Clamp((50 - Sanity) / 50, 0, 0.5)
+// 对应 BlurRequest{Intensity}，由 Sanity/Rage 系统计算并发布
 ```
+
+**颜色参数定义**：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `NormalColor` | Color | `#FFFFFF` (纯白) | HUD 正常状态色调 |
+| `AlertColor` | Color | `#FF3333` (警戒红) | HUD 警报状态色调（低理智时渗入） |
+
+> **策划配置说明**：`NormalColor` 和 `AlertColor` 作为可调参数存储在 `UISanityTuningSO` 中，策划可根据美术风格调整具体数值。
 
 ### World Map 揭示动画的输入屏蔽职责
 
@@ -223,17 +237,24 @@ InputMask 定义（按位掩码）：
 | 位置 | `HUDMargins` | (20,20,20,20) | — |
 | 位置 | `AlertVerticalOffset` | 100px | — |
 
+> **像素值说明**：`AlertVerticalOffset` 等像素值基于**设计分辨率**（1080p）定义。在运行时，系统根据实际屏幕分辨率与设计分辨率的比例自动缩放。实现方式：
+> ```csharp
+> float scaleFactor = Screen.height / 1080f;
+> float scaledOffset = baseOffset * scaleFactor;
+> ```
+> 例如，在 4K 分辨率下，100px 会自动缩放为约 200px，确保 UI 元素在不同分辨率下保持相对一致的视觉位置。
+
 ---
 
 ## Edge Cases
 
 | # | 场景 | 处理方式 |
 |---|------|---------|
-| EC-1 | 菜单打开时游戏暂停 | **GameTimeSystem 负责暂停**（订阅 Menu Layer 的 `PauseMenuOpened` 事件并设置 `time_scale = 0`）；**AudioSystem 负责音乐淡出**（订阅同一事件执行 `MusicFadeOut(0.3s)`）。恢复时 GameTimeSystem 设置 `time_scale = 1`，AudioSystem 执行 `MusicFadeIn(0.3s)` |
+| EC-1 | 菜单打开时游戏暂停 | **GameTimeSystem 负责暂停**（订阅 Menu Layer 的 `PauseMenuOpened` 事件并设置 `time_scale = 0`）；**AudioSystem 负责音乐淡出**（订阅同一事件执行 `MusicFadeOut(0.3s)`）。**事件定义见 shared-types.md §13.4**。<br><br>**时序说明（ASCII 图）**：事件触发时，AudioSystem 与 GameTimeSystem **并行处理**（非串行）：<br><br>**打开菜单时序**：<br>```<br>时间轴  ─────────────────────────────────────────────────────▶<br><br>事件    PauseMenuOpened 发布<br>    │<br>    ├──────────────────────────────────────────────────┐<br>    │                    ▼                                │<br>    │  ┌────────────────────┐   ┌────────────────────┐   │<br>    │  │   AudioSystem      │   │  GameTimeSystem    │   │<br>    │  │   (并行处理)       │   │   (并行处理)       │   │<br>    │  └─────────┬──────────┘   └─────────┬──────────┘   │<br>    │            │                         │               │<br>    │            ▼                         ▼               │<br>    │     MusicFadeOut(0.3s)      time_scale = 0         │<br>    │            │                         │               │<br>    │            │                         │               │<br>    │            ◀──────── 0.3s ────────▶               │<br>    │            │                                          │<br>    └──────────────────────────────────────────────────┘<br>    │<br>    │ (0.3s 后音乐淡出完成，游戏逻辑已暂停)<br>```<br><br>**关闭菜单时序**：<br>```<br>时间轴  ─────────────────────────────────────────────────────▶<br><br>事件    PauseMenuClosed 发布<br>    │<br>    ├──────────────────────────────────────────────────┐<br>    │                    ▼                                │<br>    │  ┌────────────────────┐   ┌────────────────────┐   │<br>    │  │   AudioSystem      │   │  GameTimeSystem    │   │<br>    │  │   (并行处理)       │   │   (并行处理)       │   │<br>    │  └─────────┬──────────┘   └─────────┬──────────┘   │<br>    │            │                         │               │<br>    │            ▼                         ▼               │<br>    │     MusicFadeIn(0.3s)       time_scale = 1         │<br>    │            │                         │               │<br>    │            ◀──────── 0.3s ────────▶               │<br>    │            │                                          │<br>    └──────────────────────────────────────────────────┘<br>    │<br>    │ (0.3s 后音乐淡入完成，游戏逻辑已恢复)<br>```<br><br>**幂等性说明**：`PauseMenuOpened` 事件具有幂等性。如果游戏已经处于暂停状态，再次打开菜单不会重复发布 `PauseMenuOpened` 事件（UI 系统内部维护 `is_menu_open` 标志位，重复请求时直接忽略）。 |
 | EC-2 | 多个面板同时请求显示 | Alert Layer 队列管理，同类型合并，不同类型堆叠，超过3个时最早的消失 |
 | EC-3 | 揭示动画期间快速操作 | 第一次确认键完成动画，后续忽略，动画完成后才响应新输入 |
 | EC-4 | HUD 与游戏元素重叠 | HUD 使用透明度背景，关键区域保留为空，提供位置调整选项 |
-| EC-5 | 同优先级 Input Blocking 请求冲突 | 后注册的请求被拒绝，输出警告日志。World Map 和 Cutscene 应使用不同优先级（如 10 和 20）避免冲突 |
+| EC-5 | 同优先级 Input Blocking 请求冲突 | 同优先级请求支持队列化（最大队列长度 2），超出时最早的请求被替换。不同优先级间高优先级覆盖低优先级 |
 | EC-6 | 揭示动画卡死（超时） | 动画超时时间 5.0s，超时后强制完成动画并发送 `DiscoveryAnimationComplete`，防止 UI 永久挂起 |
 
 ---

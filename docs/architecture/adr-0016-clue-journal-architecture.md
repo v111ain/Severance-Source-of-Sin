@@ -7,7 +7,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-10
+2026-04-11 (v5: 补充递归补偿防护机制；明确 clues_discovered_for_task 计算范围说明；OQ-4/5/6 已解决)
 
 ## Context
 
@@ -85,14 +85,7 @@ public class Clue
     public ClueCategory Category;            // IDENTITY / LOCATION / RELATIONSHIP / ITEM / TRAGEDY
     public string Title;                      // 显示标题
     public string Description;                // 详细内容（解锁后可见）
-    public ClueSourceType SourceType;        // LOS_EAVESDROP / ENVIRONMENT / NPC_DEATH_SOURCE / NPC_KNOWLEDGE_BONUS
-    // SourceType 语义定义：
-    // - LOS_EAVESDROP: 通过 LOS 窃听系统获取（关键词触发）
-    // - ENVIRONMENT: 通过环境物件交互获取
-    // - NPC_DEATH_SOURCE: 线索来源是 NPC 的死亡本身（如从尸体、现场获取），NPC 存活则无法获取
-    // - NPC_KNOWLEDGE_BONUS:
-    //   - NPC 存活时：线索已存在于 Journal 中，状态为 NOT_DISCOVERED（可正常发现）
-    //   - NPC 死亡时：NOT_DISCOVERED 状态的线索直接标记为 MISSING（无法再获取）
+    public ClueSourceType SourceType;        // LOS_EAVESDROP / ENVIRONMENT / NPC_DEATH_SOURCE / NPC_KNOWLEDGE_BONUS（定义见 shared-types.md §14.1）
     public string SourceId;                  // 来源标识（NPC_ID 或物件ID）
     public string LocationId;                // 所属地点ID
     public List<string> RelatedNpcIds;      // 关联的NPC ID列表
@@ -102,17 +95,6 @@ public class Clue
     public ClueState State;                  // 当前状态
     public MissingReasonType MissingReason;  // 线索缺失原因（取代 string 类型）
     public bool IsPallidReplacement;        // 是否为苍白替代（补偿获得）
-}
-
-/// <summary>
-/// 线索来源类型
-/// </summary>
-public enum ClueSourceType
-{
-    LOS_EAVESDROP,      // LOS 窃听关键词触发
-    ENVIRONMENT,        // 环境物件交互
-    NPC_DEATH_SOURCE,   // NPC 死亡本身触发（如从尸体获取线索）
-    NPC_KNOWLEDGE_BONUS // NPC 存活时可获取，死亡后标记 MISSING
 }
 
 public enum ClueState
@@ -138,6 +120,7 @@ public enum ClueCategory
 
 /// <summary>
 /// 线索缺失原因类型
+/// 定义于 shared-types.md §5.8
 /// </summary>
 public enum MissingReasonType
 {
@@ -188,6 +171,16 @@ public class LocationEntry
 - 执行补偿机制判定
 - 提供 JournalData 查询接口
 
+> **类型定义说明**：本 ADR 中引用的以下枚举/事件已统一定义于 shared-types.md：
+> - `MissingReasonType`（§5.8）
+> - `ClueCategory`（§11.1）
+> - `DiscoveryStage`（§11.2）
+> - `NarrativeSignificance`（§11.3）
+> - `ClueDiscoveredEvent`（§11.4）
+> - `ClueSourceType`（§14.1）
+>
+> 实现时应从 shared-types 引用，而非在本 ADR 中重复定义。
+
 #### CompensationEntry 补偿映射
 
 ```csharp
@@ -200,19 +193,30 @@ public class CompensationEntry
 
 ### 线索状态机
 
+**状态转移图（文字版）**：
 ```
-[NOT_DISCOVERED] ──获取来源触发──▶ [DISCOVERED] ──前置满足──▶ [UNLOCKED]
-     │                                        │                      │
-     │                                        ▼                      ▼
-     │                                 [MISSING]              [COMPLETED]
-     │                                    │                      (终止态)
-     │                              (NPC死亡触发)
-     │                                    │
-     │                                    ▼
-     │                         [补偿触发] ──▶ [添加新 Clue，is_pallid_replacement=true]
-     │                                    │     原 MISSING 标记保留，不发生状态转移
-     │                              (副作用)
+NOT_DISCOVERED --获取来源触发--> DISCOVERED --前置满足--> UNLOCKED
+      |                               |                        |
+      |                               v                        v
+      |                          [MISSING]              [COMPLETED]
+      |                             |                     (终止态)
+      |                       (NPC死亡触发)
+      |                             |
+      |                             v
+      |                    [补偿触发] --> [添加新 Clue，is_pallid_replacement=true]
+      |                             |      原 MISSING 标记保留，不发生状态转移
+      |                       (副作用)
 ```
+
+**状态转移表**：
+
+| 当前状态 | 触发条件 | 目标状态 | 说明 |
+|---------|---------|---------|------|
+| NOT_DISCOVERED | 获取来源触发 | DISCOVERED | 玩家获取到线索来源 |
+| DISCOVERED | 前置线索满足 | UNLOCKED | 前置条件达成，线索可阅读 |
+| DISCOVERED | NPC死亡且该NPC是来源 | MISSING | 线索随NPC知识一同消失（仅限NOT_DISCOVERED状态的线索） |
+| UNLOCKED | 玩家确认/任务完成/超时 | COMPLETED | 玩家消化完线索信息（终止态） |
+| MISSING | 补偿触发 | - | 不改变原状态，作为副作用添加补偿线索 |
 
 **状态转移规则**：
 - NPC 死亡时，如果该 NPC 的 knowledge 包含状态为 `NOT_DISCOVERED` 的线索 → 直接标记为 MISSING（终止态）
@@ -224,20 +228,80 @@ public class CompensationEntry
 
 `COMPLETED` 是线索的逻辑终点，表示玩家已完整消化该线索的信息。
 
-**触发条件**（满足任一即触发）：
-- **玩家主动确认**：玩家在 Journal UI 中打开线索详情并点击"确认"按钮，标记为已阅读
-- **关联任务完成**：线索关联的任务（`task_id`）达到 `COMPLETED` 状态时，自动标记
-- **时间自动完成**：线索处于 `UNLOCKED` 状态超过预设时间阈值（默认 5 分钟）且玩家未查看，自动标记
+**触发条件优先级**（高优先级先检查）：
+| 优先级 | 触发条件 | 说明 |
+|--------|---------|------|
+| 1（最高） | **玩家主动确认** | 玩家在 Journal UI 中打开线索详情并点击"确认"按钮，标记为已阅读 |
+| 2 | **关联任务完成** | 线索关联的任务（`task_id`）达到 `COMPLETED` 状态时，自动标记 |
+| 3 | **时间自动完成** | 线索处于 `UNLOCKED` 状态超过预设时间阈值（默认 5 分钟）且玩家未查看，自动标记 |
+
+> **优先级说明**：当多个条件同时满足时，按优先级高优先处理。例如，当玩家主动确认线索后，关联任务也完成了，不会重复触发状态转移（因为线索已进入 COMPLETED 终止态）。任务完成和时间自动完成两个条件在玩家未主动确认的情况下作为"兜底"机制。
+>
+> **任务状态订阅机制**：JournalManager 通过 EventBus 订阅 `TaskStateChangedEvent{task_id, new_state}`。当 `new_state == COMPLETED` 时，遍历 Journal 中所有 `task_id` 匹配的线索，将状态为 `UNLOCKED` 的线索标记为 `COMPLETED`。无需主动轮询，由任务系统在状态变化时推送事件。
 
 > **MVP 简化策略**：初期仅实现"玩家主动确认"机制，其他两种作为未来扩展预留。
 
+### 补偿路径选择逻辑
+
+`CompensationEntry.CompensationClueIds` 支持 1:N 补偿池，选择规则如下：
+
+**补偿选择策略**：
+```
+从 CompensationClueIds 中选择尚未在 Journal 中的线索
+- 如果只有 1 条补偿线索 → 直接使用
+- 如果有多条补偿线索 → 随机选择 1 条（保证每次游戏体验的差异性）
+- 如果所有补偿线索都已在 Journal 中 → 此次补偿不添加新线索，但 Miss 标记保留
+```
+
+> **为什么是"多选一"而非"多选多"**：
+> - 避免 Journal 污染（补偿过多会稀释"选择即代价"的情感）
+> - 随机选择保证重复可玩性
+> - 如需更精细的控制（如根据玩家行为选择特定补偿），可扩展为"多选多"，但 MVP 采用简化策略
+
+### 递归补偿防护机制
+
+**问题场景**：如果补偿线索的来源 NPC（`CompensationEntry.SourceClueId` 对应的 NPC）也死亡，导致补偿线索本身被标记为 MISSING，可能引发递归补偿。
+
+**防护规则**：
+```
+补偿线索（IsPallidReplacement = true）不参与补偿触发判定
+```
+- 补偿线索是为了缓解"选择即代价"的情感惩罚而添加的，它们本身已经是"补偿"的结果
+- 如果补偿线索再次被标记为 MISSING（如补偿来源 NPC 也死亡），**不触发新的补偿**
+- 玩家需要承受多重选择的后果，这是"选择即代价"设计理念的延伸
+
+**实现方式**：
+```csharp
+bool ShouldCompensate(string taskId)
+{
+    // 获取该任务关联的 CRITICAL 线索，排除补偿线索
+    var criticalClues = Journal.Clues.Values
+        .Where(c => c.TaskId == taskId
+                 && c.Criticality == ClueCriticality.CRITICAL
+                 && !c.IsPallidReplacement)  // 排除补偿线索
+        .ToList();
+
+    // 检查是否存在 MISSING 状态
+    var missingClues = criticalClues.Where(c => c.State == ClueState.MISSING).ToList();
+    if (missingClues.Count == 0) return false;
+
+    // 检查已发现线索数量
+    var discoveredCount = criticalClues
+        .Count(c => c.State == ClueState.DISCOVERED
+                 || c.State == ClueState.UNLOCKED
+                 || c.State == ClueState.COMPLETED);
+
+    return discoveredCount < MinCluesRequired;
+}
+```
+
 ### 补偿机制扩展说明
 
-当前 `CompensationEntry.CompensationClueIds` 已支持 1:N 补偿池，MVP 即可使用多补偿路径。
+当前 `CompensationEntry.CompensationClueIds` 已支持 1:N 补偿池（多选一策略），MVP 即可使用多补偿路径。
 
 **扩展方向**（非 MVP 范围）：
 - **动态补偿**：补偿线索根据玩家行为动态生成，而非预设
-- **组合补偿**：单次补偿触发多条补偿线索
+- **多选多补偿**：某些极端场景（如连续杀死关键 NPC）可触发多选多补偿
 
 ### 补偿机制（MVP 简化版）
 
@@ -247,12 +311,16 @@ ShouldCompensate = (critical_clue_missing == true) AND (clues_discovered_for_tas
 ```
 
 **补偿触发条件变量定义**：
-| 变量 | 定义 | 说明 |
-|------|------|------|
-| `critical_clue_missing` | 当前任务关联的 CRITICAL 线索中存在 State == MISSING | 关键线索缺失标记 |
-| `clues_discovered_for_task` | 当前任务关联的所有线索中，State ∈ {DISCOVERED, UNLOCKED, COMPLETED} 的数量 | 任务已发现线索数 |
-| `MinCluesRequired` | 3 | 单个任务最低线索数，低于此值且存在 MISSING 时触发补偿检查 |
-| `MaxCompensationPerTask` | 2 | 单个任务最大补偿次数上限，防止 Journal 污染 |
+| 变量 | 类型 | 定义 | 说明 |
+|------|------|------|------|
+| `critical_clue_missing` | `bool` | 当前任务关联的 CRITICAL 线索中**存在** State == MISSING | 任务关联的 CRITICAL 线索是否存在 MISSING 状态 |
+| `clues_discovered_for_task` | `int` | 当前任务关联的所有线索中 State ∈ {DISCOVERED, UNLOCKED, COMPLETED} 的**计数**（**不包括 NOT_DISCOVERED 和 MISSING**） | 任务已消化线索数量。注意：MISSING 线索不计入，因为它们是"原本可以知道但现在永远不知道"的遗憾标记，不属于玩家已获取的信息 |
+| `MinCluesRequired` | `int` | **可配置**，默认值 3 | 单个任务最低线索数，低于此值且存在 MISSING 时触发补偿检查。<br>**配置位置**：`CompensationConfigSO.MinCluesRequired`（策划配置表） |
+| `MaxCompensationPerTask` | `int` | **可配置**，默认值 2 | 单个任务最大补偿次数上限，防止 Journal 污染。<br>**配置位置**：`CompensationConfigSO.MaxCompensationPerTask` |
+
+> **策划配置说明**：MinCluesRequired 和 MaxCompensationPerTask 作为可调参数存储在 `CompensationConfigSO` 中，策划可根据任务难度和叙事需求调整具体数值，而无需修改代码逻辑。
+
+**逻辑说明**：仅当「任务关联的 CRITICAL 线索中确实存在 MISSING 状态」**且**「该任务已发现的线索数量尚未达到最低要求」时，才触发补偿机制。
 
 **执行流程**：
 1. 查找预设的 `CompensationEntry`（设计师手动预设，每条 CRITICAL 线索至少 1 条）
@@ -271,13 +339,13 @@ ShouldCompensate = (critical_clue_missing == true) AND (clues_discovered_for_tas
 | `IntelObjectInteracted{object_id, object_type, location_id}` | 环境交互系统 | 直接创建 Clue 实例（已是成品线索） |
 | `NPCStateChangedEvent{npc_id, new_state: DEAD}` | NPC AI 系统 | 遍历 NPC 的 knowledge，标记尚未 DISCOVERED 的线索为 MISSING，MissingReason = NPC_DEAD |
 
-> **OQ 说明**：以下 GDD 中待确认的问题可能影响实现范围，已提供 MVP 默认方案：
+> **已确定的设计决策**（原 OQ-4/5/6）：
 >
-> | OQ | 问题 | 默认方案 | OQ Owner |
-> |----|------|----------|----------|
-> | OQ-4 | 日志 UI 美术风格 | 默认"复古笔记本"风格（深棕色皮革纹理背景、手写体字体、泛黄纸张）。实现路径：UI 系统（ADR-0015）定义 UXML/USS 样式模板 | 美术负责人 |
-> | OQ-5 | 时间线视图 | **MVP 默认不实现**。时间线视图复杂度高，对核心体验贡献有限。JournalData 接口在 Phase 4+ 扩展 `timeline_view` 相关字段（暂不预留在当前数据结构中） | 策划负责人 |
-> | OQ-6 | NPC 人物视图信息层级 | **MVP 默认显示基础信息**（姓名、状态、已知线索数）。不显示完整背景故事。NPC 人物视图详细信息在 Phase 4+ 扩展 | 策划负责人 |
+> | # | 原问题描述 | 确定方案 | 决策日期 |
+> |---|------------|----------|----------|
+> | OQ-4 | 日志 UI 美术风格 | **默认"复古笔记本"风格**（深棕色皮革纹理背景、手写体字体、泛黄纸张）。实现路径：UI 系统（ADR-0015）定义 UXML/USS 样式模板 | 2026-04-11 |
+> | OQ-5 | 时间线视图 | **MVP 默认不实现**。时间线视图复杂度高，对核心体验贡献有限。JournalData 接口在 Phase 4+ 扩展 `timeline_view` 相关字段（暂不预留在当前数据结构中） | 2026-04-11 |
+> | OQ-6 | NPC 人物视图信息层级 | **MVP 默认显示基础信息**（姓名、状态、已知线索数）。不显示完整背景故事。NPC 人物视图详细信息在 Phase 4+ 扩展 | 2026-04-11 |
 
 #### 事件发布（Outputs）
 
@@ -285,7 +353,7 @@ ShouldCompensate = (critical_clue_missing == true) AND (clues_discovered_for_tas
 |------|------|----------|
 | `ClueDiscoveredEvent{clue_id, clue_category, discovery_stage, narrative_significance}` | 理智系统 | 线索发现上下文，用于计算理智惩罚 |
 | `LocationRevealed{location_id}` | 世界地图 | 新地点被发现，在地图上显示标记 |
-| `JournalData{journal_view, current_clues}` | UI 系统 | 日志渲染所需数据（按 LOCATION/NPC/TIMELINE 组织） |
+| `JournalData{journal_view, current_clues}` | UI 系统 | 日志渲染所需数据（按 LOCATION/NPC 组织，TIMELINE 为 Phase 4+ 预留） |
 
 ---
 
@@ -404,7 +472,11 @@ public bool HasCircularDependency(List<Clue> clues)
 }
 ```
 
-> **验证时机**：在 `ClueTemplateRepository` 加载时执行检测（Build 时 + 运行时加载前）。检测到环时输出错误日志并拒绝加载相关线索配置。
+> **验证时机**：在 `ClueTemplateRepository` 加载时执行检测。
+> - **Build 时验证**（内容制作阶段）：策划配置线索数据时，CI/CD 流水线执行一次完整拓扑排序，检测到环时拒绝合并，从源头阻止问题进入游戏包体。
+> - **运行时加载前验证**（兜底）：游戏启动时再次执行验证，防止配置在 Build 后被篡改（理论上 Build 后文件不可变，但作为防御性编程保留）。
+>
+> 如两次验证结果不一致（Build 通过但运行时失败），以 Build 时结果为准，运行时输出警告日志建议重新执行 Build。
 
 ### 存档加载验证逻辑
 
@@ -478,7 +550,7 @@ public void ValidateJournalOnLoad(Journal journal, IEntityRegistry entityRegistr
 | VC-4 | 苍白替代线索保留 [信息缺失] 标记 | 触发补偿，检查 IsPallidReplacement == true 且 MissingReason 不变 |
 | VC-5 | 前置线索满足时自动解锁 | 添加所有前置线索，检查目标线索 State == UNLOCKED |
 | VC-6 | 同一线索不重复添加 | 触发两次相同来源事件，检查 Clues 集合大小不变 |
-| VC-7 | 日志 UI 视图切换 < 100ms | 计时器测量 LOCATION/NPC/TIMELINE 切换响应时间 |
+| VC-7 | 日志 UI 视图切换 < 100ms | 计时器测量 LOCATION/NPC 切换响应时间（TIMELINE 为 Phase 4+ 预留） |
 | VC-8 | 循环前置依赖被正确检测 | 创建 A→B→C→A 配置，验证 HasCircularDependency 返回 true |
 | VC-9 | 无环配置通过检测 | 创建 A→B→C 线性依赖，验证 HasCircularDependency 返回 false |
 | VC-10 | 补偿次数达到上限后不再添加 | 杀死多个关键 NPC，验证补偿线索数不超过 MaxCompensationPerTask |

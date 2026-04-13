@@ -3,11 +3,37 @@
 ## Status
 **Proposed**（依赖 ADR-0010 Weapon System + shared-types.md 的 APPROVED 类型定义）
 
+> **v1.4.1 更新**：修复以下评审问题
+> - DECEPTION_RESISTANCE_IMMUNE 配置化
+> - COMBAT/ESCAPE 检查逻辑提取
+> - PlayerInteractionFSM 状态转换说明
+> - Dialogue UI 边界澄清
+> - QueryAvailableInteractions 性能策略
+
+> **shared-types.md 类型完整性验证**：以下类型已在 shared-types.md（v1.3.0, APPROVED）中正确定义：
+> - `DamageRequest`（§2.3）✅
+> - `ExplosionEvent`（§2.4）✅
+> - `PlayerDamagedEvent`（§7.5）✅
+> - `WeaponQueryRequest/WeaponQueryResponse`（§3.8）✅
+> - `AlertStateChangedEvent`（§5.4）✅
+> - `NPCStateChangedEvent`（§5.2）✅
+> - `WorldState`（§5.1）✅
+> - `AlertState`（§5.3）✅
+> - `NPCIdentityType`（§5.5）✅
+> - `NPCSizeCategory`（§5.6）✅
+> - `FactionAllegiance`（§5.7）✅
+> - `InteractionType`（§9.1）✅
+> - `InteractionResult`（§9.2）✅
+> - `PlayerInteractionState`（§9.4）✅
+> - `ActionLockType`（§4.1）✅
+> - `ActionLockSystem`（§4.2）✅
+> - `HealthState`（§6.1）✅
+
 ## Date
 2026-04-10
 
 ## Last Updated
-2026-04-10
+2026-04-11 (v1.4.2 — 评审修复)
 
 ## Context
 
@@ -29,6 +55,7 @@ Gritty Takedowns（玩家-NPC 交互系统）是《断绝：罪恶之源》"沉�
 - **时间约束**：捆绑时间 3-6 秒（受 NPC 体型和玩家技能影响）
   - NPC 体型通过 `NPCController.QuerySizeCategory()` 获取（定义见 shared-types.md §5.6）
 - **事件约束**：通过 Event Bus 与 NPC AI 系统解耦，避免循环依赖
+- **对话约束**：DialogueTree 数据归 NPC AI 系统所有（Core Layer），Gritty Takedowns 仅负责 UI 渲染
 - **性能约束**：单次交互响应 < 1 帧，动画锁定期间 CPU 占用 < 2ms
 
 ### Requirements
@@ -51,11 +78,11 @@ Gritty Takedowns（玩家-NPC 交互系统）是《断绝：罪恶之源》"沉�
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                   Gritty Takedowns (玩家-NPC 交互系统) 架构               │
+│                 Gritty Takedowns (玩家-NPC 交互系统) 架构                  │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                  GrittyTakedownsSystem (Feature Layer)                │   │
+│  │              GrittyTakedownsSystem (Feature Layer)                      │   │
 │  │  - 管理玩家交互状态机（Idle/CanInteract/Interacting）                │   │
 │  │  - 维护交互类型矩阵查询                                              │   │
 │  │  - 订阅上游事件，更新可用交互选项                                     │   │
@@ -64,21 +91,21 @@ Gritty Takedowns（玩家-NPC 交互系统）是《断绝：罪恶之源》"沉�
 │          ┌─────────────────────────┴─────────────────────────┐          │
 │          ▼                                                   ▼          │
 │  ┌───────────────────┐                           ┌───────────────────┐   │
-│  │ InteractionMatrix  │                           │  PlayerFSM        │   │
+│  │ InteractionMatrix  │                           │  PlayerInteractionFSM │   │
 │  │ (交互类型矩阵)      │                           │  (玩家交互状态机)   │   │
 │  │                   │                           │                   │   │
 │  │ 根据 NPC状态       │                           │ Idle            │   │
 │  │ + 身份标签         │                           │   ↓             │   │
 │  │ + 玩家持有信息     │                           │ CanInteract      │   │
-│  │ → 确定可用交互     │                           │   ↓             │   │
-│  │                   │                           │ Interacting      │   │
+│  │ + AlertState      │                           │   ↓             │   │
+│  │ → 确定可用交互     │                           │ Interacting      │   │
+│  │                   │                           │                   │   │
 │  └───────────────────┘                           └───────────────────┘   │
 │                                                                          │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │              ActionLockSystem（共享服务，跨层可调用）                   │   │
-│  │  - 管理动作锁定优先级                                               │   │
+│  │              Foundation/Shared/ActionLockSystem                          │   │
+│  │  - 单例模式（ActionLockSystem.Instance）                              │   │
 │  │  - Gritty Takedowns / Dialogue / Cutscene / Stagger 共用           │   │
-│  │  - 归属：建议放置在 Foundation/Shared/ 目录下                         │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                    │                                      │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
@@ -94,8 +121,21 @@ Gritty Takedowns（玩家-NPC 交互系统）是《断绝：罪恶之源》"沉�
 │  │  - DamageRequest → Health 系统                                      │   │
 │  │  - KillTagEvent → Sanity 系统                                       │   │
 │  │  - KnowledgeGainedEvent → Clue 系统                                 │   │
-│  │  - WeaponQueryRequest → Weapon 系统                                 │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
+│                                    │                                      │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                     Event Queries（请求/响应）                         │   │
+│  │  - WeaponQueryRequest → Weapon System                               │   │
+│  │    ← WeaponQueryResponse（返回 WeaponData）                         │   │
+│  │  - DialogueChoice → NPC AI System（返回 DialogueResult）             │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│                           ▼ 与其他系统交互 ▼                              │
+│                                                                          │
+│  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐      │
+│  │  Weapon System  │   │   Health System  │   │   NPC AI System  │      │
+│  │  (ADR-0010)    │   │   (ADR-0008)    │   │   (ADR-0004)    │      │
+│  └─────────────────┘   └─────────────────┘   └─────────────────┘      │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -103,34 +143,9 @@ Gritty Takedowns（玩家-NPC 交互系统）是《断绝：罪恶之源》"沉�
 ### 1. 交互类型矩阵
 
 ```csharp
-// InteractionType.cs
-public enum InteractionType
-{
-    // 处决类
-    StealthKill,       // 潜行击杀
-    EnvironmentKill,   // 环境处决
-    FinishOff,         // 补刀
-
-    // 强制类
-    Intimidate,        // 威胁
-    Bribe,             // 贿赂
-    Deceive,           // 欺骗
-
-    // 对峙类
-    MaintainDistance,  // 保持距离威胁
-    Dialogue,          // 对话选项
-
-    // 情报类
-    Search,            // 搜身
-    Interrogate,       // 审问
-
-    // 控制类
-    TieUp,             // 捆绑
-    Release,           // 解开
-
-    // 转化类
-    Convert            // 转化线人
-}
+// InteractionType 定义于 shared-types.md §9.1
+// StealthKillAlertMode 定义于 shared-types.md §15.1
+using StealthKillAlertMode = SharedTypes.StealthKillAlertMode;
 
 // InteractionAvailability.cs
 public struct InteractionAvailability
@@ -153,10 +168,12 @@ public struct PlayerInteractionContext
 
 public class InteractionMatrix
 {
-    // 欺骗抵抗边界值：deceptionResistance >= 1.0f 时 NPC 完全免疫欺骗
-    private const float DECEPTION_RESISTANCE_IMMUNE = 1.0f;
-
     private readonly GrittyTakedownsTuningSO _tuning;
+
+    /// <summary>
+    /// 缓存：上次查询的 NPC ID、上下文哈希和结果
+    /// </summary>
+    private (int npcId, int contextHash, List<InteractionAvailability> cached) _cache;
 
     public InteractionMatrix() : this(null) { }
 
@@ -166,119 +183,304 @@ public class InteractionMatrix
     }
 
     /// <summary>
+    /// 计算上下文的哈希值（用于缓存比较）
+    /// </summary>
+    private int ComputeContextHash(PlayerInteractionContext context)
+    {
+        // 使用简单组合哈希：可根据需要调整
+        int hash = 0;
+        hash ^= context.hasVulnerability.GetHashCode();
+        hash ^= context.isPlayerCrouching.GetHashCode() << 1;
+        hash ^= context.isBehindTarget.GetHashCode() << 2;
+        hash ^= context.hasEnvironmentWeapon.GetHashCode() << 3;
+        return hash;
+    }
+
+    /// <summary>
+    /// 更新缓存（内部方法，由 QueryAvailableInteractions 调用）
+    /// </summary>
+    private void UpdateCache(int npcId, PlayerInteractionContext context, List<InteractionAvailability> result)
+    {
+        _cache = (npcId, ComputeContextHash(context), result);
+    }
+
+    /// <summary>
     /// 查询对特定 NPC 可用的交互类型
     /// </summary>
+    /// <remarks>
+    /// <b>调用频率限制</b>：此方法应仅在以下时机调用：
+    /// 1. 玩家交互范围发生变化时（进入/离开 NPC 范围）
+    /// 2. NPC 状态发生变化时（AlertStateChangedEvent、NPCStateChangedEvent）
+    /// 3. 玩家持有物品发生变化时（WeaponStateChangedEvent）
+    /// 4. 玩家获取新线索时（KnowledgeGainedEvent）
+    ///
+    /// <b>禁止每帧调用</b>：此方法涉及多次 NPCController 查询，每帧调用会造成性能问题。
+    /// 如需每帧更新 UI 显示，应使用缓存的结果或订阅上述事件自行维护缓存。
+    ///
+    /// <b>内部缓存策略</b>：内部缓存上次查询结果（npcId + context 哈希），
+    /// 同一目标且上下文未变化时返回缓存结果，避免重复计算。
+    /// </remarks>
     public List<InteractionAvailability> QueryAvailableInteractions(
         NPCController npc,
         PlayerInteractionContext context)
     {
+        // 检查缓存：同一目标且上下文未变化时返回缓存结果
+        int npcId = npc.GetInstanceID();
+        int contextHash = ComputeContextHash(context);
+        if (_cache.npcId == npcId && _cache.contextHash == contextHash)
+        {
+            return _cache.cached;
+        }
+
+        // 预取 NPC 状态（避免重复查询）
         WorldState npcState = npc.QueryState();
         NPCIdentityType identity = npc.QueryIdentity();
         AlertState alertState = npc.QueryAlertState();
 
+        // 预构建状态上下文（供 Can* 方法使用）
+        var availabilityContext = new AvailabilityContext
+        {
+            Npc = npc,
+            NpcState = npcState,
+            Identity = identity,
+            AlertState = alertState,
+            HasVulnerability = context.hasVulnerability,
+            IsPlayerCrouching = context.isPlayerCrouching,
+            IsBehindTarget = context.isBehindTarget,
+            HasEnvironmentWeapon = context.hasEnvironmentWeapon,
+            NpcHealthState = npc.QueryHealthState()
+        };
+
         var results = new List<InteractionAvailability>();
 
         // 处决类
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.StealthKill,
-            is_available = CanStealthKill(npcState, identity, context.isPlayerCrouching, context.isBehindTarget, alertState),
-            requirement_hint = "需要背面潜行且目标未警觉"
-        });
-
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.EnvironmentKill,
-            is_available = CanEnvironmentKill(npcState, identity, context.hasEnvironmentWeapon),
-            requirement_hint = "需要持有环境物件且目标可被处决"
-        });
-
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.FinishOff,
-            is_available = CanFinishOff(npcState),
-            requirement_hint = "目标必须处于无意识或捆绑状态"
-        });
+        results.Add(QueryStealthKill(availabilityContext));
+        results.Add(QueryEnvironmentKill(availabilityContext));
+        results.Add(QueryFinishOff(availabilityContext));
 
         // 情报类
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.Search,
-            is_available = CanSearch(npcState),
-            requirement_hint = "目标必须处于无意识或死亡状态"
-        });
-
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.Interrogate,
-            is_available = CanInterrogate(npcState),
-            requirement_hint = "目标必须处于无意识状态"
-        });
+        results.Add(QuerySearch(availabilityContext));
+        results.Add(QueryInterrogate(availabilityContext));
 
         // 控制类
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.TieUp,
-            is_available = CanTieUp(npcState),
-            requirement_hint = "目标必须处于无意识状态"
-        });
+        results.Add(QueryTieUp(availabilityContext));
+        results.Add(QueryRelease(availabilityContext));
 
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.Release,
-            is_available = CanRelease(npcState),
-            requirement_hint = "目标必须处于捆绑状态"
-        });
-
-        // 强制类（FREE 状态都可用）
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.Intimidate,
-            is_available = npcState == WorldState.FREE,
-            requirement_hint = ""
-        });
-
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.Bribe,
-            is_available = npcState == WorldState.FREE && CanBribe(npc),
-            requirement_hint = "需要目标可被贿赂"
-        });
-
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.Deceive,
-            is_available = npcState == WorldState.FREE && context.hasVulnerability,
-            requirement_hint = context.hasVulnerability ? "" : "需要先获取目标弱点"
-        });
+        // 强制类
+        results.Add(QueryIntimidate(availabilityContext));
+        results.Add(QueryBribe(availabilityContext));
+        results.Add(QueryDeceive(availabilityContext));
 
         // 对峙类
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.MaintainDistance,
-            is_available = CanMaintainDistance(npcState),
-            requirement_hint = ""
-        });
-
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.Dialogue,
-            is_available = npcState == WorldState.FREE,
-            requirement_hint = ""
-        });
+        results.Add(QueryMaintainDistance(availabilityContext));
+        results.Add(QueryDialogue(availabilityContext));
 
         // 转化类
-        results.Add(new InteractionAvailability
-        {
-            type = InteractionType.Convert,
-            is_available = CanConvert(npcState, context.hasVulnerability),
-            requirement_hint = "需要先获取目标弱点"
-        });
+        results.Add(QueryConvert(availabilityContext));
+
+        // 更新缓存
+        UpdateCache(npcId, context, results);
 
         return results;
     }
 
-    private bool CanBribe(NPCController npc)
+    #region 交互类型查询方法
+
+    private InteractionAvailability QueryStealthKill(AvailabilityContext ctx)
+    {
+        bool available = CanStealthKill(ctx.NpcState, ctx.Identity,
+            ctx.IsPlayerCrouching, ctx.IsBehindTarget, ctx.AlertState);
+        return new InteractionAvailability
+        {
+            type = InteractionType.StealthKill,
+            is_available = available,
+            requirement_hint = available ? "" : "需要背面潜行且目标未警觉"
+        };
+    }
+
+    private InteractionAvailability QueryEnvironmentKill(AvailabilityContext ctx)
+    {
+        bool available = CanEnvironmentKill(ctx.NpcState, ctx.Identity, ctx.HasEnvironmentWeapon);
+        return new InteractionAvailability
+        {
+            type = InteractionType.EnvironmentKill,
+            is_available = available,
+            requirement_hint = available ? "" : "需要持有环境物件且目标可被处决"
+        };
+    }
+
+    private InteractionAvailability QueryFinishOff(AvailabilityContext ctx)
+    {
+        bool available = CanFinishOff(ctx.NpcState);
+        return new InteractionAvailability
+        {
+            type = InteractionType.FinishOff,
+            is_available = available,
+            requirement_hint = available ? "" : "目标必须处于无意识或捆绑状态"
+        };
+    }
+
+    private InteractionAvailability QuerySearch(AvailabilityContext ctx)
+    {
+        bool available = CanSearch(ctx.NpcState);
+        return new InteractionAvailability
+        {
+            type = InteractionType.Search,
+            is_available = available,
+            requirement_hint = available ? "" : "目标必须处于无意识或死亡状态"
+        };
+    }
+
+    private InteractionAvailability QueryInterrogate(AvailabilityContext ctx)
+    {
+        bool available = CanInterrogate(ctx.NpcState);
+        return new InteractionAvailability
+        {
+            type = InteractionType.Interrogate,
+            is_available = available,
+            requirement_hint = available ? "" : "目标必须处于无意识状态"
+        };
+    }
+
+    private InteractionAvailability QueryTieUp(AvailabilityContext ctx)
+    {
+        bool available = CanTieUp(ctx.NpcState, ctx.NpcHealthState);
+        return new InteractionAvailability
+        {
+            type = InteractionType.TieUp,
+            is_available = available,
+            requirement_hint = available ? "" : "目标必须处于无意识且可捆绑状态"
+        };
+    }
+
+    private InteractionAvailability QueryRelease(AvailabilityContext ctx)
+    {
+        bool available = CanRelease(ctx.NpcState);
+        return new InteractionAvailability
+        {
+            type = InteractionType.Release,
+            is_available = available,
+            requirement_hint = available ? "" : "目标必须处于捆绑状态"
+        };
+    }
+
+    private InteractionAvailability QueryIntimidate(AvailabilityContext ctx)
+    {
+        // ⚠️ AlertState 检查：COMBAT 或 ESCAPE 状态下 NPC 不会响应威胁
+        bool available = ctx.NpcState == WorldState.FREE
+            && IsNpcInteractable(ctx.AlertState);
+        return new InteractionAvailability
+        {
+            type = InteractionType.Intimidate,
+            is_available = available,
+            requirement_hint = available ? "" : "目标处于战斗状态，无法威胁"
+        };
+    }
+
+    private InteractionAvailability QueryBribe(AvailabilityContext ctx)
+    {
+        // ⚠️ AlertState 检查：COMBAT 或 ESCAPE 状态下 NPC 不会响应贿赂
+        bool available = ctx.NpcState == WorldState.FREE
+            && IsNpcInteractable(ctx.AlertState)
+            && CanBribe(ctx);
+        return new InteractionAvailability
+        {
+            type = InteractionType.Bribe,
+            is_available = available,
+            requirement_hint = available ? "" : "需要目标可被贿赂"
+        };
+    }
+
+    private InteractionAvailability QueryDeceive(AvailabilityContext ctx)
+    {
+        // ⚠️ AlertState 检查：COMBAT 或 ESCAPE 状态下 NPC 不会响应欺骗
+        bool available = ctx.NpcState == WorldState.FREE
+            && IsNpcInteractable(ctx.AlertState)
+            && ctx.HasVulnerability
+            && CanDeceive(ctx);
+        return new InteractionAvailability
+        {
+            type = InteractionType.Deceive,
+            is_available = available,
+            requirement_hint = ctx.HasVulnerability ? "" : "需要先获取目标弱点"
+        };
+    }
+
+    private InteractionAvailability QueryMaintainDistance(AvailabilityContext ctx)
+    {
+        bool available = CanMaintainDistance(ctx.NpcState, ctx.AlertState);
+        return new InteractionAvailability
+        {
+            type = InteractionType.MaintainDistance,
+            is_available = available,
+            requirement_hint = available ? "" : "目标处于战斗状态，无法威胁"
+        };
+    }
+
+    private InteractionAvailability QueryDialogue(AvailabilityContext ctx)
+    {
+        // ⚠️ AlertState 检查：COMBAT 或 ESCAPE 状态下 NPC 不会响应对话
+        bool available = ctx.NpcState == WorldState.FREE
+            && IsNpcInteractable(ctx.AlertState);
+        return new InteractionAvailability
+        {
+            type = InteractionType.Dialogue,
+            is_available = available,
+            requirement_hint = available ? "" : "目标处于战斗状态，无法对话"
+        };
+    }
+
+    private InteractionAvailability QueryConvert(AvailabilityContext ctx)
+    {
+        // ⚠️ AlertState 检查：COMBAT 或 ESCAPE 状态下 NPC 不会响应转化
+        // ⚠️ LOYAL 派系检查：派系忠诚度为 LOYAL 时 NPC 不可被转化
+        bool available = ctx.NpcState == WorldState.FREE
+            && IsNpcInteractable(ctx.AlertState)
+            && ctx.HasVulnerability
+            && ctx.Npc.QueryFactionAllegiance() != FactionAllegiance.LOYAL;
+        return new InteractionAvailability
+        {
+            type = InteractionType.Convert,
+            is_available = available,
+            requirement_hint = available ? "" : "需要先获取目标弱点"
+        };
+    }
+
+    #endregion
+
+    #region 可用性判定内部方法
+
+    /// <summary>
+    /// 预取状态上下文（避免重复查询）
+    /// </summary>
+    private struct AvailabilityContext
+    {
+        public NPCController Npc;
+        public WorldState NpcState;
+        public NPCIdentityType Identity;
+        public AlertState AlertState;
+        public bool HasVulnerability;
+        public bool IsPlayerCrouching;
+        public bool IsBehindTarget;
+        public bool HasEnvironmentWeapon;
+        public HealthState NpcHealthState;
+    }
+
+    /// <summary>
+    /// 检查 NPC 是否处于可交互状态（非战斗/非逃跑）
+    /// </summary>
+    /// <remarks>
+    /// <b>设计理由</b>：COMBAT 或 ESCAPE 状态下 NPC 不会响应威胁、贿赂、欺骗、转化、对话等交互。
+    /// 将此检查提取为独立方法，避免多个 Can* 方法中重复相同的检查逻辑。
+    /// </remarks>
+    /// <param name="alertState">NPC 当前 AlertState</param>
+    /// <returns>true = 可交互，false = 处于 COMBAT 或 ESCAPE 状态</returns>
+    private bool IsNpcInteractable(AlertState alertState)
+    {
+        return alertState != AlertState.COMBAT && alertState != AlertState.ESCAPE;
+    }
+
+    private bool CanBribe(AvailabilityContext ctx)
     {
         // 贿赂可用条件：
         // 1. NPC 处于 FREE 状态
@@ -291,27 +493,32 @@ public class InteractionMatrix
         // FactionAllegiance 由 NPCData 定义，通过 QueryFactionAllegiance() 接口获取
         // 派系忠诚度为 LOYAL 时 NPC 不会背叛其派系
         int threshold = _tuning?.bribeBraveryThreshold ?? 3;  // 默认值为 3
-        bool braveryCheck = npc.QueryBravery() <= threshold;
-        bool loyaltyCheck = npc.QueryFactionAllegiance() != FactionAllegiance.LOYAL;
+        bool braveryCheck = ctx.Npc.QueryBravery() <= threshold;
+        bool loyaltyCheck = ctx.Npc.QueryFactionAllegiance() != FactionAllegiance.LOYAL;
 
         return braveryCheck && loyaltyCheck;
     }
 
-    private bool CanDeceive(NPCController npc)
+    private bool CanDeceive(AvailabilityContext ctx)
     {
         // 欺骗可用条件：NPC 处于 FREE 状态且玩家已获取其 vulnerability
         // DeceptionResistance 由 NPCData 定义（见 ADR-0004 §NPCData），通过 QueryDeceptionResistance() 接口获取
         // DeceptionResistance 范围 [0, 1]，值越高表示 NPC 越难被欺骗
-        // 当 deceptionResistance >= DECEPTION_RESISTANCE_IMMUNE (1.0f) 时 NPC 完全免疫欺骗
-        return npc.QueryDeceptionResistance() < DECEPTION_RESISTANCE_IMMUNE;
+        //
+        // 欺骗免疫阈值由 TuningSO 配置（deceptionResistanceImmuneThreshold，默认 1.0f）
+        // 当 npcDeceptionResistance >= deceptionResistanceImmuneThreshold 时 NPC 完全免疫欺骗
+        float immuneThreshold = _tuning?.deceptionResistanceImmuneThreshold ?? 1.0f;
+        return ctx.Npc.QueryDeceptionResistance() < immuneThreshold;
     }
 
-    private bool CanMaintainDistance(WorldState state)
+    private bool CanMaintainDistance(WorldState state, AlertState alert)
     {
         // 保持距离威胁：判定玩家是否可对目标使用"保持距离"交互
-        // 可用条件：NPC 处于 FREE 状态
+        // 可用条件：NPC 处于 FREE 状态且未处于战斗状态
         // 效果说明（见 ADR-0004 NPC AI）：NPC 会进入 GUARDED 状态，暂时停止追击直到警戒超时或发现新目标
-        return state == WorldState.FREE;
+        //
+        // ⚠️ AlertState 检查：使用 IsNpcInteractable 统一判断
+        return state == WorldState.FREE && IsNpcInteractable(alert);
     }
 
     private bool CanStealthKill(WorldState state, NPCIdentityType identity,
@@ -319,20 +526,27 @@ public class InteractionMatrix
     {
         // 潜行击杀条件：背面 + 潜行 + 已标记恶徒 + 未完全警觉
         //
-        // **⚠️ Playtest 重点**：宽松模式下（alert < ALERT）可能在某些场景下过于简单。
-        //   TuningSO.stealthKillAlertMode 控制检查模式：
-        //   - Loose（默认）：UNDETECTED / SUSPECT / SEARCH 均可执行
-        //   - Tight：仅 UNDETECTED 可执行
+        // **⚠️ Playtest 重点**：默认 Tight 模式下可能在某些场景下过于困难。
+        //   TuningSO.stealthKillAlertMode 控制检查模式（定义于 shared-types.md §15.1）：
+        //   - Tight（默认）：仅 UNDETECTED 可执行
+        //   - Loose：UNDETECTED / SUSPECT / SEARCH 均可执行，允许玩家失误后补救
         //
         // alert < ALERT 允许在以下状态执行：
         //   - UNDETECTED：完全未被发现，最佳时机
-        //   - SUSPECT：NPC 怀疑但未确认，仍有潜行机会
-        //   - SEARCH：NPC 正在搜索但未发现玩家
+        //   - SUSPECT：NPC 怀疑但未确认，仍有潜行机会（仅 Loose 模式）
+        //   - SEARCH：NPC 正在搜索但未发现玩家（仅 Loose 模式）
         //
-        // **设计理由（Loose 模式）**：
-        //   - 游戏节奏考量：如果只允许 UNDETECTED，玩家会因为一次失误永远失去潜行击杀机会
-        //   - SUSPECT/SEARCH 状态下 NPC 注意力集中在搜索而非防御，给玩家反应机会
-        //   - ALERT 及以上状态表示 NPC 已经确认玩家位置，必须进入战斗或逃跑
+        // **Loose 模式时间窗口说明**：
+        //   Loose 模式允许在 SUSPECT/SEARCH 状态下执行潜行击杀，但这不代表"无限制时间窗口"。
+        //   - 在 SUSPECT 状态时，玩家必须在 NPC 确认玩家位置（转入 SEARCH）之前完成击杀
+        //   - 在 SEARCH 状态时，玩家必须在 NPC 发现玩家（转入 ALERT）之前完成击杀
+        //   - 实际上是一个"紧迫的补救窗口"而非"无限制机会"
+        //   - 设计意图：给玩家一个在失误后挽回的途径，但仍然要求快速和精准的行动
+        //
+        // **设计理由（默认 Tight 模式）**：
+        //   - 保证游戏挑战性：潜行击杀应该是高风险高回报的精英操作
+        //   - Tight 模式鼓励玩家谨慎行动，避免失误
+        //   - 如果 Tight 模式过于困难导致体验下降，可切换到 Loose 模式作为补救
         bool alertCheck = _tuning?.stealthKillAlertMode == StealthKillAlertMode.Tight
             ? alert == AlertState.UNDETECTED
             : alert < AlertState.ALERT;
@@ -344,11 +558,27 @@ public class InteractionMatrix
             && alertCheck;
     }
 
+    /// <summary>
+    /// 环境处决可用性判定
+    /// </summary>
+    /// <remarks>
+    /// <b>与 CanTieUp 的关键差异</b>：
+    /// - 本方法仅检查 <c>WorldState.UNCONSCIOUS</c>，不检查 <c>HealthState.DOWNED</c>
+    /// - 捆绑（CanTieUp）必须同时满足 <c>WorldState.UNCONSCIOUS</c> + <c>HealthState.DOWNED</c>
+    ///
+    /// **设计理由**：
+    /// 处决是终结行为，只需 NPC 失去抵抗能力即可执行；捆绑需要 NPC 处于可安全接近的倒地状态。
+    /// 详见 shared-types.md §6.1.1 同步协议。
+    /// </remarks>
     private bool CanEnvironmentKill(WorldState state, NPCIdentityType identity, bool hasWeapon)
     {
         // 环境处决可在 FREE（正常状态）或 UNCONSCIOUS（已击倒）状态下执行
         // STAGGERED/DOWNED 状态由 Health System 的 HealthState 管理（见 shared-types.md §6.1）
         // 此处 WorldState 只表示 NPC AI 基础状态，与 HealthState 独立
+        //
+        // **执行后状态转移**：
+        // - 从 FREE 执行：NPC 直接进入 DEAD 状态（通过 HealthSystem 处理 LETHAL 伤害）
+        // - 从 UNCONSCIOUS 执行：NPC 直接进入 DEAD 状态（补刀行为）
         //
         // **设计理由**：允许在 UNCONSCIOUS 状态下执行环境处决，因为：
         //   1. 玩家可能先用 BLUNT 武器击倒 NPC（进入 UNCONSCIOUS），再用环境物件补刀
@@ -385,9 +615,18 @@ public class InteractionMatrix
         return state == WorldState.UNCONSCIOUS;
     }
 
-    private bool CanTieUp(WorldState state)
+    private bool CanTieUp(WorldState state, HealthState healthState)
     {
-        return state == WorldState.UNCONSCIOUS;
+        // 捆绑条件：WorldState.UNCONSCIOUS 且 HealthState.DOWNED
+        //
+        // **⚠️ WorldState ↔ HealthState 同步约束**（shared-types.md §6.1.1）：
+        // WorldState.UNCONSCIOUS 仅在 HealthState.DOWNED 时可由 Gritty Takedowns 捆绑。
+        // 这是因为捆绑需要 NPC 处于可安全接近的倒地状态。
+        //
+        // **设计理由**：EnvironmentKill 与 TieUp 的状态要求不同
+        // - EnvironmentKill：仅检查 WorldState.UNCONSCIOUS（处决是终结行为，只需 NPC 失去抵抗能力）
+        // - TieUp：必须同时检查 WorldState.UNCONSCIOUS + HealthState.DOWNED（捆绑需要可安全接近的倒地状态）
+        return state == WorldState.UNCONSCIOUS && healthState == HealthState.DOWNED;
     }
 
     private bool CanRelease(WorldState state)
@@ -395,30 +634,30 @@ public class InteractionMatrix
         return state == WorldState.TIED;
     }
 
-    private bool CanConvert(WorldState state, bool hasVulnerability)
-    {
-        // 转化可用条件：NPC 处于 FREE 状态且玩家已获取其 vulnerability
-        //
-        // **设计说明**：与 CanBribe（检查 Bravery + FactionAllegiance）不同，
-        //   CanConvert 不检查 NPC 的个人属性。这是因为：
-        //   1. vulnerability 本身就是玩家获取的 NPC 弱点，已经代表了转化的"门槛"
-        //   2. 转化是主动提供情报换取 NPC 配合，而非强迫，所以不需要 Bravery 抵抗判定
-        //   3. 如果需要额外的 NPC 属性检查，应在 ConvertHandler 中实现
-        return state == WorldState.FREE && hasVulnerability;
-    }
+    // 注意：CanConvert 逻辑已内联到 QueryConvert 中，此处不再需要独立方法
 }
 ```
 
 ### 2. 玩家交互状态机
 
+> **状态转换触发条件说明**
+>
+> 玩家交互状态机的状态转换由 **GrittyTakedownsSystem** 驱动，触发条件如下：
+>
+> | 当前状态 | 目标状态 | 触发条件 |
+> |---------|---------|---------|
+> | Idle | CanInteract | 玩家按下交互键（E）且准星范围内存在有效 NPC 目标 |
+> | CanInteract | Idle | 玩家按下 ESC/取消键，或目标离开范围，或目标死亡 |
+> | CanInteract | Interacting | 玩家按下交互键（E）确认执行交互 |
+> | Interacting | Idle | 交互动画播放完成（正常结束），或交互被打断（被打、被杀） |
+>
+> **关键设计**：
+> - **自动检测 vs 手动触发**：GrittyTakedownsSystem 每帧检测范围内有效 NPC，自动更新 CanInteract 状态
+> - **交互确认**：CanInteract → Interacting 需要玩家再次按键确认，防止误触
+> - **打断机制**：PlayerDamagedEvent 打断当前交互，强制转入 Idle
+
 ```csharp
-// PlayerInteractionState.cs
-public enum PlayerInteractionState
-{
-    Idle,          // 未交互
-    CanInteract,   // 可交互（检测到目标）
-    Interacting    // 交互中（动画播放）
-}
+// PlayerInteractionState 定义于 shared-types.md §9.4
 
 // PlayerInteractionFSM.cs
 public class PlayerInteractionFSM
@@ -498,9 +737,11 @@ public class PlayerInteractionFSM
 
 > **重要**：ActionLockSystem 统一定义在 [shared-types.md](./shared-types.md) 中。
 > 此处仅说明 Gritty Takedowns 如何使用，不重复实现细节。
+>
+> **实例获取方式**：使用 `ActionLockSystem.Instance` 单例模式（与 shared-types.md §4.2 保持一致）。
 
 ```csharp
-// 使用示例
+// 使用示例（单例模式）
 public class GrittyTakedownsSystem
 {
     private void StartInteraction()
@@ -530,6 +771,11 @@ public class GrittyTakedownsSystem
 > - 两系统间同步由 NPCController 协调，通过订阅 HealthSystem 的 `HealthStateChangedEvent`（ADR-0008 §6.5）实现。
 >
 > **Gritty Takedowns 可见性约束**：WorldState.UNCONSCIOUS 仅在 HealthState.DOWNED 时可由 Gritty Takedowns 捆绑。
+>
+> **与 EnvironmentKill 的差异**：
+> - **捆绑**要求 HealthState.DOWNED（确保 NPC 处于可安全接近的倒地状态）
+> - **环境处决**（见 §1 CanEnvironmentKill）仅检查 WorldState.UNCONSCIOUS，不强制要求 HealthState.DOWNED
+> - 这是因为处决是终结行为，只需 NPC 失去抵抗能力即可执行
 
 ```csharp
 // Foundation/Shared/TieUpCalculator.cs
@@ -559,14 +805,14 @@ public class TieUpCalculator
         float minDuration = _tuning.minTieUpDuration;
         float maxDuration = _tuning.maxTieUpDuration;
 
-        // 体型系数：调整后确保各体型覆盖不同的难度区间
-        // Small:   [minDuration, minDuration + 1.0s] - 基础难度，最快可完成
+        // 体型系数：确保各体型覆盖不同的难度区间
+        // Small:   [minDuration, minDuration + 1.0s] - 基础难度
         // Medium:  [minDuration + 0.5s, minDuration + 1.5s] - 中等难度
-        // Large:   [minDuration + 1.0s, maxDuration] - 高难度，需要最长时间
+        // Large:   [minDuration + 1.0s, maxDuration] - 高难度
         float npcSizeMultiplier = npcSize switch
         {
             NPCSizeCategory.Small => 0.0f,
-            NPCSizeCategory.Medium => 0.5f,
+            NPCSizeCategory.Medium => 0.25f,
             NPCSizeCategory.Large => 1.0f,
             _ => 0.0f
         };
@@ -610,7 +856,7 @@ public class TieUpDurationProvider
         float npcSizeMultiplier = npcSize switch
         {
             NPCSizeCategory.Small => 0.0f,
-            NPCSizeCategory.Medium => 0.5f,
+            NPCSizeCategory.Medium => 0.25f,
             NPCSizeCategory.Large => 1.0f,
             _ => 0.0f
         };
@@ -678,11 +924,14 @@ public class TieUpCancelChecker
         Vector3 playerFacing,
         Vector3 playerToNpc)
     {
-        // 距离检测：超出最大距离
-        float distance = Vector3.Distance(playerPosition, npcPosition);
-        if (distance > _maxCancelDistance)
+        // 距离检测：使用水平距离（仅 XZ 平面），避免垂直方向影响判定
+        float dx = npcPosition.x - playerPosition.x;
+        float dz = npcPosition.z - playerPosition.z;
+        float horizontalDistance = Mathf.Sqrt(dx * dx + dz * dz);
+
+        if (horizontalDistance > _maxCancelDistance)
         {
-            Debug.Log($"[TieUp] 取消：距离 {distance:F2}m > {_maxCancelDistance}m");
+            Debug.Log($"[TieUp] 取消：水平距离 {horizontalDistance:F2}m > {_maxCancelDistance}m");
             return true;
         }
 
@@ -743,9 +992,9 @@ public bool ShouldBlockAlert(AlertState targetAlertState)
 /// </summary>
 public struct DeceptionResult
 {
-    public bool success;
-    public float successChance;      // 本次判定的成功率（用于调试/日志）
-    public float roll;               // 本次判定的随机数（用于调试/日志）
+    public bool Success { get; init; }
+    public float SuccessChance { get; init; }  // 本次判定的成功率（用于调试/日志）
+    public float Roll { get; init; }           // 本次判定的随机数（用于调试/日志）
 }
 
 public DeceptionResult CheckDeceptionSuccess(
@@ -755,15 +1004,15 @@ public DeceptionResult CheckDeceptionSuccess(
 {
     // 欺骗成功条件：玩家已获取 vulnerability 且随机数小于 (1 - npcDeceptionResistance)
     //
-    // **欺骗免疫判定**：当 npcDeceptionResistance >= 1.0 时，successChance = 0，完全免疫欺骗
+    // **欺骗免疫判定**：当 npcDeceptionResistance >= 1.0 时，SuccessChance = 0，完全免疫欺骗
     if (!hasVulnerability)
-        return new DeceptionResult { success = false, successChance = 0f, roll = 0f };
+        return new DeceptionResult { Success = false, SuccessChance = 0f, Roll = 0f };
 
     float successChance = 1.0f - npcDeceptionResistance;  // 抗性 >= 1.0 时 successChance = 0，完全免疫
     float roll = randomService.Value;
     bool success = roll < successChance;
 
-    return new DeceptionResult { success, successChance, roll };
+    return new DeceptionResult { Success = success, SuccessChance = successChance, Roll = roll };
 }
 
 /// <summary>
@@ -793,7 +1042,7 @@ public class UnityRandomService : IRandomService
 // - DamageRequest          → shared-types.md §2.3
 // - ExplosionEvent         → shared-types.md §2.4
 // - WeaponQueryRequest / WeaponQueryResponse → shared-types.md §3.8
-// - PlayerDamagedEvent     → shared-types.md §7.5
+// - PlayerDamagedEvent     → shared-types.md §7.6
 // - AlertStateChangedEvent → shared-types.md §5.4
 // - NPCStateChangedEvent   → shared-types.md §5.2
 // - WorldState             → shared-types.md §5.1
@@ -853,7 +1102,7 @@ public struct InteractionStateChangedEvent
 public struct DialogueChoice
 {
     public string dialogue_id;
-    public int choice_index;
+    public string choiceId;  // 统一使用 PascalCase（符合 C# 命名规范）
 }
 
 // NPC AI 系统返回的对话结果
@@ -868,20 +1117,28 @@ public struct DialogueResult
 
 ### 8. DialogueTree 接口边界
 
-```csharp
-// DialogueTree 所有权说明：
-// - NPC AI System（Core Layer，ADR-0004）负责 DialogueTree 的数据定义、存储和逻辑处理
-// - GrittyTakedowns（Feature Layer）负责 UI 渲染和玩家输入
-// - DialogueUIManager 属于 GrittyTakedowns 的 UI 子目录，调用 NPC AI 的 Query 接口获取文本
+> **所有权声明**：
+> - NPC AI System（Core Layer）：负责 DialogueTree 的**数据定义、存储和逻辑处理**
+> - GrittyTakedowns（Feature Layer）：通过 Query 接口获取数据，**仅负责 UI 渲染和玩家输入**
+>
+> **接口边界定义**：
+> | 职责 | 所属系统 |
+> |------|---------|
+> | DialogueTreeConfig 数据结构定义 | NPC AI System |
+> | 对话选项文本（choice_text、response_text） | NPC AI System |
+> | allegiance_change 计算 | NPC AI System |
+> | knowledge_gained 列表 | NPC AI System |
+> | DialogueUIManager UI 渲染 | GrittyTakedowns |
+> | 玩家输入处理（选择选项） | GrittyTakedowns |
+> | DialogueChoice 事件发送 | GrittyTakedowns |
+>
+> **接口约束**：GrittyTakedowns 只能通过 **Query 接口**（NPCController.QueryDialogueTree）获取只读数据，
+> 不得直接修改 DialogueTreeConfig 的任何字段。NPC AI System 返回的 DialogueTreeConfig 应为只读拷贝或接口实现。
 
+```csharp
 /// <summary>
 /// 对话树配置（由 NPC AI System 定义和维护）
 /// </summary>
-/// <remarks>
-/// <b>实现说明</b>：DialogueTree 的存储和逻辑归属 NPC AI System（Core Layer）。
-/// NPCController 需要实现 <c>QueryDialogueTree()</c> 方法（定义于 ADR-0004 §8 Query 接口扩展部分），
-/// 返回该 NPC 的 DialogueTreeConfig 数据。
-/// </remarks>
 public class DialogueTreeConfig
 {
     public string dialogue_id;
@@ -894,7 +1151,7 @@ public class DialogueTreeConfig
 /// </summary>
 public class DialogueBranch
 {
-    public int choice_index;
+    public string choiceId;              // 统一使用 PascalCase（符合 C# 命名规范）
     public string choice_text;           // 显示给玩家的选项文本
     public string response_text;         // NPC 的回应文本
     public int allegiance_change;         // 选择后的派系态度变化
@@ -916,13 +1173,13 @@ public class DialogueUIManager
         // 使用 NPC AI 系统提供的 Branch 数据渲染 UI
     }
 
-    // 玩家选择后，发送选中选项索引到 NPC AI 系统处理
-    public void OnChoiceSelected(int choiceIndex)
+    // 玩家选择后，发送选中选项到 NPC AI 系统处理
+    public void OnChoiceSelected(string choiceId)
     {
         EventBus.Instance.Publish(new DialogueChoice
         {
             dialogue_id = _currentDialogue.dialogue_id,
-            choice_index = choiceIndex
+            choiceId = choiceId
         });
     }
 
@@ -938,9 +1195,26 @@ public class DialogueUIManager
 
 ```csharp
 // Config/GrittyTakedownsTuningSO.cs
+// StealthKillAlertMode 定义于 shared-types.md §15.1
+using StealthKillAlertMode = SharedTypes.StealthKillAlertMode;
+
 [CreateAssetMenu(menuName = "Game/GrittyTakedowns/Tuning")]
 public class GrittyTakedownsTuningSO : ScriptableObject
 {
+    /// <summary>
+    /// 设计说明：EnvironmentKill 与 TieUp 的状态要求差异
+    ///
+    /// - EnvironmentKill（环境处决）：仅检查 WorldState.UNCONSCIOUS
+    ///   处决是终结行为，只需 NPC 失去抵抗能力即可执行
+    ///
+    /// - TieUp（捆绑）：必须同时检查 WorldState.UNCONSCIOUS + HealthState.DOWNED
+    ///   捆绑需要 NPC 处于可安全接近的倒地状态
+    ///
+    /// 此差异反映了两种交互的不同风险等级：
+    /// - 处决可在 NPC 仍处于 FREE 状态时发起（背刺），也可在击倒后补刀
+    /// - 捆绑必须在 NPC 完全倒地后才可进行，以确保玩家安全
+    /// </summary>
+
     [Header("目标切换冷却")]
     [Tooltip("快速切换目标时的冷却时间（秒），防止玩家过快切换导致 NPC AI 无法反应")]
     public float targetSwitchCooldown = 0.5f;
@@ -967,8 +1241,13 @@ public class GrittyTakedownsTuningSO : ScriptableObject
     [Tooltip("潜行击杀时打断动画播放的最小进度阈值（0-1），低于此值处决不生效")]
     public float stealthKillInterruptThreshold = 0.5f;
 
-    [Tooltip("潜行击杀警戒状态检查模式：")]
-    public StealthKillAlertMode stealthKillAlertMode = StealthKillAlertMode.Loose;
+    [Tooltip("潜行击杀警戒状态检查模式（默认 Tight）：")]
+    [Tooltip("Tight（推荐）：仅 UNDETECTED 状态可执行潜行击杀，确保游戏挑战性")]
+    [Tooltip("Loose：UNDETECTED / SUSPECT / SEARCH 均可执行，允许玩家失误后补救")]
+    [Tooltip("")]
+    [Tooltip("切换条件（Playtest 评估）：")]
+    [Tooltip("如果平均每场战斗死亡次数 > 3 次，或潜行击杀成功率 < 20%，考虑切换到 Loose 模式")]
+    public StealthKillAlertMode stealthKillAlertMode = StealthKillAlertMode.Tight;
 
     [Header("审问")]
     [Tooltip("审问冷却时间（秒），NPC 被审问后的沉默时长")]
@@ -977,23 +1256,13 @@ public class GrittyTakedownsTuningSO : ScriptableObject
     [Header("贿赂")]
     [Tooltip("贿赂可用性阈值：NPC Bravery <= 此值时可以被贿赂（Bravery 范围 [1, 10]，值越小越容易被贿赂）")]
     public int bribeBraveryThreshold = 3;
-}
 
-/// <summary>
-/// 潜行击杀警戒状态检查模式
-/// </summary>
-public enum StealthKillAlertMode
-{
-    /// <summary>
-    /// 宽松模式：UNDETECTED / SUSPECT / SEARCH 状态均可执行潜行击杀
-    /// </summary>
-    Loose,
-
-    /// <summary>
-    /// 严格模式：仅 UNDETECTED 状态可执行潜行击杀
-    /// </summary>
-    Tight
+    [Header("欺骗")]
+    [Tooltip("欺骗免疫阈值：NPC DeceptionResistance >= 此值时完全免疫欺骗（范围 [0, 1]，默认 1.0f 完全免疫）")]
+    [Range(0f, 1f)]
+    public float deceptionResistanceImmuneThreshold = 1.0f;
 }
+```
 ```
 
 ### 10. Unity 项目结构（Feature Layer + Foundation 共享）
@@ -1096,6 +1365,7 @@ Assets/Game/
 | **审问被唤醒** | 审问期间 NPC 醒来 | 审问期间暂停唤醒计时器 |
 | **WorldState/HealthState 状态映射** | NPC 被击倒时 WorldState 与 HealthState 同步失败 | 已在 §4 明确同步协议，由 NPCController 负责协调 |
 | **审问冷却参数泄露** | 审问 cooldown 持续时间未公开导致玩家困惑 | UI 提示显示冷却状态，`interrogateCooldown` 由 TuningSO 配置 |
+| **转化派系冲突** | LOYAL 派系的 NPC 被转化可能与游戏 lore 冲突 | CanConvert 已添加 LOYAL 派系检查，转化选项对 LOYAL NPC 不可用（v1.4.2 修复） |
 
 ---
 
@@ -1165,17 +1435,18 @@ Assets/Game/
 
 ### 功能验收
 1. **潜行击杀条件判定**：
-   - Loose 模式（默认）：背面 + 潜行 + 已标记恶徒 + Alert State < ALERT 时可执行
-   - Tight 模式：仅 UNDETECTED 状态可执行
-2. **⚠️ 高优先级 潜行击杀宽松模式验证（Playtest Required）**：
-   - 默认 Loose 模式下，SUSPECT/SEARCH 状态均可执行潜行击杀
-   - **Playtest 重点**：评估此宽松度是否导致玩家可以"失误后补救"，还是过于简单
-   - 如过于宽松，设置 `GrittyTakedownsTuningSO.stealthKillAlertMode = StealthKillAlertMode.Tight` 收紧到仅 UNDETECTED
+   - **默认 Tight 模式**：仅 UNDETECTED 状态可执行（确保游戏挑战性）
+   - Loose 模式：UNDETECTED / SUSPECT / SEARCH 均可执行
+2. **⚠️ Playtest Required（ Loose 模式调优）**：
+   - 当前默认 Tight 模式（仅 UNDETECTED 可执行）
+   - **Playtest 评估**：如果 Tight 模式过于困难导致游戏体验下降，可切换到 Loose 模式
+   - Loose 模式下 SUSPECT/SEARCH 状态均可执行潜行击杀，允许玩家"失误后补救"
+   - 调优参数：`GrittyTakedownsTuningSO.stealthKillAlertMode`
 3. **环境处决流程**：持有物件 → 查询 WeaponData → 发送 DamageRequest → Health 处理
 4. **捆绑时间正确**：NPC 体型和玩家技能正确影响捆绑时间（3-6 秒范围）
 5. **审问线索获取**：审问成功后 KnowledgeGainedEvent 正确发送到 Clue 系统
 6. **欺骗选项显示**：仅在玩家已获取 vulnerability 时显示欺骗选项
-7. **转化效果**：allegiance 提升 + 情报提供后恢复
+7. **转化效果**：allegiance 提升 + 情报提供后恢复；LOYAL 派系 NPC 转化选项不可用
 8. **贿赂功能完整**：Bravery 检查和 FactionAllegiance 检查同时生效（LOYAL 不可被贿赂）
 
 ### 边缘情况验收
@@ -1184,13 +1455,16 @@ Assets/Game/
 11. **处决被目击**：ExecutionWitnessedEvent 正确发送到 NPC AI 系统
 12. **审问期间唤醒**：唤醒计时器在审问期间暂停
 13. **动作锁获取失败**：当其他系统占用锁时，交互正确取消而非卡死
+14. **⚠️ AlertState 边界检查**：Intimidate/Bribe/Deceive/Convert/MaintainDistance/Dialogue 在 NPC 进入 COMBAT 或 ESCAPE 状态时正确禁用
+15. **Loose 模式时间窗口**：SUSPECT/SEARCH 状态下可执行潜行击杀，但必须在 NPC 升级警戒之前完成（紧迫补救窗口）
+16. **捆绑距离检测**：使用水平距离（XZ 平面）判定，楼梯等垂直场景不误判
 
 ### 跨系统验收
-14. **交互事件广播**：InteractionEvent 正确发送到事件总线
-15. **伤害请求处理**：DamageRequest 被 Health 系统正确处理
-16. **击杀标签传递**：KillTagEvent 正确发送到 Sanity 系统
-17. **线索系统集成**：搜身/审问的 KnowledgeGainedEvent 被 Clue 系统接收
-18. **PlayerDamagedEvent 对齐**：与 ADR-0008/shared-types.md §7.5 定义的签名完全一致
+16. **交互事件广播**：InteractionEvent 正确发送到事件总线
+17. **伤害请求处理**：DamageRequest 被 Health 系统正确处理
+18. **击杀标签传递**：KillTagEvent 正确发送到 Sanity 系统
+19. **线索系统集成**：搜身/审问的 KnowledgeGainedEvent 被 Clue 系统接收
+20. **PlayerDamagedEvent 对齐**：与 ADR-0008/shared-types.md §7.6 定义的签名完全一致
     ```
     public struct PlayerDamagedEvent
     {
@@ -1202,7 +1476,7 @@ Assets/Game/
     ```
 
 ### shared-types.md 类型存在性验收
-19. **shared-types.md 完整性**：验证以下类型已在 shared-types.md 中正确定义：
+21. **shared-types.md 完整性**：验证以下类型已在 shared-types.md 中正确定义：
     - `DamageRequest`（§2.3）
     - `ExplosionEvent`（§2.4）
     - `PlayerDamagedEvent`（§7.5）
@@ -1223,14 +1497,16 @@ Assets/Game/
 ### NPCData 属性验收（ADR-0004 定义）
 > **注意**：以下 NPCController Query 接口的具体定义见 [ADR-0004 §8](./adr-0004-npc-ai-behavior-architecture.md#8-query-接口)。
 
-20. **NPCController.QueryBravery()**：返回 NPC 的勇气值（范围 [1, 10]，影响贿赂可用性）
-21. **NPCController.QueryDeceptionResistance()**：返回 NPC 的欺骗抗性（范围 [0, 1]）
-22. **NPCController.QuerySizeCategory()**：返回 NPC 的体型分类（Small/Medium/Large）
-23. **NPCController.QueryDialogueTree()**：返回该 NPC 的对话树数据，供 DialogueUIManager 渲染对话选项
-24. **NPCController.QueryFactionAllegiance()**：返回 NPC 的派系忠诚度（影响贿赂可用性，LOYAL 不可被贿赂）
+22. **NPCController.QueryBravery()**：返回 NPC 的勇气值（范围 [1, 10]，影响贿赂可用性）
+23. **NPCController.QueryDeceptionResistance()**：返回 NPC 的欺骗抗性（范围 [0, 1]）
+24. **NPCController.QuerySizeCategory()**：返回 NPC 的体型分类（Small/Medium/Large）
+25. **NPCController.QueryDialogueTree()**：返回该 NPC 的对话树数据，供 DialogueUIManager 渲染对话选项
+26. **NPCController.QueryFactionAllegiance()**：返回 NPC 的派系忠诚度（影响贿赂可用性，LOYAL 不可被贿赂）
+27. **NPCController.QueryHealthState()**：返回 NPC 的 HealthState（用于 CanTieUp 的 HealthState.DOWNED 检查）
 
 ### 跨系统状态同步协议验收
-25. **WorldState ↔ HealthState 同步**：验证 NPCController 在 HealthSystem 发送 DOWNED 事件后正确设置 WorldState = UNCONSCIOUS（详见 §4 同步协议）
+28. **WorldState ↔ HealthState 同步**：验证 NPCController 在 HealthSystem 发送 DOWNED 事件后正确设置 WorldState = UNCONSCIOUS（详见 §4 同步协议）
+29. **捆绑状态检查完整性**：CanTieUp 同时检查 WorldState.UNCONSCIOUS 和 HealthState.DOWNED（详见 CanTieUp 方法注释）
 
 ---
 
@@ -1245,3 +1521,18 @@ Assets/Game/
 - [共享类型定义](./shared-types.md) — **DamageRequest、WeaponQuery、ActionLockSystem、PlayerDamagedEvent 等跨 ADR 类型统一定义在此**
 - [Gritty Takedowns GDD](../../design/gdd/gritty-takedowns.md) — 本 ADR 的设计依据
 - [事件总线 ICD](../../engine-reference/event-bus-icd.md) — 事件定义的权威文档
+
+## 附录：v1.4.x 修改日志
+
+| 日期 | 版本 | 修改内容 | 评审修复 |
+|------|------|---------|----------|
+| 2026-04-11 | v1.4.2 | StealthKillAlertMode 补充切换条件说明（Playtest 评估指标） | - |
+| 2026-04-11 | v1.4.2 | TuningSO 补充 EnvironmentKill/TieUp 状态要求差异注释 | - |
+| 2026-04-11 | v1.4.2 | TieUpCancelChecker 距离检测改为水平距离（XZ 平面） | - |
+| 2026-04-11 | v1.4.2 | CanConvert 添加 LOYAL 派系不可转化检查 | - |
+| 2026-04-11 | v1.4.1 | DECEPTION_RESISTANCE_IMMUNE 硬编码改为 TuningSO 配置化 | #6 修复 |
+| 2026-04-11 | v1.4.1 | COMBAT/ESCAPE 检查逻辑提取为 IsNpcInteractable 方法 | #7 修复 |
+| 2026-04-11 | v1.4.1 | PlayerInteractionFSM 状态转换触发条件补充说明 | #12 修复 |
+| 2026-04-11 | v1.4.1 | Dialogue UI 边界明确为只读 Query 接口 | #10 修复 |
+| 2026-04-11 | v1.4.1 | QueryAvailableInteractions 调用频率限制和缓存策略说明 | #11 修复 |
+| 2026-04-11 | v1.4.1 | InteractionMatrix 添加内部缓存机制 | #11 修复 |

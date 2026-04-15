@@ -1,14 +1,18 @@
 # Weather System + Lighting & Time System (天气与光照系统)
 
-> **Status**: Approved
+> **Status**: Approved (Revised)
 > **Author**: [user + agents]
-> **Last Updated**: 2026-04-09 (评审修复：OQ-1接口确认、SOUL_SPLIT依赖说明、音效规格补充、公式2插值语义修正、闪电AlertBonus衰减机制)
-> **2026-04-10 评审修复**：P0公式2半衰期修正、P1雷雨视野bonus补充、P1发布验收AC-15添加、P2措辞修正（Fog_LightRangeMultiplier折扣→倍率）、P2 RainIntensity纯视觉注释
-> **Priority**: Full Vision
+> **Last Updated**: 2026-04-14
+> **Priority**: Full Vision (MVP 不实现)
 > **Layer**: World
 > **Implements Pillar**: 罪恶的深度 (Depth of Sin)
-> **Depends On**: Environment Interaction System
+> **Depends On**: Environment Interaction System (软依赖，MVP不联动)
 > **Includes**: 光照与时间系统扩展 (Lighting & Time System)
+> **Revision Notes**:
+> - 2026-04-15: P2修复 - 公式2添加ExpDecay标准数学定义；明确闪电AlertBonus为加法叠加（AlertScore += 10）
+> - 2026-04-14: P1修复 - 修正依赖类型标注（硬依赖→软依赖），与环境交互系统的"软依赖（订阅）"标注保持一致
+> - 2026-04-09: 评审修复：OQ-1接口确认、SOUL_SPLIT依赖说明、音效规格补充、公式2插值语义修正、闪电AlertBonus衰减机制
+> - 2026-04-10: 评审修复：P0公式2半衰期修正、P1雷雨视野bonus补充、P1发布验收AC-15添加、P2措辞修正（Fog_LightRangeMultiplier折扣→倍率）、P2 RainIntensity纯视觉注释
 
 ## Overview
 
@@ -43,7 +47,7 @@
 | **晴天 (Clear)** | 正常色调，无粒子 | 标准城市背景音 | 无 | — |
 | **雨天 (Rain)** | 冷色调偏蓝，雨滴粒子，地面湿润反射 | 持续雨声，低沉氛围 | NPC听觉阈值 +0.2（声音传播效率降低） | 雨声渐入 |
 | **雾天 (Fog)** | 画面边缘模糊，视野距离缩短，色调偏灰 | 沉闷、寂静，声音略有回响 | NPC视野范围 ×0.7（视野缩短30%） | 雾效淡入 |
-| **雷雨 (Thunderstorm)** | 雨天效果 + 周期性闪电（屏幕闪白）+ 强烈暗角 | 暴雨声 + 雷声（周期性轰鸣） | 同雨天 + 闪电时短暂全屏曝光（200ms），NPC警觉瞬间提升，NPC视野临时扩大10%（`LightningVisionBonus`） | 闪电 + 雷声同步 |
+| **雷雨 (Thunderstorm)** | 雨天效果 + 周期性闪电（屏幕闪白）+ 强烈暗角 | 暴雨声 + 雷声（周期性轰鸣） | 同雨天 + 闪电时短暂全屏曝光（200ms），NPC警觉瞬间提升，NPC视野临时扩大10%（`Weather_LightningVisionBonus`） | 闪电 + 雷声同步 |
 
 **规则2：天气选择机制**
 
@@ -80,7 +84,7 @@ GetWeatherModifier(affected_system: SystemType) -> float
 | 晴天 | 无 | 无 |
 | 雨天 | 无 | `AudioDetectionThreshold *= 1.2` |
 | 雾天 | `MaxVisionRange *= 0.7` | `AudioDetectionThreshold *= 1.1` |
-| 雷雨 | 无 | `AudioDetectionThreshold *= 1.2` + 闪电时 `AlertLevel += 10`（峰值，持续衰减） |
+| 雷雨 | 无 | `AudioDetectionThreshold *= 1.2` + 闪电时 NPC 感知评分获得额外 AlertBonus（峰值10，**加法叠加于 AlertScore**，按指数衰减） |
 
 **规则5：过渡动画**
 
@@ -136,7 +140,7 @@ enum WeatherType {
 
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|---------|
-| 环境交互系统 (Environment Interaction) | 硬依赖 | 接收环境物件状态，评估天气对物件的间接影响（如湿滑地面） |
+| 环境交互系统 (Environment Interaction) | 软依赖（订阅） | 订阅 `WeatherChangedEvent`，天气变化时接收通知（如湿滑地面视觉特效）。**MVP 阶段不实现此联动**，此处标注为软依赖以便未来扩展 |
 
 **下游依赖（谁依赖天气系统）**：
 
@@ -160,10 +164,35 @@ enum WeatherType {
 ```
 Environment Interaction ──环境物件状态──▶ Weather System
                                               │
-                                              ├──▶ DPP ──视觉滤镜参数
-                                              ├──▶ Immersive Audio ──音效层切换
-                                              └──▶ NPC AI ──感知折扣查询
+                            ┌─────────────────┼─────────────────┐
+                            │                 │                 │
+                            ▼                 ▼                 ▼
+                    ┌───────────────┐  ┌───────────────┐  ┌───────────────┐
+                    │  Lighting     │  │  DPP          │  │  Immersive    │
+                    │  System       │  │  (Presentation)│  │  Audio        │
+                    │  (World)      │  │              │  │  (Presentation)│
+                    └───────────────┘  └───────────────┘  └───────────────┘
+                            │                 │                 │
+                            └────────┬────────┴─────────────────┘
+                                     ▼
+                              NPC AI System
+                              (GetWeatherModifier)
 ```
+
+**跨层数据流说明**：
+
+天气系统（World Layer）通过以下两种路径影响 Presentation Layer 系统：
+
+1. **间接路径（主要）**：Weather System → Lighting System → DPP/Audio
+   - 雷雨闪电时，Weather System 直接发送 `LightningFlashEvent` 给 Lighting System
+   - Lighting System 叠加闪电光照效果（临时曝光增量）
+   - 光照系统变化通过 `LightingChangedEvent` 传递给 DPP
+
+2. **直接查询接口（辅助）**：Weather System → NPC AI System
+   - NPC AI 通过 `GetWeatherModifier()` 直接查询天气折扣
+   - 此接口不经过 Presentation Layer，保持 World Layer 纯粹性
+
+**架构说明**：虽然 World Layer 理论上不应直接影响 Presentation Layer，但本设计采用"查询接口跨层调用 + 事件间接传递"的混合模式以简化实现。雾天/雨天的感知折扣通过 NPC AI 的 `EffectiveVisionRange` 间接传递，不直接修改 LOS 参数。
 
 ## Formulas
 
@@ -193,18 +222,33 @@ AudioModifier = AudioDetectionThreshold × WeatherAudioMultiplier
 
 天气切换时，效果参数通过指数衰减插值过渡：
 
+> **语义统一说明 (2026-04-14)**：本公式已修正为**正向语义**，与 Dynamic Post-Processing 系统和 Screen Effects 系统保持一致。Alpha=1 表示完全过渡到目标值，Alpha→0 表示接近旧值。
+
 ```
-Progress = 1 - ExpDecay(TimeSinceTransition, HalfLife)
-CurrentValue = Lerp(PreviousValue, TargetValue, Progress)
+Alpha = 1.0 - ExpDecay(TimeSinceTransition, HalfLife)
+CurrentValue = Lerp(PreviousValue, TargetValue, Alpha)
 ```
 
-其中 `ExpDecay` 返回从 1.0 指数衰减到 0.0 的值，半衰期为 `HalfLife`。
+**ExpDecay 标准数学定义**：
+
+```
+ExpDecay(t, half_life) = e^(-t × ln(2) / half_life)
+```
+
+- **含义**：从 1.0 指数衰减到 0.0，半衰期为 `half_life`
+- **性质**：
+  - t = 0 时，ExpDecay = 1.0
+  - t = half_life 时，ExpDecay = 0.5
+  - t → ∞ 时，ExpDecay → 0
 
 **语义说明**：
-- `Progress`：过渡进度，从 0.0（刚切换）到 1.0（过渡完成）
-- `TimeSinceTransition = 0` 时，`ExpDecay = 1.0`，`Progress = 0.0`，`CurrentValue = PreviousValue`（旧天气）
-- `TimeSinceTransition = TransitionDuration` 时，`ExpDecay ≈ 0.0`，`Progress ≈ 1.0`，`CurrentValue = TargetValue`（新天气）
+- `Alpha`：过渡完成度系数，从 0.0（刚切换）到 1.0（过渡完成）
+- `TimeSinceTransition = 0` 时，`ExpDecay = 1.0`，`Alpha = 0.0`，`CurrentValue = Lerp(PreviousValue, TargetValue, 0.0) = PreviousValue`（无过渡，保持当前值）
+- `TimeSinceTransition = HalfLife` 时，`ExpDecay = 0.5`，`Alpha = 0.5`，约 50% 过渡
+- `TimeSinceTransition = TransitionDuration` 时，`ExpDecay ≈ 0.0`，`Alpha ≈ 1.0`，`CurrentValue ≈ TargetValue`（完全过渡到目标值）
 - 过渡曲线自然平滑：初期变化快（视觉效果明显），后期变化慢（收敛稳定）
+- **Lerp 参数顺序**：`Lerp(PreviousValue, TargetValue, Alpha)`，当 Alpha=0 时返回 PreviousValue（起点），当 Alpha=1 时返回 TargetValue（终点）
+- **与 DPP/Screen Effects 的一致性**：本公式已修正为与 DPP 和 Screen Effects 相同的 Lerp 语义（Alpha=1 完全过渡）
 
 | 参数 | 定义 | 典型值 |
 |------|------|--------|
@@ -227,12 +271,34 @@ TimeSinceLastLightning >= LightningInterval → TriggerLightning()
 |------|------|--------|
 | LightningInterval | 闪电间隔时间 | 8.0s - 15.0s（随机） |
 | LightningFlashDuration | 闪光持续时间 | 200ms |
-| LightningAlertBonus | 闪电时NPC感知评分额外增量（峰值） | +10 |
-| LightningAlertDecayHalfLife | AlertBonus 衰减半衰期 | 1.0s |
 
 ---
 
-**公式4：区域天气权重选择**
+**公式4：闪电AlertBonus衰减**
+
+闪电触发时，NPC感知评分获得额外增量，该增量按指数衰减并**直接加法叠加于 AlertScore**：
+
+```
+AlertBonus(t) = 10 × ExpDecay(t, LightningAlertDecayHalfLife)
+// 应用方式：AlertScore += AlertBonus(t)（不改变检测阈值）
+LightningAlertDecayHalfLife = 1.0s
+```
+
+| 参数 | 定义 | 典型值 |
+|------|------|--------|
+| AlertBonus(t) | 闪电触发后t秒的额外感知评分增量 | 0 - 10 |
+| LightningAlertDecayHalfLife | AlertBonus衰减半衰期 | 1.0s（与Tuning Knobs保持一致） |
+| ExpDecay | 指数衰减函数 | 见公式2定义 |
+
+**语义说明**：
+- 闪电触发瞬间（t=0）：AlertBonus = 10（峰值增量）
+- t = 1个半衰期（约1.0s）：AlertBonus = 10 × 0.5 = 5
+- t = 2个半衰期（约2.0s）：AlertBonus = 10 × 0.25 = 2.5
+- t = 3个半衰期（约3.0s）：AlertBonus ≈ 1.25（可忽略）
+
+---
+
+**公式5：区域天气权重选择**
 
 进入区域时，根据预设权重随机选择天气：
 
@@ -240,9 +306,11 @@ TimeSinceLastLightning >= LightningInterval → TriggerLightning()
 SelectedWeather = WeightedRandom(AreaConfig.WeatherWeights)
 ```
 
+> **权重归一化说明**：WeightedRandom 函数会自动归一化权重。如果权重之和不等于 1.0，系统会在内部将其归一化后再进行选择。例如 { Clear: 0.1, Rain: 0.6, Fog: 0.2, Thunderstorm: 0.1 } 之和为 1.0，直接使用；如果为 { Clear: 1, Rain: 6, Fog: 2, Thunderstorm: 1 } 也会被归一化后选择。
+
 | 变量 | 定义 | 示例（港口区） |
 |------|------|---------------|
-| WeatherWeights | 每种天气的权重 | { Clear: 0.1, Rain: 0.6, Fog: 0.2, Thunderstorm: 0.1 } |
+| WeatherWeights | 每种天气的权重（无需归一化，WeightedRandom自动处理） | { Clear: 0.1, Rain: 0.6, Fog: 0.2, Thunderstorm: 0.1 } |
 | SelectedWeather | 加权随机选择的天气 | 60%概率选择雨天 |
 
 ## Edge Cases
@@ -255,9 +323,8 @@ SelectedWeather = WeightedRandom(AreaConfig.WeatherWeights)
 **边缘情况2：闪电触发时NPC正在搜索状态**
 
 - **问题**：NPC处于搜索（Investigate）状态，闪电是否会打断搜索？
-- **处理**：闪电不打断搜索状态，但会在当前感知评分基础上额外+10。这个峰值按指数衰减：
-  - `AlertBonus(t) = 10 × ExpDecay(t, LightningAlertDecayHalfLife)`
-  - `LightningAlertDecayHalfLife = 1.0s`（默认，可配置）
+- **处理**：闪电不打断搜索状态，但会在当前感知评分基础上额外+10。该增量按指数衰减（详见公式4）：
+  - 闪电触发瞬间 AlertBonus = 10（峰值）
   - 约3个半衰期后（3秒）衰减至可忽略
   - 衰减期间，NPC 正常进行感知检测，闪电 AlertBonus 作为临时增量叠加
 
@@ -266,10 +333,10 @@ SelectedWeather = WeightedRandom(AreaConfig.WeatherWeights)
 - **问题**：玩家快速穿越多个区域，天气可能频繁切换
 - **处理**：区域切换时，如果新区与旧区天气相同，则不触发过渡动画。如果不同，执行过渡动画。**限制最小过渡间隔为5秒**（防止抖动）
 
-**边缘情况4：雷雨闪电与DPP心理状态滤镜叠加**
+**边缘情况4：雷雨闪电与心理状态滤镜叠加**
 
-- **问题**：玩家处于 BROKEN 或 FRENZIED 状态时，雷雨闪电叠加可能造成视觉过载
-- **处理**：雷雨闪电的屏幕闪白效果在 SOUL_SPLIT 状态下自动降低强度50%（从200ms降至100ms），并且暗角效果禁用
+- **问题**：玩家处于某些心理状态时，雷雨闪电叠加可能造成视觉过载
+- **处理**：Weather System 发送 `LightningFlashEvent{ intensity, duration }`，由接收方（如 Sanity/Rage 系统）自行判断是否需要降低闪电强度。Weather System 不主动查询玩家心理状态，保持单向数据流原则。
 
 **边缘情况5：环境物件触发与天气效果冲突**
 
@@ -292,13 +359,15 @@ SelectedWeather = WeightedRandom(AreaConfig.WeatherWeights)
 
 | 系统 | 依赖类型 | 接口说明 | 数据流方向 |
 |------|---------|---------|-----------|
-| 环境交互系统 | 硬依赖 | 天气可能影响环境物件行为（如湿滑影响），但 MVP 阶段不实现此联动 | Environment → Weather（被动查询） |
+| 环境交互系统 | **软依赖（订阅）** | 天气变化时，环境交互系统订阅 `WeatherChangedEvent` 以触发环境特效（如雨滴音效）。**MVP 阶段不实现此联动**，此处标注为软依赖以便未来扩展 | Environment ← Weather（事件订阅） |
+
+> **依赖类型澄清 (2026-04-14)**：天气系统对环境交互系统的依赖是"软依赖（订阅）"，而非硬依赖。环境交互系统订阅天气事件以实现视觉/音效联动，但这是可选功能，MVP 阶段不实现。
 
 ### 下游依赖（谁依赖天气系统）
 
 | 系统 | 依赖类型 | 接口说明 | 数据流方向 |
 |------|---------|---------|-----------|
-| 动态视觉滤镜系统 (DPP) | 软依赖（订阅） | 订阅 `WeatherChangedEvent`，获取天气类型以叠加对应视觉滤镜层 | Weather → DPP |
+| 动态视觉滤镜系统 (DPP) | 软依赖（订阅） | 订阅 `WeatherChangedEvent`（天气切换）和 `LightingChangedEvent`（闪电光照变化）。**闪电事件走间接路径**：Weather System → Lighting System → DPP，Weather 不直接发送事件给 DPP | Weather → Lighting → DPP（闪电）；Weather → DPP（天气切换） |
 | 沉浸式音频与震动系统 | 软依赖（订阅） | 订阅 `WeatherChangedEvent`，获取天气类型以切换环境音效层 | Weather → Audio |
 | NPC AI系统 | 软依赖（查询） | 调用 `GetWeatherModifier()` 查询当前天气对感知的折扣 | Weather → NPC AI（被动提供） |
 
@@ -333,12 +402,14 @@ SelectedWeather = WeightedRandom(AreaConfig.WeatherWeights)
 | 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
 |--------|------|--------|---------|------|
 | `Fog_VisionMultiplier` | float | 0.7 | 0.5 - 1.0 | 雾天视野折扣 |
+| `Weather_LightningVisionBonus` | float | 0.1 | 0.0 - 0.2 | 闪电时视野临时扩大倍率增量（闪电时 NPC 视野 = 基础视野 × (1 + Weather_LightningVisionBonus)） |
 | `Rain_AudioMultiplier` | float | 1.2 | 1.0 - 1.5 | 雨天听觉阈值倍率 |
 | `Fog_AudioMultiplier` | float | 1.1 | 1.0 - 1.3 | 雾天听觉阈值倍率 |
 | `Thunderstorm_AudioMultiplier` | float | 1.2 | 1.0 - 1.5 | 雷雨听觉阈值倍率 |
 | `Lightning_AlertBonus` | int | 10 | 5 - 20 | 闪电时NPC感知评分额外增量（峰值） |
 | `Lightning_AlertDecayHalfLife` | float | 1.0s | 0.5s - 2.0s | 闪电 AlertBonus 的衰减半衰期 |
 | `SoulSplit_LightningReduction` | float | 0.5 | 0.3 - 0.7 | SOUL_SPLIT状态下闪电强度折扣 |
+| `SoulSplit_DisableVignette` | bool | true | — | SOUL_SPLIT状态下是否禁用闪电暗角效果 |
 
 ### 系统行为参数
 
@@ -615,7 +686,7 @@ enum LightLevel {
 
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|---------|
-| 环境交互系统 (Environment Interaction) | 硬依赖 | 接收可破坏光源的破坏事件，触发光照变化 |
+| 环境交互系统 (Environment Interaction) | 软依赖（订阅） | 订阅可破坏光源的破坏事件通知，触发光照变化。可破坏光源破坏事件的本质是通知机制，Lighting系统被动接收而非主动控制 |
 | 天气系统 (Weather System) | 软依赖（订阅） | 订阅 `LightningFlashEvent`，叠加闪电光照效果 |
 
 **下游依赖（谁依赖光照系统）**：
@@ -683,15 +754,15 @@ FinalVisionRange = BaseVisionRange
                  × WeatherVisionMultiplier
                  × LightVisionMultiplier
 
-// 限制最低视野为 base 的 30%
-FinalVisionRange = Max(FinalVisionRange, BaseVisionRange × 0.3)
+// 限制最低视野为 base 的 MinVisionMultiplier（默认 0.35）
+FinalVisionRange = Max(FinalVisionRange, BaseVisionRange × MinVisionMultiplier)
 ```
 
 | 天气 | 光照 | 综合折扣示例（base=15m） |
 |------|------|------------------------|
 | 晴天 | 昏暗 | 15 × 1.0 × 0.7 = **10.5m** |
 | 雾天 | 昏暗 | 15 × 0.7 × 0.7 = **7.35m** |
-| 雾天 | 黑暗 | 15 × 0.7 × 0.4 = **4.2m** → clamp to **4.5m**（30%下限） |
+| 雾天 | 黑暗 | 15 × 0.7 × 0.4 = **4.2m** → clamp to **5.25m**（MinVisionMultiplier 下限） |
 | 晴天 | 黑暗 | 15 × 1.0 × 0.4 = **6.0m** |
 
 ---
@@ -765,7 +836,7 @@ FlashDuration = 200ms
 | `Normal_VisionMultiplier` | float | 0.9 | 0.8 - 1.0 | 正常区域视野倍率 |
 | `Dim_VisionMultiplier` | float | 0.7 | 0.5 - 0.8 | 昏暗区域视野倍率 |
 | `Dark_VisionMultiplier` | float | 0.4 | 0.3 - 0.5 | 黑暗区域视野倍率 |
-| `MinVisionMultiplier` | float | 0.3 | 0.2 - 0.4 | 最低视野倍率下限（天气×光照叠加后） |
+| `MinVisionMultiplier` | float | 0.35 | 0.2 - 0.4 | 最低视野倍率下限（天气×光照叠加后） |
 
 #### 阴影机制参数
 
@@ -779,7 +850,7 @@ FlashDuration = 200ms
 | 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
 |--------|------|--------|---------|------|
 | `LightningAmbientBonus` | float | 0.5 | 0.3 - 0.7 | 闪电时全局光照增量 |
-| `LightningVisionBonus` | float | 0.1 | 0.0 - 0.2 | 闪电时视野临时扩大（倍率增量） |
+| `Weather_LightningVisionBonus` | float | 0.1 | 0.0 - 0.2 | 闪电时视野临时扩大（倍率增量） |
 | `LightningDuration` | float | 200ms | 100ms - 400ms | 闪光持续时间 |
 
 #### 雾-光交互参数
@@ -824,4 +895,4 @@ FlashDuration = 200ms
 |---|------|--------|--------------|------|
 | **OQ-1（已解决）** | ~~**天气感知折扣接口兼容性**~~ | ~~NPC AI系统设计师~~ | ~~2026-04-30~~ | ✅ **已于 2026-04-10 解决**：天气折扣通过 NPC AI 系统的 `EffectiveVisionRange` 实现（调用 `GetWeatherModifier()`）。LOS 系统通过 Lighting System 的 `GetPlayerShadowState()` 获取阴影状态计算 `StealthBonus`。详见 npc-ai-system.md OQ-12 和 los-eavesdropping.md OQ-1。 |
 | **OQ-2** | ~~天气与光照系统的边界~~ | ~~Creative Director~~ | ~~2026-04-15~~ | ✅ **已于 2026-04-10 解决**：光照系统与天气系统合并设计，统一在 weather-system.md 中管理。协调方式：闪电的全屏曝光作为临时光照增量（`AmbientLight += 0.5`），不改变基础光照等级，叠加在区域光照之上。详见"光照与时间系统扩展"章节。 |
-| **OQ-3** | **Full Vision 阶段的具体实现范围** | Game Designer | 2026-05-15 | 天气系统被标记为 Full Vision，MVP 阶段是否需要实现？还是只在 Vertical Slice 之后才开始？需要明确投入资源的时间节点 |
+| **OQ-3** | ~~**Full Vision 阶段的具体实现范围**~~ | ✅ **已解决** | Game Designer | **决策**：MVP阶段不实现天气系统。天气系统定位为Full Vision，资源聚焦核心潜行机制（LOS、Eavesdropping、Clue系统）。天气系统的视觉效果和音效投入与核心玩法无关，适合在Vertical Slice之后再考虑实现。 |

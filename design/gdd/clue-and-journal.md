@@ -2,7 +2,7 @@
 
 > **Status**: Approved
 > **Author**: [user + agents]
-> **Last Updated**: 2026-04-06
+> **Last Updated**: 2026-04-14
 > **Implements Pillar**: 罪恶的深度 (Depth of Sin)
 
 ## Overview
@@ -60,14 +60,37 @@ Clue:
     source_type: Enum         # LOS_EAVESDROP / ENVIRONMENT / NPC_DEATH
     source_id: String         # 来源标识（如NPC_ID或物件ID）
     location_id: String       # 所属地点ID
-    related_npc_ids: []       # 关联的NPC ID列表
+    tragedy_id: String        # 关联的悲剧ID（用于discovery_stage计算）
+    related_npc_ids: []        # 关联的NPC ID列表
     task_id: String           # 关联的任务ID
     criticality: Enum         # CRITICAL / IMPORTANT / OPTIONAL
-    prerequisites: []         # 前置线索ID列表，必须全部UNLOCKED后才能解锁本线索
+    prerequisites: []          # 前置线索ID列表，必须全部UNLOCKED后才能解锁本线索
     is_discovered: Bool       # 是否已发现
     is_locked: Bool           # 是否已解锁（需前置线索）
-    locked_reason: String     # 解锁条件描述
-    missing_reason: String    # 若NPC已死亡，记录缺失原因
+    locked_reason: String      # 解锁条件描述
+    missing_reason: String     # 若NPC已死亡，记录缺失原因
+
+# 悲剧发现追踪集合
+discovered_tragedy_ids: Set<String>  # 已发现的悲剧ID集合，用于discovery_stage计算
+
+# 操作方法
+操作: AddToDiscovered(tragedy_id)
+  条件: 发现新的悲剧线索时（clue_category == TRAGEDY 且 state 转为 DISCOVERED）
+  效果: 将 tragedy_id 添加到 discovered_tragedy_ids 集合
+  时机: 线索状态首次转为 DISCOVERED 时执行（不是 NOT_DISCOVERED 时）
+
+# discovery_stage 判定规则（用于 ClueDiscoveredEvent）
+| 发现情况 | discovery_stage | 判定条件 |
+|---------|----------------|---------|
+| 该类别第一条悲剧线索 | FIRST | discovered_tragedy_ids 中无相同 clue_category 的悲剧线索 |
+| 同类别后续悲剧线索 | SUBSEQUENT | discovered_tragedy_ids 中已有相同 clue_category 的悲剧线索，但 tragedy_id 不同 |
+| 深度揭示同一悲剧 | DEEP_REVEAL | discovered_tragedy_ids 中已有相同的 tragedy_id |
+
+> **示例**：
+> - 玩家首次发现"王五的悲剧背景"（tragedy_id=T001, category=TRAGEDY）→ FIRST，添加 T001 到集合
+> - 玩家再次发现"T001"（同一悲剧的不同线索）→ DEEP_REVEAL，集合不变
+> - 玩家发现"赵六的悲剧背景"（tragedy_id=T002, category=TRAGEDY）→ SUBSEQUENT，添加 T002 到集合
+> - 玩家发现"孙七的悲剧背景"（tragedy_id=T003, category=TRAGEDY）→ SUBSEQUENT，添加 T003 到集合
 ```
 
 **规则3：线索解锁机制 (Clue Unlock)**
@@ -149,7 +172,21 @@ CompensationEntry:
 1. 检查补偿线索是否已被玩家获取
 2. 如未获取，**显示警告提示"关键信息已永久缺失——你的选择造成了无法挽回的后果"**，然后给予补偿线索
 3. 如已获取（玩家之前通过其他途径获得），记录设计警告
-4. 补偿线索也缺失时，允许临时通关（`OverrideTaskCompletion()`）
+4. 补偿线索也缺失时，进入**OverrideTaskCompletion 流程**
+
+**OverrideTaskCompletion 流程定义**：
+
+| 项目 | 定义 |
+|-----|------|
+| **调用权限** | 仅限系统自动调用（补偿机制内部触发），不接受玩家主动调用 |
+| **调用时机** | 补偿触发后，`CompensationEntry` 为 null 或 `compensation_clue_id` 已在 Journal 中存在（双重失效） |
+| **调用者** | 线索系统内部 `CompensationManager` 模块 |
+| **功能** | 直接将当前任务标记为 TASK_COMPLETE，无需满足 `min_clues_required` |
+| **后续处理** | 记录 `DesignError` 到错误日志（级别：Critical），内容包含：source_clue_id、task_id、timestamp、补偿路径缺失原因 |
+| **后续人工干预** | 关卡设计师收到错误报告后，需在下一版本补充该关键线索的补偿路径 |
+| **叙事标记** | 即使 Override 完成任务，日志中仍显示"[信息缺失—NPC已死亡]"标记，保留遗憾主题 |
+
+> **注意**：`OverrideTaskCompletion()` 是**设计错误的兜底机制**，不应在正常游戏流程中出现。若在测试或生产环境频繁触发，说明补偿路径设计存在系统性遗漏。
 
 **叙事一致性保证**：补偿机制不消除"遗憾"，而是将遗憾转化为"代价"。玩家获得了替代线索，但代价是：
 - 日志中持续显示"[信息缺失—NPC已死亡]"标记（即使获得补偿线索也不消失）
@@ -226,7 +263,7 @@ CompensationEntry:
 | TASK_LOCKED | 任务未解锁 | 前置任务未完成 |
 | TASK_ACTIVE | 任务进行中 | 玩家已进入该任务 |
 | TASK_COMPLETE | 任务完成 | 已发现足够线索（包括补偿获得的线索） |
-| TASK_FAILED | 任务失败（所有补偿路径均失效） | 补偿触发后补偿线索池为空，OverrideTaskCompletion()也被拒绝 |
+| ~~TASK_FAILED~~ | ~~任务失败~~（已废弃） | ~~由于 OverrideTaskCompletion() 不接受拒绝，此状态不可达。任务系统设计为"不会失败，只会被延迟或跳过"，玩家总能找到替代路径完成任务~~ |
 
 ### Interactions with Other Systems
 
@@ -236,14 +273,14 @@ CompensationEntry:
 |---------|---------|---------|
 | **LOS系统** | `KeywordCapturedEvent` | 接收关键词，与已定义的线索模板匹配。如匹配成功，创建 `Clue` 实例，状态设为 DISCOVERED |
 | **环境交互系统** | `IntelObjectInteracted(object_id, object_type, location_id)` | 情报类物件被交互时触发。直接创建对应 Clue，状态设为 DISCOVERED |
-| **NPC AI系统** | `NPCStateChangedEvent` | NPC死亡时（new_state=DEAD）触发。遍历 NPC 的 knowledge，对于尚未 DISCOVERED 的线索，创建 Clue 并标记 `missing_reason: "NPC已死亡"` |
+| **Gritty Takedowns** | `AddKnowledge(npc_id, knowledge_list)` | 审问/搜身获取的线索，通过接口调用提交。Gritty Takedowns 调用本系统接口而非发送事件 |
 | **玩家控制器** | `PlayerEnteredLocation(location_id)` | 玩家进入新地点时，更新 Journal 的 `current_location_filter` |
 
 #### 数据流出 (Outputs)
 
 | 目标系统 | 发送数据 | 说明 |
 |---------|---------|------|
-| **理智/愤怒系统** | `ClueDiscoveredEvent(clue_id, clue_category)` | 新线索被发现时通知，用于计算理智值变化（如发现悲剧线索可能导致理智下降） |
+| **理智/愤怒系统** | `ClueDiscoveredEvent(clue_id, clue_category, discovery_stage, narrative_significance)` | 新线索被发现时通知（详见公式6完整定义），用于计算理智值变化（如发现悲剧线索可能导致理智下降） |
 | **世界地图系统** | `LocationRevealed(location_id)` | 当线索揭示新地点时通知，用于在地图上显示新发现标记 |
 | **UI系统** | `JournalData(journal_view, current_clues)` | 日志UI需要的数据结构，按 LOCATION / NPC / TIMELINE 三种视图组织 |
 | **LOS系统** | `RequestKeywordTemplate(clue_id)` | 请求LOS系统提供特定线索对应的关键词模板（用于窃听匹配） |
@@ -273,7 +310,7 @@ CompensationEntry:
 
 ```
 CanUnlock = All(precondition_clue_ids.every(clue_id =>
-    Clue[clue_id].state == COMPLETED
+    Clue[clue_id].state IN {UNLOCKED, COMPLETED}
 ))
 ```
 
@@ -294,6 +331,7 @@ TaskCompletabilityPercentage = (
 > **语义说明**：
 > - `TaskCompletionPercentage`：玩家实际获取的线索进度（仅计入 DISCOVERED/UNLOCKED/COMPLETED 状态的线索），代表玩家"已完成"的比例
 > - `TaskCompletabilityPercentage`：在补偿机制生效后，任务是否可完成的进度（计入可通过补偿路径获取的线索），代表任务"可完成"的比例
+> - `clues_obtainable_count`：指前置条件已满足且无需补偿即可直接获取的待发现线索数量。**特指无需任何补偿机制干预、玩家可直接通过探索获取的线索**。需要补偿机制才能获得的线索不计入此变量，它们由补偿触发判定逻辑单独处理
 > - `clues_missing_count`（`missing_reason != null` 的线索）**不计入**上述两个指标，因为它们是永久缺失的
 >
 > **补偿机制与完成度关系**：
@@ -336,7 +374,7 @@ LocationCompletion = clues_in_location.Filter(clue =>
 ).Count() / clues_in_location.TotalCount() * 100
 ```
 
-**公式6：ClueDiscoveredEvent 上下文定义**
+**公式6：ClueDiscoveredEvent 上下文定义与计算方式**
 
 > **重要**：线索系统只负责发送携带上下文的 `ClueDiscoveredEvent`，最终理智惩罚由理智系统根据 `discovery_stage` 和 `narrative_significance` 计算。
 
@@ -345,25 +383,47 @@ ClueDiscoveredEvent = {
     clue_id: String,
     clue_category: Enum,           // IDENTITY / LOCATION / RELATIONSHIP / ITEM / TRAGEDY
     discovery_stage: Enum,          // FIRST / SUBSEQUENT / DEEP_REVEAL
-    narrative_significance: Enum    // NORMAL / MAIN_TARGET / NPC_SYMPATHY
+    narrative_significance: Enum   // NORMAL / MAIN_TARGET / NPC_SYMPATHY
 }
 ```
 
-| discovery_stage | 定义 | 对应理智惩罚 BaseValue |
-|----------------|------|----------------------|
-| FIRST | 该类别的第一条悲剧线索 | -5 |
-| SUBSEQUENT | 同类别后续悲剧线索 | -3 |
-| DEEP_REVEAL | 深度揭示同一悲剧背景 | -2 |
+**discovery_stage 计算规则**：
 
-| narrative_significance | 定义 | Multiplier |
-|----------------------|------|------------|
-| NORMAL | 普通线索 | ×1.0 |
-| MAIN_TARGET | 与主要目标相关 | ×1.5 |
-| NPC_SYMPATHY | 揭示 NPC 值得同情的一面 | ×2.0 |
+| discovery_stage | 定义 | 判定条件 | 对应理智惩罚 BaseValue |
+|----------------|------|---------|----------------------|
+| FIRST | 该类别的第一条悲剧线索 | 玩家此前从未发现过相同 `clue_category` 的悲剧线索 | -5 |
+| SUBSEQUENT | 同类别后续悲剧线索 | 玩家此前已发现过相同 `clue_category` 的悲剧线索，但非同一悲剧背景 | -3 |
+| DEEP_REVEAL | 深度揭示同一悲剧背景 | 玩家此前已发现过**完全相同**的悲剧线索（同一 `tragedy_id`），此次为重复发现 | -2 |
+
+> **discovery_stage 判定逻辑**：
+> 1. 检查 `clue_category` 是否为 `TRAGEDY`（只有悲剧线索有阶段惩罚）
+> 2. 检查是否首次发现（`discovered_tragedy_ids` 中无相同 `tragedy_id`）
+> 3. 若非首次，检查是否为深度揭示（发现完全相同的悲剧）
+> 4. 否则为 SUBSEQUENT
+
+**narrative_significance 计算规则**：
+
+| narrative_significance | 定义 | 判定条件 | Multiplier |
+|----------------------|------|---------|------------|
+| NORMAL | 普通线索 | 默认值，无特殊标记 | ×1.0 |
+| MAIN_TARGET | 与主要目标相关 | 线索 `criticality == CRITICAL` 且与当前任务目标直接相关 | ×1.5 |
+| NPC_SYMPATHY | 揭示 NPC 值得同情的一面 | 线索 `category == TRAGEDY` 且揭示 NPC 被迫参与或受害的背景 | ×2.0 |
+
+> **narrative_significance 判定优先级**：NPC_SYMPATHY > MAIN_TARGET > NORMAL（当同时满足多个条件时，取优先级最高的）
+
+**narrative_significance 与 ClueContextMultiplier 的关系**：
+
+> **术语更新说明**：`ClueContextMultiplier` 已更名为 `NarrativeSignificanceMultiplier`，两者为同一概念。
+>
+> `NarrativeSignificanceMultiplier` 直接采用 `narrative_significance` 枚举值对应的 Multiplier：
+> - `narrative_significance = NORMAL` → `NarrativeSignificanceMultiplier = 1.0`
+> - `narrative_significance = MAIN_TARGET` → `NarrativeSignificanceMultiplier = 1.5`
+> - `narrative_significance = NPC_SYMPATHY` → `NarrativeSignificanceMultiplier = 2.0`
 
 **计算责任分离**：
 - 线索系统：定义上下文元数据（discovery_stage + narrative_significance），发送事件
-- 理智系统：根据 `clue_category` + `discovery_stage` 确定 BaseValue，乘以 `narrative_significance` 的 Multiplier，计算最终 SanityDelta
+- 理智系统：根据 `clue_category` + `discovery_stage` 确定 BaseValue，乘以 `NarrativeSignificanceMultiplier`，计算最终 SanityDelta
+- **分析速度调节**：线索分析所需时间 = 基础时间 × `ClueAnalysisModifier`（来自 Character Background 系统，特工=0.86x表示更快分析）
 
 **最终惩罚示例**：
 - 首次发现主线相关悲剧线索：-5 × 1.5 = **-7.5**
@@ -373,6 +433,28 @@ ClueDiscoveredEvent = {
 **旧术语说明**（已废弃）：
 - ~~`ClueContextMultiplier`~~ → 已更名为 `NarrativeSignificanceMultiplier`
 - ~~悲剧线索 BaseValue -10~-20~~ → 已废弃，由 `discovery_stage` 决定实际惩罚值
+
+**公式7：ICriticalClueCountProvider 接口定义**
+
+> 本接口供 Narrative System 调用，用于获取当前会话中标记为 CRITICAL 的线索累计数量。
+
+```csharp
+/// <summary>
+/// 提供关键线索计数给叙事系统
+/// </summary>
+public interface ICriticalClueCountProvider {
+    /// <summary>
+    /// 返回当前会话中标记为 CRITICAL 的线索累计数量
+    /// </summary>
+    int QueryCriticalClueCount();
+}
+```
+
+**实现说明**：
+- 统计范围：所有 `criticality == CRITICAL` 且 `state != MISSING` 的线索
+- 包含状态：DISCOVERED / UNLOCKED / COMPLETED
+- 不包含：状态为 NOT_DISCOVERED 或 MISSING 的线索
+- 调用时机：叙事系统需要根据关键线索数量判定剧情分支时调用
 
 ## Edge Cases
 
@@ -440,7 +522,9 @@ ClueDiscoveredEvent = {
 
 ---
 
-**边缘情况8b：LOS窃听关键词与NPC knowledge产出相同线索（设计疏漏检测）**
+---
+
+**边缘情况9：LOS窃听关键词与NPC knowledge产出相同线索（设计疏漏检测）**
 
 *问题*：理论上同一线索不应同时存在于LOS关键词模板和NPC knowledge列表中。但如果因设计疏漏导致重复，系统应能检测并报警。
 
@@ -448,15 +532,15 @@ ClueDiscoveredEvent = {
 
 ---
 
-**边缘情况9：任务跨多个地点**
+**边缘情况10：地点完成度与任务完成度的关系**
 
-*问题*：单个任务可能跨越多个地点，地点完成度如何计算？
+*问题*：单个任务可能跨越多个地点，地点完成度与任务完成度如何计算？
 
 *处理*：任务完成度基于**线索数量**而非地点完成度。地点完成度仅用于UI显示该地点的探索进度。
 
 ---
 
-**边缘情况10：玩家删除/回滚存档导致线索状态不一致**
+**边缘情况11：玩家删除/回滚存档导致线索状态不一致**
 
 *问题*：玩家加载旧存档，导致线索状态与当前游戏世界状态不一致。
 
@@ -467,16 +551,54 @@ ClueDiscoveredEvent = {
 
 **注意**：此设计确保"罪恶的深度"支柱不被存档回滚破坏——玩家因冲动杀人导致的线索永久缺失是**不可逆的**，即使读档也无法恢复。
 
+---
+
+**边缘情况12：关键词匹配优先级**
+
+*问题*：当多个线索模板同时匹配同一个关键词时，需要明确优先级规则。
+
+*处理*：关键词匹配优先级规则如下：
+
+| 优先级 | 规则 | 说明 |
+|-------|------|------|
+| **1** | 一对一匹配优先 | 关键词列表只有一个关键词的模板优先于有多个关键词的模板 |
+| **2** | 同 NPC 来源优先 | 线索来源 NPC 与当前窃听目标 NPC 相同时，优先匹配 |
+| **3** | 时间最近优先 | 当多个线索同时满足前两条时，优先匹配最近定义的模板 |
+
+> **时间戳数据来源说明**：
+> - **数据字段**：`KeywordTemplate.created_timestamp`（创建时间戳）
+> - **来源**：在 `ClueTemplates` 数据表中定义，每条线索模板的唯一 `created_timestamp`
+> - **意义**：代表线索模板在数据层面的创建顺序（通常对应关卡设计的先后顺序）
+> - **比较方式**：数值更大的 timestamp 被视为"更近"
+> - **不采用**：最后修改时间（可能会因数据迁移或版本控制历史而变化）、运行时发现时间（会因玩家行为而变化，不适合作为模板排序依据）
+
+*匹配优先级示例*：
+
+| 关键词 | 候选线索 | 匹配情况 | 优先结果 |
+|-------|---------|---------|---------|
+| "仓库" | ID_仓库位置 (单关键词), ID_运输计划 (多关键词) | ID_仓库位置满足一对一优先 | ID_仓库位置 |
+| "密码" | ID_仓库密码 (同NPC), ID_保险柜密码 (不同NPC) | 同NPC优先 | ID_仓库密码 |
+| "母亲" | ID_帮凶背景 (A模板), ID_受害者背景 (B模板) | 多个同优先级模板时，按时间顺序取最近 | B模板 |
+
+*设计意图*：一对一匹配确保最精确的线索最优先；同NPC来源保证线索与当前调查上下文一致；时间最近优先处理残余冲突，提供确定性结果。
+
+---
+
+**补偿机制与"遗憾"主题的一致性**：
+
+获得苍白替代线索后，系统额外触发一个"代价提示"事件（如特殊独白"你永远不知道那个选择会带来什么"），强化"选择即代价"主题。
+
 ## Dependencies
 
 ### 上游依赖（线索系统依赖谁）
 
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|---------|
-| **LOS系统** | 硬依赖 | 接收 `KeywordCapturedEvent`，获取窃听关键词作为线索原材料 |
+| **LOS系统** | 硬依赖 | 接收 `KeywordCapturedEvent`，获取窃听关键词作为线索原材料。**数据信任说明**：LOS系统负责确保 `KeywordCapturedEvent.npc_id` 的正确性（通过声源定位验证），Clue系统信任LOS系统提供的数据而不进行二次验证。如LOS系统将关键词错误归因，是LOS系统的实现bug，不影响Clue系统的设计。
 | **环境交互系统** | 硬依赖 | 接收 `IntelObjectInteracted` 事件，获取情报类物件线索 |
 | **NPC AI系统** | 硬依赖 | 接收 `NPCStateChangedEvent`（new_state=DEAD），获取NPC的knowledge转移 |
 | **玩家控制器** | 软依赖 | 接收 `PlayerEnteredLocation` 事件，更新当前地点过滤 |
+| **Character Background** | 软依赖 | 接收 `ClueAnalysisModifier` 参数，用于计算线索分析速度和成功率（详见 character-background.md） |
 
 ### 下游依赖（谁依赖线索系统）
 
@@ -486,6 +608,7 @@ ClueDiscoveredEvent = {
 | **世界地图系统** | 硬依赖 | 接收 `LocationRevealed` 事件，在地图上揭示隐藏地点 |
 | **UI系统** | 硬依赖 | 提供 `JournalData` 查询接口，供日志UI渲染 |
 | **LOS系统** | 软依赖 | 接收 `RequestKeywordTemplate` 请求，提供线索对应的关键词模板 |
+| **Narrative System** | 软依赖 | 提供 `ICriticalClueCountProvider` 接口，返回当前 CRITICAL=true 的线索累计数量 |
 
 ### 依赖关系矩阵
 
@@ -601,7 +724,7 @@ LOS系统捕获关键词
 | 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
 |--------|------|--------|---------|------|
 | `MinCluesToCompleteTask` | int | 2 | 1-5 | 完成任务所需的最少线索数 |
-| `CompensationCluesPoolSize` | int | 3 | 1-10 | 每个任务的补偿线索池大小 |
+| `CompensationCluesPoolSize` | int | 1 | 1-5 | 每个任务的补偿线索池大小（MVP简化版：每条关键线索预设1条补偿路径） |
 
 ### 解锁与前置参数
 
@@ -653,6 +776,8 @@ LOS系统捕获关键词
 - **已阅读完成**：正常颜色，无标签
 - **缺失线索**：灰色卡片，显示"[信息缺失—NPC已死亡]"，带红色删除线
 - **苍白替代线索**（补偿获得的线索）：带灰度滤镜的卡片，显示"苍白替代"标签（替代来源的视觉暗示），保留原有的 [信息缺失] 标记但点击可查看替代内容
+
+> **UI实现需求规范**：上述苍白替代线索的视觉规格（灰度滤镜、虚线灰边、"苍白替代"标签等）是本系统对 UI System 的**实现需求规范**，UI System 文档应参考本节定义。如需修改视觉效果，须同步更新本系统和 UI System 文档。
 
 ### 音效反馈
 
@@ -784,9 +909,9 @@ LOS系统捕获关键词
 |---|------|------|--------|------|
 | OQ-1（已解决） | **理智值变化数值确认** | ✅ 已解决 | 理智系统设计师 | 计算方式已重构。线索系统发送 ClueDiscoveredEvent 携带 discovery_stage 和 narrative_significance 元数据，理智系统计算最终 SanityDelta。详见「公式6」章节。 |
 | OQ-2（已解决） | **关键词→线索的匹配机制** | ✅ 已解决 | — | 见下方「关键词匹配规则表」详细定义 |
-| OQ-3 | ~~**补偿线索池的生成策略**~~ | ✅ **已解决** | 游戏设计师 | **混合策略**：CRITICAL 线索由设计师手动预设补偿线索（每条至少 1 条替代路径，确保叙事完整性）；IMPORTANT/OPTIONAL 线索由系统自动从同任务、同类别的未使用线索中抽取。详见下方「补偿线索池生成规则」。 |
-| OQ-4 | **日志UI的美术风格** | 待确认 | 美术设计师 | 日志UI的具体美术风格尚未确定——是复古笔记本风格还是现代UI风格？ |
-| OQ-5 | **时间线视图的实现复杂度** | 待确认 | 游戏设计师/UI设计师 | MVP是否需要实现时间线视图？如果需要，MVP版本是否可以简化为"按获取顺序显示"？ |
+| OQ-3 | ~~**补偿线索池的生成策略**~~ | ✅ **已解决** | 游戏设计师 | **MVP简化策略**：CRITICAL/IMPORTANT 线索由设计师手动预设补偿路径（每条至少 1 条替代路径）；OPTIONAL 线索无补偿。详见「补偿线索池生成规则（MVP简化版）」章节。 |
+| OQ-4 | ✅ **已解决**：MVP采用灰度滤镜（70%饱和度）+虚线灰边+"苍白替代"标签+保留原[信息缺失]红色标记 | 美术设计师 | 日志UI的具体美术风格尚未确定——是复古笔记本风格还是现代UI风格？ |
+| OQ-5 | ✅ **已解决**：MVP不实现时间线视图，Post-MVP按需补充 | 游戏设计师/UI设计师 | 时间线视图的实现复杂度 |
 | OQ-6 | **NPC人物视图的信息层级** | 待确认 | 叙事设计师 | 人物视图是否需要显示NPC的完整背景故事？还是只显示与线索相关的信息？ |
 
 ### 已解决的设计决策
@@ -795,3 +920,12 @@ LOS系统捕获关键词
 |--------|---------|----------|
 | Keywords vs knowledge 语义边界 | Keywords是LOS窃听的原材料，knowledge是NPC已掌握的成品线索，两者独立 | 2026-04-06 |
 | 补偿线索池生成策略（OQ-3） | CRITICAL线索由设计师手动预设补偿路径；IMPORTANT/OPTIONAL线索由系统自动从同任务未发现线索中抽取 | 2026-04-07 |
+
+## Change Log
+
+| 日期 | 版本 | 修改内容 | 负责人 |
+|------|------|---------|--------|
+| 2026-04-14 | v1.1 | **P1修复**：补充 `discovered_tragedy_ids` 操作方法定义，明确 AddToDiscovered 操作的条件和时机，完善 discovery_stage 判定规则的示例说明 | Game Designer |
+| 2026-04-14 | v1.1 | **P1修复**：补充 `OverrideTaskCompletion()` 完整流程定义，包括调用权限、调用时机、功能、后续处理、叙事标记等 | Game Designer |
+| 2026-04-14 | v1.1 | **P2修复**：在边缘情况12中补充"时间最近优先"的时间戳数据来源说明，明确采用 `KeywordTemplate.created_timestamp` | Game Designer |
+| 2026-04-06 | v1.0 | 初始版本，包含 Overview、Player Fantasy、Detailed Rules、Formulas、Edge Cases、Dependencies、Tuning Knobs、Acceptance Criteria 等8个标准章节 | — |

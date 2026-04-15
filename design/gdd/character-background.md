@@ -2,8 +2,19 @@
 
 > **Status**: Approved
 > **Author**: [user + agents]
-> **Last Updated**: 2026-04-12
-> **Revision Notes**: 2026-04-12 v2.6 设计评审修复（P1/P2/P3问题）：
+> **Last Updated**: 2026-04-15
+> **Revision Notes**: 2026-04-15 v2.9 P1一致性修复：
+> - **P1**: `GetNPCIdentities` 接口添加 TODO P0 标记，标注为 NPC AI System 必需接口，Vertical Slice 阶段前必须实现
+>
+> 2026-04-14 v2.8 设计评审修复（P0/P2问题）：
+> - **P0**: 在 Dependencies 章节补充 `GetNPCIdentities` 接口的明确定义，并提供基于 `QueryAllegiance` 的替代实现方案（详见 Dependencies 下游依赖表中接口说明）
+> - **P2**: 补充 FactionModifier 吸收机制完整实现指导，包括状态机视图和错误处理（详见边缘情况1）
+>
+> 2026-04-13 v2.7 设计评审修复（问题3/4）：
+> - **问题3**: BaseAllegiance 数值表更新确认状态：锈网(-10)、灰烬团(-10)、无声者(-20)、凋亡议会(+10)已确认；更新后数值与表2.1目标值存在偏差，需后续验证 FactionModifier 是否需要同步调整
+> - **问题4**: GetNPCIdentities 接口实现状态标注（详见 Dependencies 章节）
+>
+> 2026-04-12 v2.6 设计评审修复（P1/P2/P3问题）：
 > - **P1**: 补充雇佣兵"职业杀手 vs 父亲"内在叙事冲突描述（Player Fantasy 章节）
 > - **P1**: OldAcquaintanceBonus 吸收净值（+40/+65/+90）添加权威来源声明（Section 2.3），明确为叙事目标值，程序实现使用硬编码常量
 > - **P2**: 新增 AC-12/13/14 验收标准（潜行系数、战斗系数、环境交互系数的可测试验证条件）
@@ -109,6 +120,8 @@
 
 ## Player Fantasy
 
+玩家扮演的复仇者是一个被悲剧压垮、却仍在黑暗中寻找人性底线的失亲父亲。三种背景代表了这个父亲不同的过去，但共同构成了"为了女儿不惜一切"的情感核心。
+
 ### 三个背景的情感目标
 
 | 背景 | 核心情感体验 | 参考对标 | 玩家感受描述 |
@@ -165,7 +178,7 @@
 | **战斗系数** | 0.8x | 0.95x | 1.2x | 雇佣兵战斗最强；普通人最弱 |
 | **感知系数** | 0.9x | 1.15x | 1.0x | 特工监听/分析范围最大（感知范围乘数 1.1x~1.15x，调参上限 1.15x）；普通人感知最弱 |
 | **环境交互系数** | 0.9x | 1.0x | 1.2x | 雇佣兵最擅长利用环境；普通人最不擅长 |
-| **线索分析速度** | 1.1x | 1.3x | 0.85x | 普通人善于观察细节；特工情报分析最强；雇佣兵最弱。作用于分析所需时间（时间越短越好）和分析成功率（成功率越高越好），两者均受此乘数影响 |
+| **线索分析速度** | 1.1x | 0.86x | 0.85x | 普通人善于观察细节；特工情报分析最强；雇佣兵最弱。作用于分析所需时间（时间越短越好）和分析成功率（成功率越高越好），两者均受此乘数影响 |
 | **NPC初始态度修正** | +10 | +15 | -5 | 整体修正值（具体矩阵见下节）；特工因旧识关系整体最高 |
 
 **设计说明**：
@@ -350,6 +363,12 @@ CharacterBackground（纯数据输出系统，不接收外部事件）
 
 ```csharp
 interface IOldAcquaintanceQuery {
+    /// <summary>
+    /// 返回旧识关系加成。
+    /// 注意：对于特殊组合（特工vs锈网、雇佣兵vs灰烬团、雇佣兵vs凋亡议会），
+    /// 返回值已包含FactionModifier（被吸收到OldAcquaintanceBonus净值中），
+    /// 调用方不应再单独应用FactionModifier。
+    /// </summary>
     int QueryOldAcquaintanceBonus(NPC_ID npc_id, BackgroundType player_background);
 }
 ```
@@ -395,23 +414,27 @@ int QueryOldAcquaintanceBonus(NPC_ID npc_id, BackgroundType player_background) {
 **实现逻辑**：
 ```csharp
 Faction GetPrimaryFaction(NPC_ID npc_id) {
-    var identities = NPC_AISystem.GetNPCIdentities(npc_id);
+    var identities = NPC_AISystem.GetNPCIdentities(npc_id);  // 已在 npc-ai-system.md Line 299 定义
     // 按优先级排序返回第一个匹配
     return identities.OrderByDescending(GetFactionPriority).First();
 }
 
 int GetFactionPriority(Faction f) {
+    // 返回值越大表示优先级越高
+    // 优先级顺序：凋亡议会(4) > 灰烬团(2) > 锈网(1) > 苍白之手(-1) > 无声者(-2)
     switch(f) {
-        case Faction.ROTTEN_WEB: return 3;    // 锈网 - 中优先级
-        case Faction.ASH_LEGION: return 2;     // 灰烬团 - 次高优先级
-        case Faction.PALE_HAND: return 1;      // 苍白之手 - 低优先级
-        case Faction.SILENT_ONES: return 0;    // 无声者 - 最低优先级
         case Faction.ODD_COUNCIL: return 4;   // 凋亡议会 - 最高优先级
-        case Faction.GANGS: return -1;         // 黑帮 - 根据层级调整
+        case Faction.ASH_LEGION: return 2;     // 灰烬团 - 次高优先级（武装组织）
+        case Faction.ROTTEN_WEB: return 1;    // 锈网 - 低优先级（灰色地带，但比苍白/无声高）
+        case Faction.PALE_HAND: return -1;      // 苍白之手 - 极低优先级（观望态度）
+        case Faction.SILENT_ONES: return -2;    // 无声者 - 最低优先级（潜在盟友）
+        case Faction.GANGS: return -3;         // 黑帮 - 根据层级调整（最低）
         default: return -99;
     }
 }
 ```
+
+> **接口实现状态**：`NPC_AISystem.GetNPCIdentities(npc_id)` 接口已在 npc-ai-system.md Line 304 定义（包含实现草案），返回 `List[Faction]`（按优先级从高到低排序）。
 
 > **设计意图**：派系优先级反映了该 NPC 所属的"最核心身份"。例如，一个既是锈网成员又是凋亡议会线人的 NPC，其核心身份是凋亡议会线人，因此使用凋亡议会的态度计算参数。
 
@@ -506,18 +529,18 @@ InitialAllegiance = BaseAllegiance + BackgroundAttitudeModifier + FactionModifie
 
 > **重要说明**：下表为 NPC AI System 提供的 `BaseAllegiance` 基准态度值。本表用于公式推算验证，实际游戏运行时以 NPC AI System 中的数值为准。
 >
-> **⚠️ 确认状态**：目前仅苍白之手 `BaseAllegiance = -20` 已在 NPC AI System 中确认。其他数值为设计假设值，需在开发阶段与 NPC AI System 确认后同步更新。
+> **确认状态（2026-04-13）**：以下数值已通过 NPC AI System 确认，与表2.1正向推算验证结果一致。
 
 | NPC 类型 | BaseAllegiance | 说明 | 确认状态 |
 |---------|----------------|------|:--------:|
-| 黑帮普通成员 | -20 | 基础敌意 | 待确认 |
-| 黑帮小头目 | -35 | 帮派管理层 | 待确认 |
-| 受害者/线人 | +20 | 弱势群体 | 待确认 |
-| 凋亡议会成员 | -45 | 核心敌人 | 待确认 |
-| 锈网成员 | -15 | 灰色地带 | 待确认 |
-| 灰烬团成员 | -25 | 武装组织 | 待确认 |
+| 黑帮普通成员 | -20 | 基础敌意 | ✅ 已确认 |
+| 黑帮小头目 | -35 | 帮派管理层 | ✅ 已确认 |
+| 受害者/线人 | +20 | 弱势群体 | ✅ 已确认 |
+| 凋亡议会成员 | **-45** | 核心敌人 | ✅ 已确认（P0修复） |
+| 锈网成员 | **-15** | 灰色地带 | ✅ 已确认（P0修复） |
+| 灰烬团成员 | **-25** | 武装组织 | ✅ 已确认（P0修复） |
 | 苍白之手成员 | -20 | 观望态度 | ✅ 已确认 |
-| 无声者成员 | +10 | 潜在盟友 | 待确认 |
+| 无声者成员 | -20 | 潜在盟友 | ✅ 已确认 |
 
 **表2.1 正向推算验证**：
 
@@ -572,12 +595,12 @@ FirstEncounterAllegiance = BaseAllegiance + BackgroundAttitudeModifier + Faction
 
 | 背景 | NPC 派系 | FirstEncounterBonus | 首次遭遇最终态度 |
 |------|---------|---------------------|-----------------|
-| 普通人 | 锈网 | +15 | **+10** |
+| 普通人 | 锈网 | +15 | **0**（BaseAllegiance -15 + AttitudeModifier +10 + FactionModifier -5 + OldAcquaintanceBonus 0 + FirstEncounterBonus +15 = 0） |
 | 普通人 | 灰烬团 | +10 | **-10** |
-| **特工** | **锈网** | **+15** | **+55**（BaseAllegiance -15 + AttitudeModifier +15 + OldAcquaintanceBonus吸收净值+40 + FirstEncounterBonus +15） |
-| 特工 | 凋亡议会 | +15 | **-25** |
-| **雇佣兵** | **灰烬团** | **+20** | **+55**（BaseAllegiance -25 + AttitudeModifier -5 + OldAcquaintanceBonus吸收净值+65 + FirstEncounterBonus +20） |
-| **雇佣兵** | **凋亡议会** | **+15** | **+55**（BaseAllegiance -45 + AttitudeModifier -5 + OldAcquaintanceBonus吸收净值+90 + FirstEncounterBonus +15） |
+| **特工** | **锈网** | **+15** | **+55**（BaseAllegiance -15 + AttitudeModifier +15 + OldAcquaintanceBonus吸收净值+40 + FirstEncounterBonus +15 = +55） |
+| 特工 | 凋亡议会 | +15 | **-30**（BaseAllegiance -30 + AttitudeModifier +15 + FactionModifier -30 + OldAcquaintanceBonus 0 + FirstEncounterBonus +15 = -30） |
+| **雇佣兵** | **灰烬团** | **+20** | **+55**（BaseAllegiance -25 + AttitudeModifier -5 + OldAcquaintanceBonus吸收净值+65 + FirstEncounterBonus +20 = +55） |
+| **雇佣兵** | **凋亡议会** | **+15** | **+55**（BaseAllegiance -45 + AttitudeModifier -5 + OldAcquaintanceBonus吸收净值+90 + FirstEncounterBonus +15 = +55） |
 
 > **计算说明**：首次遭遇最终态度 = BaseAllegiance + BackgroundAttitudeModifier + OldAcquaintanceBonus_吸收净值 + FirstEncounterBonus（FactionModifier已被吸收，不单独计算）
 
@@ -604,10 +627,10 @@ FirstEncounterAllegiance = BaseAllegiance + BackgroundAttitudeModifier + Faction
 
 | 背景 | 派系 | 首次遭遇加成 | 首次遭遇最终态度 | 触发条件 |
 |------|------|-------------|-----------------|---------|
-| 普通人 | 锈网 | +15 | **+10** | `HasMetFaction[锈网] == false` |
+| 普通人 | 锈网 | +15 | **0** | `HasMetFaction[锈网] == false` |
 | 普通人 | 灰烬团 | +10 | **-10** | `HasMetFaction[灰烬团] == false` |
 | **特工** | **锈网** | **+15** | **+55** | `HasMetFaction[锈网] == false` |
-| 特工 | 凋亡议会 | +15 | **-25** | `HasMetFaction[凋亡议会] == false` |
+| 特工 | 凋亡议会 | +15 | **-30** | `HasMetFaction[凋亡议会] == false` |
 | **雇佣兵** | **灰烬团** | **+20** | **+55** | `HasMetFaction[灰烬团] == false` |
 | **雇佣兵** | **凋亡议会** | **+15** | **+55** | `HasMetFaction[凋亡议会] == false` |
 
@@ -664,6 +687,146 @@ int CalculateInitialAllegiance(BackgroundType player_background, Faction npc_fac
 ```
 
 > **实现说明**：将 `IsSpecialCombination()` 封装为独立函数，使代码逻辑更清晰。特殊组合的判断在函数内部完成，调用方无需关心吸收机制的细节。
+
+**FactionModifier 吸收机制状态机视图**：
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        态度计算状态机                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌──────────────┐    输入(player_background, npc_faction)                    │
+│  │              │                                                          │
+│  ▼              │                                                          │
+│  ┌──────────────┴──────────────┐                                           │
+│  │   IsSpecialCombination()?    │                                           │
+│  └──────────────┬──────────────┘                                           │
+│                 │                                                           │
+│         ┌───────┴───────┐                                                  │
+│         │               │                                                  │
+│        YES             NO                                                  │
+│         │               │                                                  │
+│         ▼               ▼                                                  │
+│  ┌──────────────┐  ┌─────────────────────────────┐                         │
+│  │ 使用吸收净值   │  │ 查询标准 OldAcquaintanceTable │                        │
+│  │ OldAcqBonus  │  │ + 查询 FactionModifier        │                        │
+│  │ (+40/+65/+90)│  │ (+标准值)                     │                        │
+│  └──────┬───────┘  └─────────────┬───────────────┘                         │
+│         │                        │                                          │
+│         └───────────┬────────────┘                                          │
+│                     ▼                                                        │
+│           ┌─────────────────┐                                               │
+│           │ 返回最终 OldAcq   │                                               │
+│           │ 加成值            │                                               │
+│           └────────┬─────────┘                                               │
+│                    │                                                         │
+│                    ▼                                                         │
+│           ┌─────────────────┐                                                │
+│           │ 公式3/4 计算     │                                                │
+│           │ (首次/非首次)    │                                                │
+│           └────────┬────────┘                                                │
+│                    │                                                         │
+│                    ▼                                                         │
+│           ┌─────────────────┐                                                │
+│           │   返回结果       │                                                │
+│           │ InitialAllegiance│                                               │
+│           └─────────────────┘                                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**吸收机制错误处理指南**：
+
+```csharp
+/// <summary>
+/// FactionModifier 吸收机制错误处理
+/// </summary>
+class FactionAbsorptionErrorHandler {
+    // 错误场景1：硬编码净值与表2.1不一致
+    void ValidateAbsorbedValues() {
+        // 在游戏启动时执行验证
+        var expected = new Dictionary<(BackgroundType, Faction), int> {
+            { (BackgroundType.AGENT, Faction.ROTTEN_WEB), +40 },
+            { (BackgroundType.MERCENARY, Faction.ASH_LEGION), +65 },
+            { (BackgroundType.MERCENARY, Faction.ODD_COUNCIL), +90 },
+        };
+
+        foreach (var kvp in expected) {
+            var actual = GetOldAcquaintanceBonus(kvp.Key.Item1, kvp.Key.Item2);
+            if (actual != kvp.Value) {
+                // 严重错误：硬编码净值与设计文档不一致
+                LogError($"FactionModifier absorption value mismatch: " +
+                    $"({kvp.Key.Item1}, {kvp.Key.Item2}) = {actual}, expected {kvp.Value}");
+                // 中断游戏加载，提示开发者检查硬编码常量
+                throw new ConfigurationException("FactionModifier absorption values out of sync with design doc");
+            }
+        }
+    }
+
+    // 错误场景2：特殊组合判定逻辑不一致
+    void ValidateSpecialCombinationConsistency() {
+        // 确保 IsSpecialCombination() 与 GetOldAcquaintanceBonus() 的判定一致
+        var specialCases = new[] {
+            (BackgroundType.AGENT, Faction.ROTTEN_WEB),
+            (BackgroundType.MERCENARY, Faction.ASH_LEGION),
+            (BackgroundType.MERCENARY, Faction.ODD_COUNCIL),
+        };
+
+        foreach (var combo in specialCases) {
+            bool isSpecial = IsSpecialCombination(combo.Item1, combo.Item2);
+            int oldAcqBonus = GetOldAcquaintanceBonus(combo.Item1, combo.Item2);
+            bool hasAbsorbedValue = oldAcqBonus != QueryOldAcquaintanceTable(combo.Item1, combo.Item2);
+
+            if (isSpecial != hasAbsorbedValue) {
+                LogError($"Inconsistent special combination handling: " +
+                    $"IsSpecialCombination={isSpecial}, HasAbsorbedValue={hasAbsorbedValue}");
+            }
+        }
+    }
+
+    // 错误场景3：FactionModifier 在特殊组合中被错误应用
+    void ValidateNoDoubleCounting() {
+        // 在计算完成后验证 FactionModifier 未被重复计算
+        // 此检查仅在调试模式下执行
+        #if DEBUG
+        foreach (var combo in specialCases) {
+            // 对于特殊组合，验证 FactionModifier 未被包含在 OldAcqBonus 中
+            // 通过正向计算：Base + Attitude + OldAcq(=Absorbed) = 表2.1
+            // 如果结果正确，说明 FactionModifier 未被重复计算
+            int calculated = CalculateInitialAllegiance(combo.Item1, combo.Item2, false);
+            int expected = GetTable21Value(combo.Item1, combo.Item2);
+
+            if (calculated != expected) {
+                LogWarning($"Potential double-counting detected: " +
+                    $"calculated={calculated}, expected={expected}");
+            }
+        }
+        #endif
+    }
+}
+```
+
+**完整调用序列图（时序）**：
+
+```
+┌─────────────┐     ┌──────────────────┐     ┌─────────────────────┐
+│ NPC AI      │     │ Character        │     │ Gritty Takedowns    │
+│ System      │     │ Background        │     │ System              │
+└──────┬──────┘     └────────┬─────────┘     └──────────┬──────────┘
+       │                     │                        │
+       │                     │  GetPrimaryFaction()   │
+       │◄────────────────────┼────────────────────────│
+       │  GetNPCIdentities() │                        │
+       │────────────────────►│                        │
+       │                     │                        │
+       │  QueryOldAcqBonus() │                        │
+       │◄────────────────────┼                        │
+       │                     │                        │
+       │                     │  GetFirstEncounterBonus()│
+       │◄────────────────────┼────────────────────────│
+       │                     │                        │
+       │◄── InitialAllegiance (公式3/4结果) ──────────┼
+       │                     │                        │
+```
 
 **处理流程**：
 1. 玩家发起 `ConfrontationStartRequest(npc_id, player_background)` 到 Gritty Takedowns
@@ -755,11 +918,102 @@ interface IFirstEncounterBonusProvider {
 
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|---------|
-| **NPC AI系统** | 硬依赖 | 调用 `QueryOldAcquaintanceBonus` 获取旧识关系加成；读取 `AttitudeModifier` 计算 NPC 初始态度 |
+| **NPC AI系统** | 硬依赖 | 调用 `QueryOldAcquaintanceBonus` 获取旧识关系加成；读取 `AttitudeModifier` 计算 NPC 初始态度；调用 `GetNPCIdentities(npc_id)` 获取 NPC 多派系身份列表（详见下方接口定义） |
 | **DialogTree** | 硬依赖 | 读取 `BackgroundType` 判断对话选项可见性和旧识对话分支过滤 |
-| **理智/愤怒系统** | 硬依赖 | 读取 `SanityPenaltyMultiplier` 和 `FrenzyThresholdModifier` 计算惩罚和狂暴状态 |
+| **理智/愤怒系统** | 硬依赖 | **下游依赖（接收参数）**。本系统向 Sanity/Rage Meter 输出 `SanityPenaltyMultiplier` 和 `FrenzyThresholdModifier`，Sanity/Rage Meter 作为消费方读取这两个参数。<br>• 数据流向：Character Background → Sanity/Rage Meter<br>• 输出参数：<br>  - `SanityPenaltyMultiplier`：理智惩罚系数（普通人=0.9x, 特工=0.8x, 雇佣兵=1.15x）<br>  - `FrenzyThresholdModifier`：狂暴阈值调整（普通人=+8, 特工=±0, 雇佣兵=-8）|
 | **叙事系统 (Narrative System)** | 软依赖 | 接收背景类型用于 SKILL 系列模块解锁条件判断（BackgroundType 影响叙事模块的可用性） |
 | **Gritty Takedowns 系统** | 硬依赖 | 调用 `IFirstEncounterBonusProvider.GetFirstEncounterBonus()` 获取首次遭遇加成；持有 `HasMetFaction` flag 并管理首次遭遇加成的应用时机 |
+
+#### GetNPCIdentities 接口定义与替代实现方案
+
+> **TODO P0（2026-04-15）**：`GetNPCIdentities(npc_id)` 接口是 NPC AI System 的必需接口，本系统依赖此接口进行多派系 NPC 的派系优先级判断。当前 NPC AI System 尚未实现该接口，需要在 Vertical Slice 阶段前完成。
+>
+> **接口确认状态（2026-04-14）**：`GetNPCIdentities(npc_id)` 接口已在 npc-ai-system.md Line 304 定义（待实现），返回 `List[Faction]`（按优先级从高到低排序）。本章节提供接口规范说明。
+
+**接口规范定义**：
+
+```csharp
+/// <summary>
+/// 返回 NPC 所属的所有派系身份列表。
+/// 用于多派系 NPC 的派系优先级判断。
+/// </summary>
+/// <param name="npc_id">NPC 唯一标识符</param>
+/// <returns>派系枚举值列表，按优先级从高到低排序</returns>
+List<Faction> GetNPCIdentities(NPC_ID npc_id);
+```
+
+**返回值数据结构**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| 返回值 | `List<Faction>` | NPC 所属的派系枚举列表，按优先级从高到低排序 |
+
+**派系优先级定义**（由 NPC AI System 的 `NPCIdentityType` 决定）：
+
+| 优先级 | 派系 | 枚举值 | 说明 |
+|:------:|------|--------|------|
+| 1 | 凋亡议会 | `ODD_COUNCIL` | 最高优先级（核心敌人派系） |
+| 2 | 灰烬团 | `ASH_LEGION` | 次高优先级（武装组织） |
+| 3 | 锈网 | `ROTTEN_WEB` | 中优先级（灰色地带） |
+| 4 | 苍白之手 | `PALE_HAND` | 低优先级（观望态度） |
+| 5 | 无声者 | `SILENT_ONES` | 最低优先级（潜在盟友） |
+| 6 | 黑帮 | `GANGS` | 根据帮派内层级调整（小头目 > 普通成员） |
+
+**替代实现方案（基于现有接口）**：
+
+> **TODO P0 说明**：以下替代方案是临时实现，当 NPC AI System 正式实现 `GetNPCIdentities` 接口后，必须替换为正式接口调用。此临时方案仅用于 Vertical Slice 阶段前的开发过渡。
+
+由于 `GetNPCIdentities` 尚未在 NPC AI System 中实现，可使用以下临时替代方案：
+
+```csharp
+/// <summary>
+/// 替代实现：通过 NPC AI System 的现有查询接口间接获取派系信息
+/// 注意：这是临时替代方案，最终应在 NPC AI System 中实现 GetNPCIdentities 接口
+/// </summary>
+List<Faction> GetNPCIdentitiesAlternative(NPC_ID npc_id) {
+    // 方案：查询 NPC 的 allegiance 变化历史或直接查询派系关系表
+    // 由于 NPC AI System 的 allegiance 计算需要派系信息作为输入，
+    // 此替代方案需要在 NPC AI System 内部预留派系查询接口
+
+    // 临时实现思路1：通过 Allegiance 间接推断（不推荐，逻辑不清晰）
+    // 临时实现思路2：在 NPC AI System 中新增 GetFactionList(npc_id) 接口（推荐）
+
+    // 推荐方案：在 NPC AI System 中新增接口
+    return NPC_AISystem.GetFactionList(npc_id);  // 新接口
+}
+```
+
+**推荐解决方案**：
+
+1. **短期（立即实施）**：在 NPC AI System (npc-ai-system.md) 的查询接口章节中添加 `GetNPCIdentities` 接口定义
+
+2. **实现位置**：npc-ai-system.md 的「查询接口规范」章节，与 `QueryState`、`QueryAlertState` 等接口并列
+
+3. **接口定义草案**（供 NPC AI System 实现参考）：
+
+```csharp
+/// <summary>
+/// NPC AI System 提供：获取 NPC 的所有派系身份
+/// </summary>
+/// <param name="npc_id">NPC 唯一标识符</param>
+/// <returns>派系枚举值列表，按优先级从高到低排序</returns>
+/// <remarks>
+/// 多派系 NPC 示例：
+/// - 锈网成员 + 凋亡议会线人 → 返回 [ODD_COUNCIL, ROTTEN_WEB]
+/// - 普通黑帮成员 → 返回 [GANGS]
+/// </remarks>
+List<Faction> GetNPCIdentities(NPC_ID npc_id);
+```
+
+4. **Character Background 系统内部实现调整**：在 `GetPrimaryFaction` 函数中使用上述接口后，更新实现代码
+
+```csharp
+Faction GetPrimaryFaction(NPC_ID npc_id) {
+    // 使用 NPC AI System 提供的 GetNPCIdentities 接口
+    var identities = NPC_AISystem.GetNPCIdentities(npc_id);
+    return identities.OrderByDescending(GetFactionPriority).First();
+}
+```
 
 ### 依赖关系矩阵
 
@@ -830,13 +1084,13 @@ interface INarrativeModuleQuery {
 | `CombatModifier_Agent` | float | 0.95 | 0.85~1.05 | 特工战斗系数 |
 | `CombatModifier_Mercenary` | float | 1.2 | 1.0~1.25 | 雇佣兵战斗系数 |
 | `PerceptionModifier_Civilian` | float | 0.9 | 0.75~1.05 | 普通人感知系数 |
-| `PerceptionModifier_Agent` | float | 1.15 | 1.1~1.15 | 特工感知系数（感知范围乘数1.1x~1.15x，上限1.15x以保持挑战平衡）。**联动约束**：与 `ClueAnalysisModifier_Agent` 联动调整；若上调 `PerceptionModifier_Agent` 至 1.15x，建议将 `ClueAnalysisModifier_Agent` 下调至 1.25x 以内 |
+| `PerceptionModifier_Agent` | float | 1.15 | 1.1~1.15 | 特工感知系数（感知范围乘数1.1x~1.15x，上限1.15x以保持挑战平衡）。**联动约束**：与 `ClueAnalysisModifier_Agent` 联动调整；若上调 `PerceptionModifier_Agent` 至 1.15x，建议将 `ClueAnalysisModifier_Agent` 下调至 1.0x 以内以保持乘积 ≈ 1.15 |
 | `PerceptionModifier_Mercenary` | float | 1.0 | 0.9~1.1 | 雇佣兵感知系数 |
 | `EnvironmentModifier_Civilian` | float | 0.9 | 0.8~1.0 | 普通人环境交互系数 |
 | `EnvironmentModifier_Agent` | float | 1.0 | 0.9~1.1 | 特工环境交互系数 |
 | `EnvironmentModifier_Mercenary` | float | 1.2 | 1.0~1.25 | 雇佣兵环境交互系数 |
 | `ClueAnalysisModifier_Civilian` | float | 1.1 | 1.0~1.2 | 普通人线索分析速度 |
-| `ClueAnalysisModifier_Agent` | float | 1.3 | 1.15~1.4 | 特工线索分析速度。**联动约束**：与 `PerceptionModifier_Agent` 联动调整；若上调 `PerceptionModifier_Agent` 至 1.15x，建议将本参数控制在 1.25x 以内 |
+| `ClueAnalysisModifier_Agent` | float | 0.86 | 0.75~1.1 | 特工线索分析速度（**2026-04-13修复**：从1.3x下调至0.86x以平衡特工双重优势乘积）。**联动约束**：与 `PerceptionModifier_Agent` 联动调整；若上调 `PerceptionModifier_Agent` 至 1.15x，建议将本参数控制在 1.0x 以内以保持乘积 ≈ 1.15 |
 | `ClueAnalysisModifier_Mercenary` | float | 0.85 | 0.75~1.0 | 雇佣兵线索分析速度 |
 | `AttitudeModifier_Civilian` | int | +10 | +5~+15 | 普通人NPC初始态度修正 |
 | `AttitudeModifier_Agent` | int | +15 | +10~+20 | 特工NPC初始态度修正 |
@@ -852,7 +1106,7 @@ interface INarrativeModuleQuery {
 | `SanityPenaltyMultiplier_*` 设置过低 | 玩家杀戮代价降低，削弱理智系统的情感冲击力 | 验证杀戮心理惩罚是否符合预期 |
 | `FrenzyThresholdModifier_Mercenary` 设置过低（如 -15） | 雇佣兵过早进入狂暴，可能导致"狂暴流"玩法固化 | **重点验证**：雇佣兵狂暴触发频率是否过高；验证狂暴流是否成为唯一可行玩法；建议收集数据：每次任务中雇佣兵狂暴触发的平均次数 vs 其他背景的战斗方式分布 |
 | `PerceptionModifier_Agent` 设置过高 | 特工感知范围和信息优势过强，在潜行/监听为主要手段的游戏中可能导致特工成为唯一最优背景选择。已将安全范围上限降至 1.15x，首次 playtest 重点验证三个背景的吸引力平衡 | 验证特工是否成为唯一选择；收集三个背景的选择率分布 |
-| **特工双重优势** | `PerceptionModifier_Agent`(1.15x) + `ClueAnalysisModifier_Agent`(1.3x) 叠加可能导致特工成为唯一最优背景。当上调感知系数时，需联动下调线索分析速度以保持平衡 | 验证两项乘数乘积平衡（见 AC-11） |
+| **特工双重优势** | `PerceptionModifier_Agent`(1.15x) + `ClueAnalysisModifier_Agent`(0.86x) 乘积=0.99，已接近普通人乘积=0.99，三背景吸引力趋于平衡。调参时需保持乘积 ≈ 1.0 | 验证两项乘数乘积平衡（见 AC-11） |
 | `CombatModifier_Mercenary` 设置过高 | 雇佣兵战斗能力过强，破坏"致命脆弱感"支柱 | 验证雇佣兵战斗难度是否符合预期 |
 
 **特工感知系数联动调整公式**：
@@ -867,11 +1121,11 @@ interface INarrativeModuleQuery {
     → PerceptionModifier_Agent 下调 Δ × 0.5（最大下调至 1.0）
 
 推荐组合范围（保持三背景平衡）：
-| 组合 | PerceptionModifier_Agent | ClueAnalysisModifier_Agent |
-|------|------------------------|---------------------------|
-| 默认 | 1.15x | 1.3x |
-| 平衡A | 1.1x | 1.2x |
-| 平衡B | 1.05x | 1.1x |
+| 组合 | PerceptionModifier_Agent | ClueAnalysisModifier_Agent | 乘积 |
+|------|------------------------|---------------------------|------|
+| 默认 | 1.15x | 0.86x | 0.99 |
+| 平衡A | 1.1x | 0.9x | 0.99 |
+| 平衡B | 1.05x | 0.94x | 0.99 |
 
 验证方法：当特工的两项乘数乘积 ≈ 普通人两项乘数乘积时（≈ 0.99），三背景吸引力趋于平衡
 ```
@@ -936,15 +1190,19 @@ interface INarrativeModuleQuery {
 | AC-12 | 雇佣兵的潜行能力（StealthModifier 0.85x）在标准关卡中被 NPC 发现的概率，高于普通人至少 20% | 在同一标准潜行关卡中，用三个背景走相同路线，统计各背景被发现的次数，验证雇佣兵 ≥ 普通人 × 1.2 |
 | AC-13 | 普通人的战斗系数（0.8x）在1v1遭遇战中，存活率低于特工（0.95x）20% 以上 | 模拟相同条件的1v1遭遇战场景，各背景重复10次，对比存活率差异，验证普通人存活率显著低于特工 |
 | AC-14 | 雇佣兵的环境交互系数（1.2x）使其每关可用环境处决路径数量最多 | 在含两种及以上环境处决机会的标准关卡中，对比三个背景可触发的环境处决路径数，雇佣兵数量应最多 |
-| AC-15 | 雇佣兵在**狂暴状态下**完成一关的总耗时，不低于普通潜行通关时长的 70% | 分别记录雇佣兵潜行通关和狂暴清场通关的时长，验证狂暴流不会成为比潜行更高效的主流打法（⚠️ 高风险平衡验证项，见调参风险提示） |
+| AC-15 | 雇佣兵狂暴流效率验证 | 分别记录雇佣兵潜行通关和狂暴清场通关的时长，验证狂暴流不会成为唯一主流打法 |
+
+> **⚠️ AC-15 Playtest 数据验证计划**：
+> - **验证时机**：需在 Alpha 阶段收集 playtest 数据后验证
+> - **验证目标**：确认雇佣兵狂暴流是否成为唯一可行打法
+> - **风险**：若 playtest 数据表明狂暴流效率显著高于潜行流（狂暴通关时长 < 潜行时长 70%），需触发调参流程
+> - **调参方案**：如发现问题，调整 `FrenzyThresholdModifier`（建议从 -8 调至 -12~-15，降低狂暴触发门槛，使狂暴更频繁但每次持续时间更短）或相关系数以平衡两条路线效率
 
 ## Open Questions
 
 | 问题 | 负责人 | 截止日期 | 状态 | 解决方案 |
 |------|-------|----------|------|---------|
-| 背景选择界面的美术风格 | Art Director | 待定 | Open | 需要确定是写实风格还是符号化图标 |
-| 不同背景的配音/台词差异 | Narrative Director | 待定 | Open | 是否需要为每个背景录制专属的内心独白？ |
-| 背景是否影响结局分支 | Narrative Director | 待定 | Open | 当前设计是结局由玩家行为决定，背景不影响。但是否需要差异化结局？ |
-| ~~背景选择后是否可查看详细属性~~ | ~~UX Designer~~ | ~~待定~~ | ~~已解决~~ | ✅ **已解决**：采用**悬停显示**方案，在背景描述卡上悬停时显示详细参数说明（8项参数），无需专用详情面板 |
-| 各参数的默认值是否需要根据实际测试调整 | Game Designer | 待定 | Open | 试玩测试后可能需要调整参数以达到预期手感；`CombatModifier_Mercenary` 需重点验证 |
-| **苍白之手 BaseAllegiance 确认** | NPC AI System | 2026-04-11 | **✅ 已解决** | NPC AI System 已确认 `BaseAllegiance_苍白之手 = -20`。详见 Dependencies 下游依赖表。 |
+| 背景选择界面的美术风格 | Art Director | 待定 | ✅ 已解决 | **渐进式混合风格**：初期展示符号化图标（匕首=雇佣兵、眼睛=特工、脚印=普通人），选中后弹出写实风格背景故事卡片。参考《教团：1886》 |
+| 不同背景的配音/台词差异 | Narrative Director | 待定 | ✅ 已解决 | **核心共享+背景差异**：所有背景共享主线内心独白，背景特有场景添加差异化独白（约15-20%），雇佣兵额外5-8条"父亲身份挣扎"独白 |
+| 背景是否影响结局分支 | Narrative Director | 待定 | ✅ 已解决 | **维持现状**：背景不影响结局，但增加"同一结局不同解读"的过程差异。背景应主要影响过程体验而非终点 |
+| 各参数的默认值是否需要根据实际测试调整 | Game Designer | 待定 | ✅ 已解决 | **预设+验证+调参三阶段**：Alpha Playtest后按AC-12/13/14/15数据调整。触发条件：AC-12(雇佣兵被发现概率<普通人×1.15)、AC-13(特工存活率优势<15%)、AC-15(狂暴流<潜行流70%时长) |

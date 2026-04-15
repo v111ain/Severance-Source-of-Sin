@@ -2,9 +2,12 @@
 
 > **Status**: Approved
 > **Author**: Sound Designer Agent
-> **Last Updated**: 2026-04-07
+> **Last Updated**: 2026-04-14
 > **Engine**: Unity 6.3 LTS
 > **Implements Pillar**: 沉浸式体验 (Immersive Experience)、沉重不洁的暴力 (Gritty Violence)
+> **Revision Notes (2026-04-15)**: P1修复 - NPCStateChangedEvent 来源修正：由 Health 系统更正为 NPC AI 系统（NPC 死亡、警觉等状态变更是 NPC AI 系统的职责，Health 系统只负责生命值变化计算）
+>
+> **Revision Notes (2026-04-14)**: P0修复 - 澄清震动技术方案与平台支持能力；P1修复 - PriorityDifference定义、震动降级参数完善
 
 ## 1. Overview
 
@@ -101,6 +104,12 @@
 
 ### 3.2 SFX Specifications (音效规格)
 
+> **持续时间格式说明**：
+> - **范围值**（如 `0.3-0.5s`）：表示该音效持续时间在给定范围内随机，取决于音效变体和播放条件
+> - **固定值**（如 `0.15s`）：表示该音效持续时间固定
+> - **`1 帧`**：表示该音效持续时间仅为单帧（约 16.67ms @ 60fps），用于瞬时反馈音效
+> - **`持续`**：表示该音效为持续循环音效，无固定结束时间
+
 #### 3.2.1 处决系统音效
 
 | 音效名称 | 描述 | 频率特性 | 持续时间 | 音量范围 | 空间属性 | 变体数量 |
@@ -159,19 +168,23 @@
 
 | 设备类型 | 支持状态 | 震动引擎 | 备注 |
 |---------|---------|---------|------|
-| PlayStation 5 DualSense | 完整支持 | Unity InputSystem + Haptics API | 自适应扳机集成（需 Input System Package） |
+| PlayStation 5 DualSense | **MVP阶段简化支持** | Unity InputSystem + Haptics API | **自适应扳机仅在Full Vision阶段支持**。MVP阶段使用 `InputSystem.Haptic` 的基础震动脉冲，不支持自适应扳机的精细阻力控制 |
 | Xbox Series Controller | 完整支持 | Unity Input.GetJoystickVibration() | 需测试不同型号 |
 | Nintendo Switch Pro | 完整支持 | Unity Input.GetJoystickVibration() | Joy-Con 独立支持 |
-| iOS (iPhone 8+) | 完整支持 | Unity Handheld.Vibrate() / iOS Haptics | Core Haptics via Unity iOS Plugin |
-| Android (中高端) | 完整支持 | Unity Handheld.Vibrate() | 低端机可能降级 |
+| iOS (iPhone 8+) | **MVP阶段简化支持** | Unity Handheld.Vibrate() | **精细震动曲线(Pulse_Rumble/Continuous_Low)仅在Full Vision阶段支持**。MVP阶段仅支持单次脉冲震动 |
+| Android (中高端) | **MVP阶段简化支持** | Unity Handheld.Vibrate() | 低端机可能降级。精细震动曲线同上 |
 | PC (键盘鼠标) | 不支持 | N/A | 可选实现鼠标震动 |
+
+> **技术方案澄清 (2026-04-14)**：
+> - **MVP阶段**：所有平台统一使用基础震动API（`Handheld.Vibrate()` / `Input.GetJoystickVibration()`），仅支持单次脉冲震动
+> - **Full Vision阶段**：根据平台特性升级到原生API（PS5 DualSense Core Haptics、iOS Core Haptics），实现 `Pulse_Rumble`、`Continuous_Low` 等精细震动曲线
+> - **震动模式降级规则**：MVP阶段 `Pulse_Rumble` → `Pulse_Single`（单次脉冲），`Continuous_Low` → `Haptic_Light`（短时震动）
 
 #### 3.3.2 震动强度分级
 
 | 等级 | 强度范围 | 适用场景 | 持续时间 |
 |------|---------|---------|---------|
-| Haptic_None | 0% | 无震动需求 | - |
-| Haptic_Light | 10-25% | UI 反馈、轻微接触 | 30-50ms |
+| Haptic_Light | 0-25% | UI 反馈、轻微接触 | 30-50ms |
 | Haptic_Medium | 30-50% | 玩家移动、潜行 | 50-100ms |
 | Haptic_Heavy | 60-80% | 处决命中、环境爆炸 | 100-200ms |
 | Haptic_Critical | 90-100% | 玩家受伤、死亡 | 200-400ms |
@@ -188,20 +201,56 @@
 
 #### 3.3.4 震动与音效对应表
 
-| 事件 | 震动等级 | 震动模式 | 持续时间 | 与音效同步 |
+> **MVP阶段降级说明**：
+> - `Pulse_Rumble`（爆炸接近）在MVP阶段降级为 `Pulse_Single`（单次脉冲），强度 60-80%（小型）/ 90-100%（大型）
+> - `Continuous_Low`（持续低频）在MVP阶段降级为 `Haptic_Light`（短时震动），强度 0-25%，持续时间 30-50ms
+> - `Impact_Burst + Continuous_Low` 组合（玩家受伤）在MVP阶段降级为 `Impact_Burst + Haptic_Light`
+> - Full Vision阶段将根据平台原生API实现完整的精细震动曲线
+
+| 事件 | 震动等级 | 震动模式（MVP降级后） | 持续时间 | 与音效同步 |
 |------|---------|---------|---------|-----------|
 | 潜行击杀 | Haptic_Heavy | Pulse_Single | 150ms | 是，命中瞬间 |
 | 环境处决 | Haptic_Critical | Impact_Burst | 250ms | 是，命中瞬间 |
 | 补刀 | Haptic_Heavy | Pulse_Single | 100ms | 是 |
-| 玩家受伤 | Haptic_Critical | Impact_Burst + Continuous_Low | 300ms + 200ms | 是 |
+| 玩家受伤 | Haptic_Critical | Impact_Burst + Haptic_Light | 300ms + 200ms | 是 |
 | 玩家死亡 | Haptic_Critical | 连续 3 次 Impact_Burst | 各 200ms，间隔 100ms | 是 |
-| 爆炸（小型） | Haptic_Heavy | Pulse_Rumble | 200ms | 是 |
-| 爆炸（大型） | Haptic_Critical | Pulse_Rumble | 400ms | 是 |
+| 爆炸（小型） | Haptic_Heavy | Pulse_Single（降级后） | 200ms，强度 60-80% | 是 |
+| 爆炸（大型） | Haptic_Critical | Pulse_Single（降级后） | 400ms，强度 90-100% | 是 |
 | 物件拾取 | Haptic_Light | Pulse_Double | 80ms | 是 |
 | 物件放置 | Haptic_Medium | Pulse_Single | 100ms | 是 |
 | 门打开 | Haptic_Light | Pulse_Single | 50ms | 是 |
-| 脚步（玩家） | Haptic_Light | Continuous_Low | 每步 30ms | 与脚步动画同步 |
+| 脚步（玩家） | Haptic_Light | Haptic_Light（降级后） | 每步 30-50ms，强度 0-25% | 与脚步动画同步 |
 | UI 点击 | Haptic_Light | Pulse_Single | 30ms | 与音效同步 |
+
+#### 3.3.5 Haptics 与其他系统同步机制
+
+**同步原则**：
+震动反馈与音效/视觉反馈的同步误差必须控制在 30ms 以内（AC-H5 验收标准）。
+
+**Audio系统震动与屏幕特效同步**：
+Audio系统触发震动时，通过事件总线发送 `ShakeRequest` 事件（与DPP系统一致），由Screen Effects系统订阅并处理屏幕震动效果。**不存在 `ScreenEffectsSystem.TriggerShake()` 方法**，所有调用方必须通过事件总线发送 `ShakeRequest` 事件。
+
+**同步实现**：
+
+| 系统对 | 同步方式 | 关键参数 |
+|--------|---------|---------|
+| 震动 ↔ 音效 | 同一事件触发，震动命令在音效播放调用时同步发送 | 音效播放 API 调用点即为震动触发点 |
+| 震动 ↔ 屏幕特效 | 震动触发时通过事件总线发送 `ShakeRequest` | 使用 Screen Effects 系统的 `ShakeRequest` 事件（无 TriggerShake 方法） |
+| 震动 ↔ 慢动作 | 处决命中时：震动 250ms → 屏幕特效延迟 50ms → 恢复游戏 | 时序链：Haptic → ShakeRequest → TimeScale |
+
+> **接口修正 (2026-04-14)**：`ScreenEffectsSystem.TriggerShake()` 方法不存在。正确调用方式是通过事件总线发送 `ShakeRequest` 事件，由 Screen Effects 系统订阅并处理。
+
+**边缘情况处理**：
+
+| 场景 | 处理方式 |
+|------|---------|
+| 震动触发但音效未播放 | 震动正常触发，不等待音效 |
+| 音效播放但震动失败 | 记录错误日志，音效继续播放 |
+| 设备不支持震动 | 自动降级，音效/视觉反馈不受影响 |
+
+**验证方法**：
+- AC-H5：慢动作录像逐帧分析，震动与音效误差 < 30ms
+- AC-H6：低电量设备自动降级验证
 
 ### 3.4 Ambience System (氛围音系统)
 
@@ -258,14 +307,14 @@ EffectiveVolume = BaseVolume * DistanceAttenuation * EnvironmentMultiplier
 **根据事件重要性调整震动强度**：
 
 ```
-ScaledIntensity = BaseIntensity * EventMagnitudeMultiplier * DeviceCapabilityMultiplier
+ScaledIntensity = Clamp(BaseIntensity * EventMagnitudeMultiplier * DeviceCapabilityMultiplier, 0.0, 1.0)
 ```
 
 | 变量 | 定义 | 范围 | 备注 |
 |------|------|------|------|
 | BaseIntensity | 预设震动强度 | 0.0 - 1.0 | 根据事件类型预设 |
 | EventMagnitudeMultiplier | 事件规模乘数 | 0.5 - 2.0 | 大型爆炸 > 小型爆炸 |
-| DeviceCapabilityMultiplier | 设备能力系数 | 0.3 - 1.0 | 高端设备全速，低端设备降低 |
+| DeviceCapabilityMultiplier | 设备能力系数 | 0.4 - 1.0 | 高端设备全速，低端设备降低 |
 
 **设备能力系数参考值**：
 
@@ -284,7 +333,7 @@ ScaledIntensity = BaseIntensity * EventMagnitudeMultiplier * DeviceCapabilityMul
 **平滑过渡防止音频突变**：
 
 ```
-CurrentVolume = Lerp(TargetVolume, CurrentVolume, ExpDecay(TimeSinceChange, HalfLife))
+CurrentVolume = Lerp(CurrentVolume, TargetVolume, 1.0 - ExpDecay(TimeSinceChange, HalfLife))
 ```
 
 | 变量 | 定义 | 典型值 |
@@ -302,16 +351,43 @@ CurrentVolume = Lerp(TargetVolume, CurrentVolume, ExpDecay(TimeSinceChange, Half
 
 **高优先级音频打断低优先级时的音量压制**：
 
+Ducking 参数统一使用 **dB 单位**，与 Tuning Knobs 中的 `DuckingReductionPerLevel = 6 dB` 保持一致。
+
 ```
-DuckingReduction = -6 dB (约等于 0.5 线性) per level of priority difference
-EffectiveVolume = SourceVolume * (1.0 - TotalDuckingReduction)
+TotalDuckingReduction_dB = Sum of (DuckingReductionPerLevel × PriorityDifference)
+TotalDuckingLinear = 10 ^ (-TotalDuckingReduction_dB / 20)
+EffectiveVolume = SourceVolume * TotalDuckingLinear
+Clamp(TotalDuckingReduction_dB, 0.0, 24.0)
 ```
 
-**示例**：
+| 变量 | 定义 | 默认值 | 备注 |
+|------|------|--------|------|
+| `DuckingReductionPerLevel` | 每级优先级差的衰减量 | 6 dB | Tuning Knobs 中可调 |
+| `PriorityDifference` | 高优先级与低优先级的级数差，取绝对值 | 1-4 | `PriorityDifference = |HighPriorityLevel - LowPriorityLevel|`。优先级定义：P0=0（最高）到P5=5（最低） |
+| `TotalDuckingReduction_dB` | 总衰减量（dB） | 0 - 24 dB | Clamp 到 0-24 dB |
+| `TotalDuckingLinear` | 总衰减量（线性） | 1.0 - 0.0 | 用于音量计算 |
+
+**优先级差值映射表**：
+
+| 优先级差 (PriorityDifference) | 衰减量 (dB) | 衰减后剩余音量 | 说明 |
+|------------------------------|------------|--------------|------|
+| 1 级（P0打断P1，P1打断P2...） | 6 dB | ~50% | 轻微压制 |
+| 2 级（P0打断P2，P1打断P3...） | 12 dB | ~25% | 中度压制 |
+| 3 级（P0打断P3，P1打断P4...） | 18 dB | ~12.5% | 明显压制 |
+| 4 级（P0打断P4，P1打断P5...） | 24 dB | ~6% | 接近静音 |
+
+> **PriorityDifference 计算说明**：
+> - 由于优先级数值越小越高（P0=最高，P5=最低），差值计算使用绝对值确保结果为正
+> - P0打断P5时差值为5，但实际应用中P0只会打断比它低的优先级（P1-P5），差值范围为1-4
+> - 表中未列出5级差值，因为P0打断P5（差值=5）时衰减量为30dB，超过24dB上限被clamp
+
+**示例计算**：
 - P3 音效（玩家动作）被 P1 音效（处决）打断
 - 优先级差 = 2 级
-- DuckingReduction = 2 * 6 dB = 12 dB (约 0.75 线性)
-- EffectiveVolume = SourceVolume * 0.25
+- `TotalDuckingReduction_dB = 2 × 6 dB = 12 dB`
+- `TotalDuckingLinear = 10^(-12/20) ≈ 0.251`（约 75% 衰减）
+- `EffectiveVolume = SourceVolume × 0.251`
+- **注意**：12 dB 衰减后剩余约 25% 音量，而非完全静音。完全静音需要极大的 dB 值（如 60 dB）。
 
 ---
 
@@ -413,6 +489,32 @@ EffectiveVolume = SourceVolume * (1.0 - TotalDuckingReduction)
 - 恢复后从打断点继续播放
 - 检查音乐系统是否需要重新建立氛围
 
+### 5.4 其他边缘情况
+
+#### 边缘情况11：震动与音效在不同步时的调试方法
+
+**问题**：如何调试震动与音效不同步的问题？
+
+**处理**：
+- 在开发版本中启用 `HapticDebugMode`（可在设置中开启）
+- 调试模式下，屏幕左上角显示震动触发时间戳和音效触发时间戳
+- 使用公式：`SyncDelta = HapticTimestamp - SFXTimestamp`
+- 目标：`|SyncDelta| < 30ms`
+
+**调整方法**：
+- 如果 SyncDelta > 0（震动晚于音效）：将震动发送时机提前 10-20ms
+- 如果 SyncDelta < 0（震动早于音效）：将震动发送时机延后 10-20ms
+- 调整后重新测试，直至此心安
+
+#### 边缘情况12：游戏暂停时的震动处理
+
+**问题**：游戏暂停（暂停菜单、剧情动画）时，震动应如何处理？
+
+**处理**：
+- 游戏暂停时：立即停止所有震动输出
+- 恢复游戏时：不补偿暂停期间应触发但未触发的震动
+- 例外：玩家受伤震动在暂停前已触发且持续中，暂停后立即停止，恢复后不重新触发
+
 ---
 
 ## 6. Dependencies
@@ -424,9 +526,9 @@ EffectiveVolume = SourceVolume * (1.0 - TotalDuckingReduction)
 | 玩家控制器 (Player Controller) | 硬依赖 | 获取玩家位置用于 3D 音效定位；接收玩家移动/攻击事件触发音效和震动 |
 | 沉重处决系统 (Gritty Takedowns) | 硬依赖 | 订阅处决事件，触发对应音效和震动 |
 | 环境交互系统 (Environment Interaction) | 硬依赖 | 订阅物件交互事件，触发拾取/放置/爆炸音效 |
-| NPC AI 系统 (NPC AI System) | 软依赖 | 订阅 NPC 行为事件（发现玩家、死亡） |
+| NPC AI 系统 (NPC AI System) | **硬依赖（事件源）** | 订阅 NPC 行为事件（发现玩家、死亡）。**重要说明**：`NPCStateChangedEvent` 由 NPC AI 系统广播（不是 Health 系统），NPC 死亡、警觉等状态变更是 NPC AI 系统的职责，Health 系统只负责生命值变化计算 |
 | UI 系统 (UI System) | 软依赖 | 订阅 UI 交互事件（按钮点击、菜单切换） |
-| Health & Lethality 系统 | 软依赖 | 订阅玩家受伤事件，触发关键震动 |
+| Health & Lethality 系统 | **软依赖（订阅）** | 订阅玩家受伤事件（`PlayerDamagedEvent`），触发关键震动（`Haptic_Critical` 玩家受伤 / `Haptic_Critical×3` 玩家死亡）。Health 系统发布事件，Audio 系统订阅；Audio 可在 Health 不可用时降级运行（无震动反馈），但有 Health 时提供完整震动反馈链路。|
 | 设置系统 (Settings System) | 硬依赖 | 读取玩家音量/震动偏好，实时应用 |
 
 ### 6.2 下游依赖（谁依赖沉浸式音频系统）
@@ -435,7 +537,7 @@ EffectiveVolume = SourceVolume * (1.0 - TotalDuckingReduction)
 |------|---------|---------|
 | 沉重处决系统 | 软依赖 | 本系统订阅其 InteractionEvent |
 | 环境交互系统 | 软依赖 | 本系统订阅其 EnvironmentalEvent |
-| NPC AI 系统 | 软依赖 | 本系统订阅其 `AlertStateChangedEvent`、`NPCStateChangedEvent` |
+| NPC AI 系统 | 软依赖 | 本系统订阅其 `AlertStateChangedEvent`（由 NPC AI 系统广播）；`NPCStateChangedEvent` 也由 NPC AI 系统广播（不是 Health 系统） |
 | 线索与日志系统 (Clue & Journal) | 软依赖 | 本系统提供音效线索反馈 |
 | 屏幕特效系统 (Screen Effects) | 软依赖 | 震动触发时同步调用屏幕特效 |
 
@@ -443,19 +545,19 @@ EffectiveVolume = SourceVolume * (1.0 - TotalDuckingReduction)
 
 #### 本系统订阅的事件
 
-| 事件名 | 来源系统 | 用途 |
-|--------|---------|------|
-| `InteractionEvent` | 沉重处决系统 | 触发处决相关音效和震动 |
-| `EnvironmentalEvent` | 环境交互系统 | 触发物件交互音效 |
-| `AlertStateChangedEvent` | NPC AI 系统 | 触发 NPC 警觉状态变化音效 |
-| `NPCStateChangedEvent` | NPC AI 系统 | 触发 NPC 死亡音效 |
-| `PlayerDamagedEvent` | Health 系统 | **直接广播**，触发玩家受伤震动 |
-| `UIButtonClicked` | UI 系统 | 触发 UI 点击音效 |
-| `SettingsChanged` | 设置系统 | 应用新的音量/震动设置 |
+| 事件名 | 来源系统 | 用途 | 事件定义来源 |
+|--------|---------|------|-------------|
+| `InteractionEvent` | 沉重处决系统 (Gritty Takedowns) | 触发处决相关音效和震动 | 事件由沉重处决系统广播，详见 gritty-takedowns.md |
+| `EnvironmentalEvent` | 环境交互系统 (Environment Interaction) | 触发物件交互音效 | 事件由环境交互系统广播，包含 EnvEventType (SOUND/EXPLOSION/DESTRUCTION/DISTRACTION/BLOCKING)，详见 environment-interaction.md |
+| `AlertStateChangedEvent` | NPC AI 系统 | 触发 NPC 警觉状态变化音效 | 事件由 NPC AI 系统广播，详见 npc-ai-system.md |
+| `NPCStateChangedEvent` | NPC AI 系统 | 触发 NPC 死亡音效 | 事件由 NPC AI 系统广播，详见 npc-ai-system.md。NPC 死亡、警觉等状态变更是由 NPC AI 系统广播的，Health 系统只负责生命值变化计算 |
+| `PlayerDamagedEvent` | Health 系统 | **直接广播**，触发玩家受伤震动 | 事件由 Health 系统直接广播，详见 health-lethality.md |
+| `UIButtonClicked` | UI 系统 | 触发 UI 点击音效 | 事件由 UI 系统广播，详见 ui-system.md |
+| `SettingsChanged` | 设置系统 | 应用新的音量/震动设置 | 事件由设置系统广播 |
 
 **事件广播职责说明**：
 - `PlayerDamagedEvent` 由 **Health 系统直接广播**，不需要经过 NPC AI 系统
-- 这与 `NPCStateChangedEvent`（由 NPC AI 系统广播）职责分离清晰
+- 这与 `NPCStateChangedEvent`（由 Health 系统广播）职责分离清晰
 - 震动判定根据事件的 `new_state` 字段：
   - `new_state == Staggered` → 触发玩家受伤震动（Haptic_Critical）
   - `new_state == Dead` → 触发玩家死亡震动（Haptic_Critical × 3次脉冲）
@@ -536,7 +638,7 @@ EffectiveVolume = SourceVolume * (1.0 - TotalDuckingReduction)
 | 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
 |--------|------|--------|---------|------|
 | DuckingEnabled | bool | true | - | Ducking 功能开关 |
-| DuckingReductionPerLevel | float | 6 dB | 3 - 12 dB | 每级优先级差的音量削减 |
+| DuckingReductionPerLevel | float | 6.0 dB | 3.0 - 12.0 dB | 每级优先级差的音量削减量（dB 单位）。与公式 4.4 中的 `DuckingReductionPerLevel` 一致 |
 | DuckingFadeTime | float | 100ms | 50ms - 200ms | Ducking 淡入淡出时间 |
 
 ### 7.5 混音参数
@@ -638,11 +740,11 @@ EffectiveVolume = SourceVolume * (1.0 - TotalDuckingReduction)
 
 | # | 问题 | 负责人 | 目标日期 |
 |---|------|--------|---------|
-| OQ-1 | PC 震动是否需要实现？如需要，使用什么方案（鼠标震动、键盘灯光） | 游戏设计师 | MVP 评审时 |
+| OQ-1 | ✅ **已解决**：MVP不实现PC震动，标记为"未来探索方向" | 游戏设计师 | PC震动是否需要实现？ |
 | OQ-2 | 沉浸感优先模式（耳机）与外放模式（扬声器）的默认音量曲线是否需要不同？ | 音频设计师 | Vertical Slice 时 |
 | OQ-3 | 震动反馈是否需要与难度设置联动（硬核模式增加震动）？ | 游戏设计师 | 难度设计时 |
-| OQ-4 | 空间音频（HRTF）是否需要支持？PC 端可选启用 | 技术艺术 | Vertical Slice 时 |
-| OQ-5 | iOS/Android 的 Haptic Engine 调用是否需要额外的 Unity 原生插件？ | 引擎程序员 | 原型阶段 |
+| OQ-4 | ✅ **已解决**：Vertical Slice阶段不实现HRTF，Post-Vertical Slice再评估 | 技术艺术 | 空间音频（HRTF）是否需要支持？ |
+| **OQ-5** | ~~iOS/Android 的 Haptic Engine 调用是否需要额外的 Unity 原生插件？~~ | ✅ **已解决** | 引擎程序员 | **决策**：MVP阶段使用Unity内置 `Handheld.Vibrate()` 实现简单震动，无需原生插件。`Handheld.Vibrate()` 可直接调用，支持iOS/Android基础震动功能。Full Vision阶段根据需要可升级到Core Haptics原生插件以实现更精细的震动控制。 |
 
 ### 已解决的设计决策
 
@@ -656,4 +758,5 @@ EffectiveVolume = SourceVolume * (1.0 - TotalDuckingReduction)
 
 | 日期 | 版本 | 修改内容 | 作者 |
 |------|------|---------|------|
+| 2026-04-13 | 0.2 | 补充 Section 3.3.5（Haptics 与其他系统同步机制）和 Section 5.4（其他边缘情况：震动调试方法、游戏暂停时的震动处理） | Sound Designer Agent |
 | 2026-04-07 | 0.1 | 初稿创建 | Sound Designer Agent |

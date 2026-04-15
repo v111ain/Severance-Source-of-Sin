@@ -1,6 +1,6 @@
 # 武器系统 (Weapon System)
 
-> **Status**: Approved
+> **Status**: Approved (Revised)
 > **Author**: [user + agents]
 > **Last Updated**: 2026-04-10
 > **Implements Pillar**: 环境即武器 (Environment as a Weapon)、沉重、不洁的暴力 (Gritty, Dirty Violence)
@@ -26,6 +26,10 @@
 > - P2: 补充 Haptic Feedback 实现规格（平台适配、波形类型、衰减机制）
 > **2026-04-10 战斗团队评审修复**：
 > - P1: 公式2 投掷物命中判定中 `melee_range` 变量补全定义（1.5m）及安全范围（1.0m~2.0m）
+> **2026-04-13 reviewer 反馈修复**：
+> - P1: 公式2 表格下方补充 `melee_range` 来源说明，明确其为 Tuning Knob，无需引用其他系统
+> **2026-04-13 P0 跨系统接口修复**：
+> - P0: KillTagEvent 接口移除。weapon-system 不直接发送 KillTagEvent，该事件由 GrittyTakedowns 系统发送。武器击杀通过 DamageRequest → Health System → 回调 GrittyTakedowns → 发送 KillTagEvent 的间接路径处理
 
 ## Overview
 
@@ -129,7 +133,7 @@ ExplosiveComponent {
     blast_radius: float             // 爆炸半径（米）
     base_damage: float             // 基础伤害（爆炸中心）
     lethal_radius_ratio: float      // 致死半径比例（默认0.3，即30%半径内致死）
-    detonation_type: DetonationType // 即时/延时/遥控
+    detonation_type: DetonationType // 即时/延时/遥控。C4 使用遥控引爆（is_controllable=true）；手榴弹使用延时引爆
     is_controllable: bool           // 是否可遥控引爆
 }
 ```
@@ -143,18 +147,28 @@ ExplosiveComponent {
 武器系统**不维护独立的环境物件状态机**。环境物件的状态由环境交互系统作为**唯一数据源（Single Source of Truth）**管理。
 
 武器系统通过订阅环境交互系统广播的 `ObjectStateChangedEvent` 来同步状态：
-- 当收到 `ObjectPickedUp` → 武器系统将对应物件标记为 `Held`
+- 当收到 `ObjectPickedUp` → 武器系统将对应物件标记为 `Equipped`（手持/装备）
 - 当收到 `ObjectDropped` → 武器系统将对应物件标记为 `Available`
 - 当收到 `ObjectUsed` → 武器系统根据物件类型更新为 `Used` 或 `Depleted`
+
+> **跨系统术语对应关系**：
+>
+> | 环境交互系统术语 | 武器系统正式状态 | 说明 |
+> |---------------|--------------|------|
+> | `InUse`（使用中） | `Equipped`（手持/装备） | 玩家当前持有并可使用该物件，两者语义等价 |
+> | `PickedUp`（已拾取） | `Equipped`（手持/装备） | 拾取即进入手持状态 |
+> | — | `Held`（非正式，已废弃） | `Held` 在武器系统中**不作为正式状态**使用，不在 `WeaponState` 枚举中定义。历史文档或注释中出现的 `Held` 均指 `Equipped`，应统一使用 `Equipped` |
+>
+> **结论**：环境交互系统的 `InUse` 与武器系统的 `Equipped` 语义等价。`Held` 仅为非正式口语描述，不属于任何正式状态枚举。
 
 **热武器状态机**：
 
 | 状态 | 描述 | 可转移至 | 触发事件 |
 |------|------|---------|---------|
-| `Stored` | 在背包/枪套中 | `Equipped`（装备） | — |
-| `Equipped` | 正在手持 | `Holstered`（收起）、`Used`（开火/投掷） | `WeaponStateChanged(Equipped)` |
+| `Stored` | 在背包/枪套中 | `Equipped`（装备）、`Used`（丢弃） | — |
+| `Equipped` | 正在手持 | `Holstered`（收起）、`Used`（开火/投掷/X键丢弃） | `WeaponStateChanged(Equipped)` |
 | `Holstered` | 收起在枪套 | `Equipped`、`Stored` | `WeaponStateChanged(Holstered)` |
-| `Used` | 开火/爆炸中 | `Equipped`（继续射击）、`Holstered`（换弹/收起）、`Empty`（弹药耗尽） | `WeaponStateChanged(Used)` |
+| `Used` | 开火/爆炸中/丢弃中 | `Equipped`（继续射击）、`Holstered`（换弹/收起）、`Empty`（弹药耗尽）、`Stored`（丢弃） | `WeaponStateChanged(Used)` |
 | `Empty` | 弹药耗尽 | `Reloading`（换弹中） | `WeaponStateChanged(Empty)` |
 | `Reloading` | 换弹中 | `Equipped`（换弹完成） | `WeaponStateChanged(Reloading)` |
 
@@ -226,7 +240,7 @@ WeaponStateChangedEvent {
 |---------|---------|---------|
 | 沉重处决系统 | `WeaponQueryResponse(weapon_id, WeaponData)` | 处决系统查询武器数据；WeaponData 中包含 `weapon_id`，Gritty Takedowns 将其作为 `source` 参数转发给 Health 系统 |
 | Health & Lethality | `DamageRequest(target_id, damage_type, penetration, source)` | 任何武器造成伤害；`source` 来自 WeaponData 的 `weapon_id` |
-| Health & Lethality | `ExplosionEvent(position, radius, lethal_ratio, damage)` | 爆炸物引爆（包含致死半径比例） |
+| Health & Lethality | `ExplosionEvent(position, radius, lethal_radius_ratio, base_damage, stagger_multiplier)` | 爆炸物引爆（混合型：近距离Lethal，远距离Blunt）。`lethal_radius_ratio`（默认0.3）传递给Health系统以正确判定致死范围；`stagger_multiplier`用于远距离Blunt伤害的硬直倍率计算。**与Health系统的 `ExplosionEvent` 数据结构完全对齐** |
 | NPC AI系统 | `WeaponAwareness(weapon_id, position, weapon_type)` | 热武器被检测到（警报源） |
 | 沉浸式音频系统 | `WeaponUsedEvent(weapon_id, usage_type)` | 武器使用，用于音效触发 |
 | UI 系统 | `WeaponStateChangedEvent(weapon_id, old_state, new_state)` | 武器状态变化（更新图标） |
@@ -236,7 +250,7 @@ WeaponStateChangedEvent {
 | 操作 | 按键 | 说明 |
 |------|------|------|
 | 切换热武器 | `Tab` | 在 Stored 热武器间循环切换 |
-| 切换环境物件 | `Q` / `E` | 在 Held 环境物件列表中循环切换 |
+| 切换环境物件 | `Q` / `E` | 在 `Equipped`（手持）的环境物件列表中循环切换 |
 | 快速丢弃当前武器 | `X` | 立即丢弃当前持有的环境物件/收起热武器 |
 | 查看所有持有武器 | `I` | 打开背包界面（可拖拽排序） |
 
@@ -291,16 +305,43 @@ HitChance(range) = Clamp(1 - (range - melee_range) / (throw_range - melee_range)
 | throw_range | 投掷物最大距离 | 8m | 5.0m ~ 15.0m |
 | min_hit_chance | 最低命中概率 | 0.3 | 0.1 ~ 0.5 |
 
-**公式3：热武器弹药消耗**
+**melee_range 来源说明**：
+`melee_range` 引用近战范围统一常量 `MELEE_RANGE = 1.5m`。作为 Tuning Knob，其物理意义为"在此距离内投掷物必定命中"，由策划根据游戏手感调整。
+
+**公式3：热武器伤害计算**
 
 ```
 FirearmDamage(weapon_type, distance) = BaseDamage × RangeMultiplier(distance) × ArmorPenetrationMultiplier
 ```
 
-| 变量 | 定义 | 典型值 |
-|------|------|--------|
-| RangeMultiplier | 距离修正 | 近距离=1.0, 远距离=0.7 |
-| ArmorPenetrationMultiplier | 穿透修正 | 高穿透武器=1.2 |
+**RangeMultiplier(distance) 计算规则（阶梯函数）**：
+
+| 武器类型 | 距离范围 | RangeMultiplier |
+|---------|---------|----------------|
+| 手枪 | 0 ~ 15m | 1.0 |
+| 手枪 | > 15m | 0.7 |
+| 步枪 | 0 ~ 25m | 1.0 |
+| 步枪 | 25m ~ 50m | 0.85 |
+| 步枪 | > 50m | 0.7 |
+| 狙击 | 0 ~ 50m | 1.0 |
+| 狙击 | 50m ~ 100m | 0.9 |
+| 狙击 | > 100m | 0.8 |
+| 霰弹枪 | 0 ~ 3m | 1.0 |
+| 霰弹枪 | 3m ~ 8m | 0.6 |
+| 霰弹枪 | > 8m | 0.3 |
+
+**ArmorPenetrationMultiplier 计算规则**：
+
+| 武器穿透等级 vs 护甲等级 | ArmorPenetrationMultiplier |
+|------------------------|---------------------------|
+| 穿透等级 ≥ 护甲等级 + 3 | 1.0（完全穿透） |
+| 穿透等级 = 护甲等级 + 2 | 0.9 |
+| 穿透等级 = 护甲等级 + 1 | 0.8 |
+| 穿透等级 = 护甲等级 | 0.7 |
+| 穿透等级 = 护甲等级 - 1 | 0.5 |
+| 穿透等级 < 护甲等级 - 1 | 0.2（严重衰减） |
+
+> **穿透等级来源**：来自 Tuning Knobs 中的 `Penetration_Pistol/Rifle/Sniper/Shotgun` 参数
 
 ## Edge Cases
 
@@ -376,22 +417,41 @@ FirearmDamage(weapon_type, distance) = BaseDamage × RangeMultiplier(distance) �
 | **NPC AI系统 (NPC AI System)** | 软依赖 | 接收 `WeaponAwareness` 事件检测热武器威胁 |
 | **沉浸式音频系统** | 软依赖 | 接收 `WeaponUsedEvent` 用于音效触发 |
 | **UI 系统** | 软依赖 | 接收 `WeaponStateChangedEvent` 更新武器图标 |
-| **理智/愤怒系统 (Sanity/Rage)** | 软依赖 | 间接通过 `KillTagEvent` 传递击杀信息 |
+| **理智/愤怒系统 (Sanity/Rage)** | **无直接接口** | 武器击杀通过 DamageRequest → Health System → 回调 GrittyTakedowns → 发送 KillTagEvent 的间接路径传递击杀信息。weapon-system 不直接发送 KillTagEvent，KillTagEvent 的发送职责归 GrittyTakedowns 系统 |
 
 **注意**：Health 系统是**接收方**，不依赖武器系统。武器系统向 Health 发送事件，Health 执行判定后广播 `PlayerDamagedEvent` 等。这是单向依赖关系。
+
+**三系统职责划分（跨系统一致性约定）**：
+
+| 系统 | 核心职责 | 事件接口 |
+|------|---------|---------|
+| **武器系统 (Weapon System)** | 负责 `DamageRequest` 的构造和发送 | 向 Health 系统发送 `DamageRequest` 和 `ExplosionEvent` |
+| **Health & Lethality 系统** | 负责死亡判定和 `DownedState` 管理 | 接收 `DamageRequest` → 执行伤害判定 → 广播 `NPCStateChangedEvent` |
+| **沉重处决系统 (Gritty Takedowns)** | 负责 `KillTagEvent` 的完整发送流程 | 通过 Health 系统回调 → 发送 `KillTagEvent` 到 Sanity/Rage 系统 |
+
+> **KillTagEvent 完整路径**：`DamageRequest` → Health System → 回调 GrittyTakedowns → 发送 `KillTagEvent`。weapon-system 不直接发送 `KillTagEvent`。
 
 **接口边界说明**：
 
 | 接口 | 方向 | 负载 | 说明 |
 |------|------|------|------|
 | `ObjectStateChangedEvent` | ← 环境交互系统 | `{object_id, object_category, new_state, position}` | **订阅**：物件状态变化事件（包含 Spawned/PickedUp/Dropped/Used） |
-| `WeaponQueryRequest` | ← 武器系统 | `{weapon_id}` | Gritty Takedowns 查询武器数据 |
+| `WeaponQueryRequest` | ← Gritty Takedowns | `{weapon_id}` | Gritty Takedowns 查询武器数据（查询方为 Gritty Takedowns） |
 | `WeaponQueryResponse` | → Gritty Takedowns | `{weapon_id, WeaponData}` | 返回武器数据；Gritty Takedowns 使用返回的 `weapon_id` 作为 `DamageRequest` 的 `source` 参数 |
 | `WeaponStateChangedEvent` | → UI 系统 | `{weapon_id, old_state, new_state}` | 武器状态变化，更新 HUD 图标 |
 | `DamageRequest` | → Health 系统 | `{target_id, damage_type, penetration, source}` | 伤害请求；`source` 为执行伤害的武器 ID |
-| `ExplosionEvent` | → Health 系统 | `{position, radius, lethal_ratio, base_damage}` | 爆炸物引爆（混合型：近距离Lethal，远距离Blunt） |
+| `ExplosionEvent` | → Health 系统 | `{position, radius, lethal_radius_ratio, base_damage, stagger_multiplier}` | 爆炸物引爆（混合型：近距离Lethal，远距离Blunt）。`lethal_radius_ratio`（默认0.3）传递给Health系统以正确判定致死范围；`stagger_multiplier`用于远距离Blunt伤害的硬直倍率计算。**与Health系统的 `ExplosionEvent` 数据结构完全对齐** |
 | `WeaponAwareness` | → NPC AI 系统 | `{weapon_id, position, weapon_type}` | 热武器被检测到 |
 | `WeaponUsedEvent` | → 音频系统 | `{weapon_id, usage_type}` | 武器使用事件 |
+
+### 近战范围统一常量
+
+**近战范围统一常量**：`MELEE_RANGE = 1.5m`
+
+各系统引用此常量而非独立定义，以确保跨系统一致性：
+- **LOS 系统**：`ProximityThreshold`（贴脸暴露判定）使用此常量
+- **武器系统**：`melee_range`（投掷物必定命中范围）使用此常量
+- **Gritty Takedowns 系统**：`InteractionRange_Melee`、`InteractionRange_TieUp` 使用此常量
 
 ## Tuning Knobs
 
@@ -414,7 +474,9 @@ FirearmDamage(weapon_type, distance) = BaseDamage × RangeMultiplier(distance) �
 | **投掷物参数** | | | | |
 | `MinHitChance` | float | 0.3 | 0.1 ~ 0.5 | 投掷物最低命中概率 |
 | `ThrowRange_Throwable` | float | 8.0m | 5.0m ~ 15.0m | 投掷物最大距离 |
+| `MeleeRange` | float | 1.5m | 1.0m ~ 2.0m | 近战/交互距离 |
 | `RicochetDamage衰减` | float | 0.5, 0.75 | — | Alpha阶段弹射衰减（第1/2次） |
+| ⚠️ **参数约束** | | | | **投掷物命中公式约束**：`melee_range < throw_range`（严格小于），建议 `melee_range ≤ throw_range × 0.5`。若调参违反此约束，命中概率公式将产生非物理结果 |
 | **热武器参数** | | | | |
 | `ReloadTime_Pistol` | float | 2.0s | 1.5s ~ 3.0s | 手枪换弹时间 |
 | `ReloadTime_Rifle` | float | 2.5s | 2.0s ~ 4.0s | 步枪换弹时间 |
@@ -561,7 +623,7 @@ FirearmDamage(weapon_type, distance) = BaseDamage × RangeMultiplier(distance) �
 
 | ID | 验收条件 | 测试方法 |
 |----|---------|---------|
-| AC-1 | 环境物件被拾取后状态正确转为 `Held` | 拾取砖块，验证状态转换和 `WeaponStateChangedEvent` |
+| AC-1 | 环境物件被拾取后状态正确转为 `Equipped`（原 Held 已废弃，统一使用 Equipped） | 拾取砖块，验证状态转换和 `WeaponStateChangedEvent` |
 | AC-2 | 环境物件执行后正确发送 `DamageRequest` 到 Health 系统 | 使用砖块处决NPC，监控 Health 系统接收 |
 | AC-3 | **爆炸物混合型伤害**：近距离（≤30%半径）造成 Lethal，远距离造成 Blunt 高硬直 | 在不同距离引爆C4，验证0.9m处=秒杀，1.5m处=硬直 |
 | AC-4 | 投掷物在超出范围后命中概率不低于 min_hit_chance | 远距离投掷测试，统计命中率 |
@@ -596,7 +658,7 @@ FirearmDamage(weapon_type, distance) = BaseDamage × RangeMultiplier(distance) �
 | # | 问题 | 状态 | 负责人 | 目标日期 |
 |---|------|------|--------|---------|
 | OQ-1 | **库存/重量系统的具体实现**：✅ **已解决**：MVP阶段简化为"热武器固定栏位"（Tab切换），暂不实现重量系统。理由：垂直切片阶段重点验证核心玩法，重量系统作为 Alpha 阶段可选扩展。 | 已解决 | 游戏设计师 | MVP 评审时 |
-| OQ-2 | **C4 的引爆方式**：玩家放置C4后，是手动遥控引爆（按键盘），还是需要额外操作？是否需要"延时引爆"作为逃生手段？ | 待定 | 游戏设计师 | Vertical Slice 设计时 |
+| OQ-2 | **C4 的引爆方式**：✅ **已解决**：C4 采用**手动遥控引爆**机制。玩家放置 C4 后，按**指定键位（如 E）**引爆。C4 放置后显示"RDX ARMED"警告提示，无倒计时（区别于手榴弹的延时引爆）。延时引爆作为可选扩展，在 Alpha 阶段评估。 | 已解决 | 游戏设计师 | 2026-04-15 |
 | OQ-3 | **投掷物物理模拟**：✅ **已解决**：MVP阶段使用直线弹道，Alpha阶段增加物理弹射模拟（弹跳衰减50%/75%）。 | 已解决 | — | — |
 | OQ-4 | **NPC 使用热武器**：NPC 是否能捡起并使用热武器（射击玩家）？这会增加AI复杂性，但也是重要的威胁来源。 | 待定 | AI 程序员 | Alpha 阶段 |
 | OQ-5 | **武器升级/解锁系统**：✅ **已解决**：不做全局时间线限制，由关卡设计师在关卡设计中决定热武器获取来源。 | 已解决 | — | — |

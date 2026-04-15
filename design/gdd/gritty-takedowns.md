@@ -2,7 +2,7 @@
 
 > **Status**: Approved
 > **Author**: [user + agents]
-> **Last Updated**: 2026-04-10
+> **Last Updated**: 2026-04-13
 > **Implements Pillar**: 沉重、不洁的暴力 (Gritty, Dirty Violence)、环境即武器 (Environment as a Weapon)
 > **Revision Notes**: 2026-04-07 修复状态标记为 In Review；澄清公式5中 Alert State < ALERT 的具体含义（指 UNDETECTED/SUSPECT/SEARCH 三态）
 > **2026-04-08 协同修订（配合武器系统修复设计审查问题）**：
@@ -18,6 +18,10 @@
 > - P0: 新增 `HasMetFaction[FACTION_ID]` 数据结构到下游依赖和本系统持有数据表
 > - P0: 新增 `KillSource` 和 `NPCIdentityType` 枚举定义到事件接口
 > - P1: 更新 `KillTagEvent` 负载同时携带 `NPCIdentityType` 和 `KillSource`
+> **2026-04-13 修复 `is_mistake` 字段逻辑未定义问题**：
+> - P0: 新增 `is_mistake` 字段填充逻辑说明，明确 UNKNOWN/VICTIM/ACCOMPLICE/ENEMY 各身份标签下的误杀判定规则
+> **2026-04-13 P0 跨系统接口修复**：
+> - P0: 明确 KillTagEvent 的发送职责归本系统（作为唯一发送者）。weapon-system 的武器击杀通过 DamageRequest → Health System → 回调本系统 → 发送 KillTagEvent 的间接路径处理
 
 ## Overview
 
@@ -27,15 +31,18 @@
 
 **可用交互对照表**：
 
-| 交互类型 | NPC 状态要求 | 信息要求 | 效果 |
-|---------|-------------|---------|------|
-| 潜行击杀 | FREE（背面） | 已标记为恶徒 | 即时死亡 |
-| 环境处决 | FREE/Staggered/Downed | 已标记为恶徒 | 即时死亡 + 环境效果 |
-| 补刀 | UNCONSCIOUS/TIED | 无要求 | 即时死亡 |
-| 威胁 | FREE | 无要求 | allegiance 变化 |
-| 搜身 | UNCONSCIOUS/DEAD | 无要求 | 获取线索 |
-| 审问 | UNCONSCIOUS | 无要求 | 获取情报 |
-| 转化 | FREE | 已获取 vulnerability | allegiance 大幅提升 |
+| 交互类型 | NPC 状态要求 | 信息要求 | 效果 | 情感对应 |
+|---------|-------------|---------|------|---------|
+| 潜行击杀 | FREE（背面） | 已标记为恶徒 | 即时死亡 | 策划、掌控 |
+| 环境处决 | FREE/Staggered/Downed | 已标记为恶徒 | 即时死亡 + 环境效果 | 策划、后悔(杀错) |
+| 补刀 | UNCONSCIOUS/TIED | 无要求 | 即时死亡 | 掌控 |
+| 威胁 | FREE | 无要求 | allegiance 变化 | 恐惧、掌控 |
+| 搜身 | UNCONSCIOUS/DEAD | 无要求 | 获取线索 | 发现 |
+| 审问 | UNCONSCIOUS | 无要求 | 获取情报 | 发现 |
+| 转化 | FREE | 已获取 vulnerability | allegiance 大幅提升（30秒后自动恢复） | 掌控 |
+| 对话选项 | FREE | 无要求 | allegaince 变化、获取信息 | 犹豫 |
+
+> **注**：表格中的"情感对应"列描述玩家执行该交互时的主要情绪体验，与 Detailed Rules 章节的交互类型矩阵一致。
 
 ## Player Fantasy
 
@@ -94,7 +101,7 @@
    - 玩家必须在 NPC 交互范围内（1.5m）
    - NPC 必须处于 UNCONSCIOUS 状态
    - 执行后：NPC 转入 TIED 状态，Alert State 冻结并降一级
-   - 消耗时间：3-5 秒
+   - 消耗时间：4-6 秒
 
 4. **解开 (Release)**：
    - 玩家必须在 NPC 交互范围内
@@ -200,16 +207,21 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 
 | 交互类型 | BaseChange | 说明 |
 |---------|-----------|------|
-| 威胁 | -20 | 立即变化 |
+| 威胁 | -20 | 立即变化（直接用BaseChange值表示威胁行为的负面影响） |
 | 贿赂 | +10 | 消耗资源 |
 | 欺骗成功 | +10 | 利用已知弱点 |
 | 心理操纵成功 | +20 | 利用已知弱点 |
 | 欺骗失败 | -5 | NPC 感到被轻视 |
 
-最终变化量：`AllegianceDelta = BaseChange * InteractionTypeMultiplier * ContextMultiplier * RelationshipMultiplier`
-- InteractionTypeMultiplier：威胁=-1.0, 贿赂=1.0, 欺骗=0.8, 心理操纵=1.2
-- ContextMultiplier：UNDETECTED=1.0, SUSPECT=1.2, SEARCH=1.5
-- RelationshipMultiplier：派系敌对=0.8, 中立=1.0, 友好=1.2
+最终变化量：`AllegianceDelta = BaseChange * ContextMultiplier * RelationshipMultiplier`
+- **ContextMultiplier**：根据**目标 NPC 当前 Alert State** 取值（数据来源：NPC AI 系统通过 `QueryAlertState(npc_id)` 接口查询）
+  - UNDETECTED=1.0, SUSPECT=1.2, SEARCH=1.5
+  - **说明**：NPC 对玩家的警惕程度越高（如已处于 SEARCH 状态），玩家尝试通过对话影响 NPC 态度的难度越大，需要更大的 allegiance 变化才能奏效
+- **RelationshipMultiplier**：根据**目标 NPC 所属派系与玩家的当前关系**取值
+  - 派系敌对=0.8（NPC 所属派系与玩家敌对）
+  - 派系中立=1.0（NPC 所属派系与玩家无特殊关系）
+  - 派系友好=1.2（NPC 所属派系与玩家友好）
+  - **派系关系数据来源**：由 NPC AI 系统提供 `QueryFactionRelationship(npc_id)` 接口，返回派系关系类型
 
 ### 公式2：欺骗成功判定
 
@@ -230,7 +242,10 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 |------|------|---------|--------|
 | BaseTieUpTime | 基础捆绑时间 | Tuning Knobs | 4.0 秒 |
 | NPCSizeMultiplier | NPC 体型对捆绑时间的加成 | NPC AI - `EntityData.size_category` | 小型=0.0, 中型=0.25, 大型=0.5 |
-| PlayerSkillBonus | 玩家技能对捆绑时间的减免 | 玩家技能系统 `PlayerSkillTree.tie_up_efficiency` | 基础=0.0, 进阶=0.15, 专家=0.3 |
+| **PlayerSkillBonus** | **玩家技能对捆绑时间的减免** | **固定值 0.0（MVP阶段）** | **基础=0.0, 进阶=0.15, 专家=0.5** |
+
+> **MVP 说明**：`PlayerSkillBonus` 在 MVP 阶段**固定为 0.0**，不支持玩家技能加成。
+> **Alpha 阶段扩展**：Alpha 阶段将由玩家技能系统（Player Skill System）通过 `GetPlayerSkillTree()` 接口提供动态值。届时本公式将改为查询 `PlayerSkillTree.tie_up_efficiency` 字段。
 
 **NPCSizeMultiplier 定义表**：
 
@@ -246,13 +261,29 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 |---------|-----------------|------|
 | 基础 (Tier 1) | 0.0 | 无加成 |
 | 进阶 (Tier 2) | 0.15 | 捆绑效率提升 |
-| 专家 (Tier 3) | 0.3 | 最高效率加成 |
+| 专家 (Tier 3) | 0.5 | 最高效率加成 |
 
-安全范围验证：
-- 最短捆绑时间：`4.0 × (1.0 + 0.0 - 0.3) = 2.8s`（接近 3.0s 安全下限）
-- 最长捆绑时间：`4.0 × (1.0 + 0.5 - 0.0) = 6.0s`（等于 6.0s 安全上限）
+> **Alpha 阶段说明**：此表定义的技能等级及其对应加成值将在 Alpha 阶段由玩家技能系统实现后生效。MIP 阶段 PlayerSkillBonus 固定为 0.0。
 
-安全范围：3.0 秒 ~ 6.0 秒
+**PlayerSkillTree 数据结构定义**（由玩家技能系统管理）：
+
+```csharp
+struct PlayerSkillTree {
+    float tie_up_efficiency;    // 捆绑效率加成
+    float stealth_efficiency;      // 潜行效率加成（未来扩展）
+    float combat_efficiency;      // 战斗效率加成（未来扩展）
+}
+```
+
+> **接口说明**：`PlayerSkillTree` 由玩家技能系统（Player Skill System）管理并提供查询接口 `GetPlayerSkillTree()`。GrittyTakedowns 系统通过此接口读取 `tie_up_efficiency` 字段，用于公式3的计算。本系统不维护技能树数据，仅作为消费者。
+>
+> **MVP 实现说明**：由于玩家技能系统尚未实现（MVP 阶段），`PlayerSkillBonus` 固定为 0.0。本系统不调用 `GetPlayerSkillTree()` 接口，留待 Alpha 阶段扩展。
+
+- 最短捆绑时间：`4.0 × (1.0 + 0.0 - 0.0) = 4.0s`（基础小型NPC，无技能加成）
+- 最短极限时间：`4.0 × (1.0 + 0.0 - 0.5) = 2.0s`（小型NPC + 专家技能，达到 2.0s 安全下限）— Alpha阶段生效
+- 最长捆绑时间：`4.0 × (1.0 + 0.5 - 0.0) = 6.0s`（大型NPC，无技能加成，等于 6.0s 安全上限）
+
+安全范围：2.0 秒 ~ 6.0 秒
 
 ### 公式4：转化线人的 allegiance 提升
 
@@ -272,6 +303,11 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 ### 公式5：潜行击杀的警报判定
 
 `AlertBlocked = (IsStealthKill == true) AND (IsBehindTarget == true) AND (TargetAlertState < ALERT)`
+
+**变量定义**：
+- `IsStealthKill`：玩家在执行击杀时是否处于潜行状态（Crouch）。来源于玩家控制器系统。
+- `IsBehindTarget`：玩家是否处于目标 NPC 的背面 150° 盲区。来源于 LOS 系统或玩家控制器的朝向检测。
+- `TargetAlertState`：目标 NPC 当前的警觉状态。来源于 NPC AI 系统。
 
 **Alert State 层级说明**：根据 NPC AI 系统定义，Alert State 层级如下（从低到高）：
 - UNDETECTED（未察觉）→ SUSPECT（怀疑）→ SEARCH（搜索）→ ALERT（警戒）→ ESCAPE（逃跑）→ COMBAT（战斗）
@@ -410,10 +446,62 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 | 系统 | 依赖类型 | 接口说明 |
 |------|---------|---------|
 | **玩家控制器 (Player Controller)** | 硬依赖 | 读取玩家位置、状态（潜行/站立）、持有物、`IsLocked`；接管 `IsLocked` 进行动作锁定 |
-| **NPC AI 系统 (NPC AI System)** | 软依赖（事件订阅 + 查询） | 订阅 `AlertStateChangedEvent` 获取 NPC Alert State 变化；订阅 `NPCStateChangedEvent` 获取 NPC World State 变化；通过 `QueryAlertState(NPC_ID)` 查询当前 Alert State 用于初始判定。 |
+| **NPC AI 系统 (NPC AI System)** | 软依赖（事件订阅 + 查询） | 订阅 `AlertStateChangedEvent` 获取 NPC Alert State 变化；订阅 `NPCStateChangedEvent` 获取 NPC World State 变化；通过 `QueryAlertState(NPC_ID)` 查询当前 Alert State 用于初始判定；通过 `QueryFactionRelationship(npc_id)` 获取派系关系用于 RelationshipMultiplier 计算 |
 | **LOS & Eavesdropping 系统** | 软依赖（查询） | 查询身份标签（恶徒/帮凶/受害者/未知）；仅处决类交互需要，不阻塞其他交互 |
-| **环境交互系统 (Environment Interaction)** | 硬依赖 | 查询可用环境物件列表；调用物件效果进行环境处决 |
+
+**与 LOS 系统的 QueryNPCIdentity 接口映射**：
+
+**NPCIdentityType 枚举定义位置和所有权**：本系统引用的 `NPCIdentityType` 枚举**由 LOS & Eavesdropping 系统定义并持有**（定义在 los-eavesdropping.md 接口定义章节）。GrittyTakedowns 不重复定义此枚举，仅通过 LOS 系统的 `QueryNPCIdentity(npc_id)` 接口查询。
+
+LOS 系统提供 `QueryNPCIdentity(npc_id)` 查询接口（详见 los-eavesdropping.md 接口定义），返回 `NPCIdentity` 结构体。
+
+`NPCIdentity.identity` 字段与本系统的 `NPCIdentityType` 枚举为**同一类型**，直接对应无需转换：
+
+| LOS QueryNPCIdentity 返回值 | GrittyTakedowns 引用方式 | 用途 |
+|---------------------------|--------------------------|------|
+| `identity = UNKNOWN` | `KillTagEvent{kill_tag: UNKNOWN}` | 击杀未确认身份NPC，最严重惩罚 |
+| `identity = ENEMY` | `KillTagEvent{kill_tag: ENEMY}` | 击杀恶徒，无惩罚 |
+| `identity = ACCOMPLICE` | `KillTagEvent{kill_tag: ACCOMPLICE}` | 击杀帮凶，中等惩罚 |
+| `identity = VICTIM` | `KillTagEvent{kill_tag: VICTIM}` | 误杀无辜者，最严重惩罚 |
+
+> **调用流程**：GrittyTakedowns 在执行处决前调用 `LOS.QueryNPCIdentity(npc_id)` → 获取 `NPCIdentity` → 直接将 `identity` 作为 `KillTagEvent.kill_tag` 发送至 Sanity/Rage 系统
+> **循环依赖避免说明**：LOS 系统负责维护 NPC 身份标签（通过监听对话/观察行为），GrittyTakedowns 仅查询不写入，确保单向数据流。两者通过查询接口解耦，不产生循环依赖。
+| **环境交互系统 (Environment Interaction)** | 硬依赖 | 查询可用环境物件列表；调用物件效果进行环境处决；获取 `animation_tags` 用于环境处决动画选择 |
+
+**animation_tags 引用说明**：
+本系统通过 `WeaponQueryResponse` 接收的 `animation_tags` 字段，引用自环境交互系统的物件动画标签体系（定义于 environment-interaction.md 第5章"物件动画标签系统"）。环境处决根据物件类型使用以下标签：
+
+| 物件类别 | 动画标签 | 说明 |
+|---------|----------|------|
+| 小型武器（砖块、玻璃瓶） | `WEAPON_MELEE_SM` | 小型近战武器拾取/挥舞 |
+| 大型武器（钢管、铁棍） | `WEAPON_MELEE_LG` | 大型近战武器拾取/挥舞 |
+| 罐装爆炸物（灭火器、汽油桶） | `EXPLOSIVE_CAN` | 罐装爆炸物交互（拾取/放置/引爆/踢滚） |
+| 投掷类爆炸物 | `EXPLOSIVE_TOSS` | 投掷类爆炸物 |
+| 可破坏物件（玻璃） | `DESTRUCT_GLASS` | 玻璃制品破坏 |
+| 可破坏物件（木） | `DESTRUCT_WOOD` | 木制品破坏 |
+| 可破坏物件（金属） | `DESTRUCT_METAL` | 金属制品破坏 |
+| 小型投掷物（硬币、瓶盖） | `THROW_SM` | 小型投掷物 |
+| 大型投掷物（重物） | `THROW_LG` | 大型投掷物 |
+| 可推动障碍物 | `OBSTACLE_PUSH` | 可推动障碍物 |
+| 机关类（开关） | `MECH_SWITCH` | 开关类机关 |
+| 机关类（杠杆） | `MECH_LEVER` | 杠杆类机关 |
+| 情报类物件 | `INTEL_PICKUP` | 情报类物件拾取 |
+
+> **动画标签复用原则**：拥有相同标签的物件共享同一套动画片段，通过物件的 `ScaleMultiplier` 进行缩放适配。
+
+**交互范围参数对应关系**：
+本系统使用的 `InteractionRange_*` 参数与环境交互系统的 `InteractionRadius_*` 参数存在以下对应关系，实际生效值为两者中的**较大值**（确保玩家能进入交互范围）：
+
+| 本系统参数 | 默认值 | 对应 environment-interaction.md 参数 | 默认值 | 生效规则 |
+|-----------|--------|--------------------------------------|--------|---------|
+| `InteractionRange_Melee` | 1.5m | `InteractionRadius_Weapon` | 1.0m | 取较大值 = 1.5m |
+| `InteractionRange_Search` | 1.0m | `InteractionRadius_Intel` | 0.75m | 取较大值 = 1.0m |
+| `InteractionRange_TieUp` | 1.5m | `InteractionRadius_Obstacle` | 1.5m | 两者相等 = 1.5m |
+
+> **设计说明**：由于本系统的交互范围主要用于威胁/捆绑/搜身等 NPC 交互场景，而环境交互系统的交互范围用于物件交互，两套参数可能需要同时满足。取较大值确保玩家既能进行 NPC 交互又能拾取物件。
+
 | **Health & Lethality 系统** | 软依赖（请求/回调） | 发送 `DamageRequest`；通过 `DamageResult` 事件接收结果 |
+| **玩家技能系统 (Player Skill System)** | **MVP 暂缓 / Alpha 阶段实现** | 通过 `GetPlayerSkillTree()` 接口查询玩家技能数据，用于公式3捆绑时间计算中 `PlayerSkillBonus` 字段的读取；接口定义位置：`design/gdd/player-skill-system.md`（**MVP 阶段不实现**，留待 Alpha 阶段）<br><br>**MVP 存根实现**：由于玩家技能系统尚未实现，公式3中 `PlayerSkillBonus` **永远返回 0.0**。本系统不调用 `GetPlayerSkillTree()` 接口，留待 Alpha 阶段扩展。 |
 
 ### 下游依赖（谁依赖本系统）
 
@@ -421,7 +509,7 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 |------|---------|---------|
 | **NPC AI 系统 (NPC AI System)** | 软依赖（事件订阅） | 订阅本系统的 `InteractionEvent`（威胁/击杀/捆绑等），触发 NPC 状态变化 |
 | **Health 系统** | 硬依赖 | 接收 `DamageRequest`（含 penetration）执行伤害计算；穿透值来自武器数据 |
-| **Clue & Journal 系统** | 软依赖 | 接收 `KnowledgeGainedEvent` 搜身/审问获取的线索 |
+| **Clue & Journal 系统** | 软依赖 | 调用 `AddKnowledge(npc_id, knowledge_list)` 接口提交搜身/审问获取的线索 |
 | **Sanity/Rage 系统** | 软依赖 | 接收 `KillTagEvent` 击杀事件及 NPC 身份（异步后置） |
 | **沉浸式音频系统** | 软依赖 | 订阅 `InteractionEvent` 用于音效触发 |
 | **叙事系统 (Narrative System)** | 软依赖 | 接收 `KillTagEvent` 用于道德计算；接收 `TieUpEvent` 用于仁慈行为记录 |
@@ -441,26 +529,62 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 |--------|------|------|------|
 | `InteractionEvent` | → 事件总线 → NPC AI/音频 | `{type, target_id, source, result}` | 所有交互的通用事件 |
 | `DamageRequest` | → Health 系统 | `{target_id, damage_type, penetration, source}` | 处决类交互的伤害请求；`penetration` 来自 WeaponData；`source` 来自 WeaponQueryResponse 的 `weapon_id` |
-| `KillTagEvent` | → Sanity 系统 | `{kill_tag: NPCIdentityType, kill_source: KillSource}` | 击杀事件（异步后置），携带被击杀NPC的身份标签和死亡方式。详见下方枚举定义 |
-| `KnowledgeGainedEvent` | → Clue 系统 | `{npc_id, knowledge_list}` | 搜身/审问获取的线索 |
-| `WeaponQueryRequest` | → 武器系统 | `{weapon_id}` | 环境处决前查询武器数据 |
+| `KillTagEvent` | → Sanity 系统 | `{kill_tag: NPCIdentityType, kill_source: KillSource, is_mistake: bool}` | 击杀事件（异步后置），携带被击杀NPC的身份标签、死亡方式和是否为误杀标记。详见下方枚举定义 |
+| `TieUpEvent` | → 叙事系统 | `{npc_id, player_id, tie_up_duration}` | 捆绑事件，记录玩家对NPC执行捆绑行为的时间，用于仁慈行为统计 |
+| `AddKnowledge(npc_id, knowledge_list)` | → Clue&Journal 系统 | `{npc_id, knowledge_list}` | 搜身/审问获取的线索，通过接口调用提交 |
+| `WeaponQueryRequest` | → 武器系统 | `{weapon_id}` | 环境处决前查询武器数据（手持武器） |
 | `WeaponQueryResponse` | ← 武器系统 | `{weapon_id, WeaponData}` | 返回武器数据（含 damage_type、penetration、animation_tags）；`weapon_id` 用作 DamageRequest 的 `source` |
+| `WeaponQueryRequest` | → 环境交互系统 | `{weapon_id}` | 环境处决前查询环境物件数据（砖块、椅子等） |
+| `WeaponQueryResponse` | ← 环境交互系统 | `{weapon_id, WeaponData}` | 返回环境物件的 WeaponData（含 damage_type、penetration、animation_tags）；`weapon_id` 用作 DamageRequest 的 `source` |
 
-**枚举定义**：
+**枚举定义**（明确所有权归属）：
 
-| 枚举 | 值 | 说明 |
-|------|-----|------|
-| **NPCIdentityType** | `ENEMY` | 已标记为恶徒 |
-| | `ACCOMPLICE` | 已标记为帮凶 |
-| | `VICTIM` | 已标记为无辜者 |
-| | `UNKNOWN` | 未标记，击杀前未通过LOS监听确认身份 |
-| **KillSource** | `DIRECT_KILL` | 玩家直接攻击击杀 |
-| | `EXECUTION_KILL` | 环境处决 |
-| | `INDIRECT_KILL` | 玩家攻击导致倒地后环境致死 |
-| | `ACCIDENTAL_KILL` | 第三方NPC误杀 |
-| | `SELF_DEFENSE` | NPC自卫导致玩家死亡/NPC撤离 |
+| 枚举 | 所有者 | 值 | 说明 |
+|------|-------|-----|------|
+| **NPCIdentityType** | LOS & Eavesdropping 系统 | `ENEMY` | 已标记为恶徒（LOS 系统通过监听/观察标记） |
+| | | `ACCOMPLICE` | 已标记为帮凶（LOS 系统通过监听/观察标记） |
+| | | `VICTIM` | 已标记为无辜者（LOS 系统通过监听/观察标记） |
+| | | `UNKNOWN` | 未标记，击杀前未通过LOS监听确认身份 |
+| **KillSource** | Gritty Takedowns 系统 | `DIRECT_KILL` | 玩家直接攻击击杀 |
+| | | `EXECUTION_KILL` | 环境处决 |
+| | | `INDIRECT_KILL` | 玩家攻击导致倒地后环境致死 |
+| | | `ACCIDENTAL_KILL` | 第三方NPC误杀 |
+| | | `SELF_DEFENSE` | NPC自卫导致玩家死亡/NPC撤离 |
 
-> **KillSource 用途说明**：KillSource 用于追踪死亡责任，判断"收益丢失"等边缘情况。与 NPCIdentityType（用于理智惩罚计算）共同构成完整的击杀追踪体系。
+> **所有权说明**：
+> - `NPCIdentityType` 枚举由 **LOS & Eavesdropping 系统**定义并持有，本系统通过 `LOS.QueryNPCIdentity(npc_id)` 接口查询
+> - `KillSource` 枚举由 **Gritty Takedowns 系统**定义并持有，用于追踪玩家击杀责任的细粒度分类
+> - KillSource 用于追踪死亡责任，判断"收益丢失"等边缘情况。与 NPCIdentityType（用于理智惩罚计算）共同构成完整的击杀追踪体系
+
+**is_mistake 字段填充逻辑**：
+
+`is_mistake` 用于标记此次击杀是否为"误杀"（玩家无意造成的非目标击杀）。填充规则完全基于 NPC 的客观身份标签（`kill_tag`），**与玩家主观是否"知道"无关**：
+
+| kill_tag 值 | is_mistake 值 | 说明 |
+|------------|---------------|------|
+| `VICTIM`（无辜者） | `true` | 击杀已标记为无辜者的 NPC 必为误杀 |
+| `ACCOMPLICE`（帮凶） | `true` | 帮凶本质上是受害者，击杀他们客观上是误杀 |
+| `ENEMY`（恶徒） | `false` | 击杀确认的恶徒不是误杀 |
+| `UNKNOWN`（未确认） | `true` | 未通过 LOS 监听确认身份就击杀，视为误杀 |
+
+**判定优先级（伪代码）**：
+```
+if kill_tag == VICTIM:
+    is_mistake = true
+elif kill_tag == ACCOMPLICE:
+    is_mistake = true    // 帮凶客观上是无辜者，击杀即误杀
+elif kill_tag == ENEMY:
+    is_mistake = false
+elif kill_tag == UNKNOWN:
+    is_mistake = true    // 未确认身份就击杀，无法保证不是误杀
+```
+
+> **设计说明**：`is_mistake` 的判定与玩家是否"知道"NPC 身份无关。即使玩家通过 LOS 监听确认了某 NPC 是帮凶（ACCOMPLICE），击杀该 NPC 在道德层面仍然是"误杀"——因为帮凶本质上是受害者。这一设计确保了道德惩罚的一致性：玩家选择击杀帮凶时，理智系统会收到 `is_mistake=true` 信号并触发相应惩罚。
+
+**实现说明**：
+- `is_mistake` 在玩家执行击杀时由 Gritty Takedowns 系统根据 NPC 当前的身份标签（由 LOS 系统标记）自动判定
+- 判定结果随 KillTagEvent 发送给 Sanity/Rage 系统用于理智惩罚计算（误杀触发更重的理智惩罚）
+- 玩家无法手动设置 `is_mistake` 值
 
 #### 本系统订阅的事件
 
@@ -498,7 +622,7 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 ├─────────────────────────────────────────────────────────────────────┤
 │  Inputs（订阅事件）:                                                    │
 │    - AlertStateChangedEvent (NPC AI)  → 监听 NPC 警戒状态变化             │
-│    - NPCStateChangedEvent (NPC AI)   → 监听 NPC 世界状态变化             │
+│    - NPCStateChangedEvent (Health)    → 监听 NPC 世界状态变化             │
 │    - PlayerDamagedEvent (Health)     → 监听玩家被攻击                   │
 │                                                                     │
 │  Outputs（发送事件）:                                                  │
@@ -531,11 +655,16 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 | `InteractionRange_TieUp` | float | 1.5m | 1.0m ~ 2.5m | 捆绑/解开的交互范围 |
 | `StealthBackAngle` | float | 150° | 120° ~ 180° | 潜行击杀的背面判定角度（越小越严格） |
 
+> **与 environment-interaction.md 交互半径的对应关系**：
+> - 本系统的 `InteractionRange_*` 参数与 `Environment Interaction` 系统的 `InteractionRadius_*` 参数（定义于 environment-interaction.md Tuning Knobs 章节）共同决定玩家的实际交互范围
+> - 实际生效值取两套参数中的**较大值**，确保玩家同时满足 NPC 交互和物件交互的距离要求
+> - 具体对应关系详见 Dependencies 章节的"交互范围参数对应关系"表
+
 ### 时序参数
 
 | 参数 | 类型 | 默认值 | 安全范围 | 说明 |
 |------|------|--------|---------|------|
-| `BaseTieUpTime` | float | 4.0s | 3.0s ~ 6.0s | 基础捆绑时间 |
+| `BaseTieUpTime` | float | 4.0s | 2.0s ~ 6.0s | 基础捆绑时间；最短极限 2.0s（小型NPC+专家技能），最长 6.0s（大型NPC+无技能） |
 | `TargetSwitchCooldown` | float | 0.5s | 0.3s ~ 1.0s | 切换目标的冷却时间 |
 | `StaggerRecoveryThreshold` | float | 0.5 | 0.3 ~ 0.7 | 处决中断时 NPC 存活判定（动画进度比例）。低于0.3处决窗口过短，高于0.7几乎总会失败 |
 
@@ -544,13 +673,12 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 | 参数 | 类型 | 默认值 | 安全范围 | 说明 |
 |------|------|--------|---------|------|
 | `DeceptionBaseChance` | float | 0.6 | 0.4 ~ 0.8 | 欺骗基础成功率 |
-| `DeceptionIntelligenceBonus` | float | 0.2 | 0.0 ~ 0.3 | 玩家属性加成上限 |
 
 ### 转化参数
 
 | 参数 | 类型 | 默认值 | 安全范围 | 说明 |
 |------|------|--------|---------|------|
-| `ConversionAllegianceBoost` | int | +50 | +30 ~ +80 | 转化线人的基础 allegiance 提升 |
+| `ConversionAllegianceBoost` | int | +30 | +30 ~ +80 | 转化线人的基础 allegiance 提升（与 NPC AI 系统公式1的转化 NPC 奖励值 +30 保持一致） |
 | `VulnerabilityDepthMultiplier_Max` | float | 1.5 | 1.0 ~ 2.0 | 弱点深度最大乘数 |
 | `ConversionEffectDuration` | float | 30.0s | 20.0s ~ 60.0s | 转化效果持续时间，超时后 allegiance 自动恢复 |
 
@@ -638,7 +766,7 @@ NPC AI 系统已定义基础变化表，本系统直接引用：
 | AC-1 | 潜行击杀在满足全部条件时可正常执行并击杀目标 | 在背面 + 潜行状态 + 已标记恶徒 + Alert State < ALERT（即 UNDETECTED/SUSPECT/SEARCH）时执行，验证击杀 |
 | AC-2 | 潜行击杀在任一条件不满足时触发警报或拒绝执行 | 分别破坏每个条件，验证系统响应 |
 | AC-3 | 环境处决在持有可用物件时可正常执行 | 拾取环境物件，对目标执行处决，验证物件效果触发 |
-| AC-4 | 捆绑交互在 3-6 秒内将 UNCONSCIOUS NPC 转为 TIED 状态 | 执行捆绑，计时，验证 NPC 状态和 Alert 降级 |
+| AC-4 | 捆绑交互在 4-6 秒内将 UNCONSCIOUS NPC 转为 TIED 状态（MVP阶段，PlayerSkillBonus=0.0） | 执行捆绑，计时，验证 NPC 状态和 Alert 降级 |
 | AC-5 | 审问在 NPC UNCONSCIOUS 时可获取 knowledge | 执行审问，验证获取的 knowledge 列表 |
 | AC-6 | 审问在 NPC DEAD 时不可用（只能搜身） | 对 DEAD NPC 尝试审问，验证无选项显示 |
 | AC-7 | 欺骗选项仅在玩家已获取 vulnerability 时显示 | 未获取时验证无欺骗选项；获取后验证显示 |

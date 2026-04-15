@@ -2,7 +2,7 @@
 
 > **Status**: Approved
 > **Author**: Technical Director + Systems Designer
-> **Last Updated**: 2026-04-09
+> **Last Updated**: 2026-04-13
 > **Priority**: Alpha
 > **Layer**: Presentation
 > **Implements Pillar**: 罪恶的深度 (Depth of Sin)
@@ -21,6 +21,12 @@
 >
 > **2026-04-09 设计审查修复**：
 > - ✅ DPP 系统 Tuning Knobs 章节补充完成：涵盖状态阈值、过渡动画、滤镜强度、性能降级、可玩性保护、调试参数共6大类、40+参数
+>
+> **2026-04-13 跨系统 Bug 修复（ShakeIntensity 归一化）**：
+> - ✅ Dependencies 接口映射表 ShakeIntensity 范围由 `0.0~10.0` 修正为 `0.0~1.0（内部值除以8.0归一化）`
+> - ✅ Tuning Knobs FrenziedShake / SoulSplitShake 补充内部语义值说明及归一化公式
+> - ✅ 接口兼容性结论更新，明确 ShakeRequest 调用方须先归一化
+> - ✅ 附录B 调色板表补充 ShakeIntensity 内部值注释，新增 ShakeRequest 归一化代码示例
 
 ## Overview
 
@@ -70,11 +76,13 @@
 > **状态优先级（来自 sanity-rage-meter.md 公式4）**：
 > 1. `Rage > 90` → FRENZIED（愤怒溢出，忽略 Sanity 条件）
 > 2. `Sanity < 20` → BROKEN（理智崩溃，Rage 不影响）
-> 3. `Rage > 70 OR Sanity < 40` → AGITATED
-> 4. `Rage > 30 OR Sanity < 70` → UNEASY
+> 3. `Sanity 20-39 AND Rage 51-70` → AGITATED（AND逻辑，与game-concept.md一致）
+> 4. `Rage 31-50 AND Sanity 40-69` → UNEASY（AND逻辑，与game-concept.md一致）
 > 5. 默认 → CALM
 >
-> **SOUL_SPLIT 判定**：当 `Sanity < 20 AND Rage >= 71` 时，Sanity/Rage 系统会发送 `PsychologicalState.SOUL_SPLIT`。DPP 接收到此状态后，应用 BROKEN + FRENZIED 效果叠加（详见规则3）。
+> **阈值判定说明**：规则描述中的状态条件（如 `Rage > 70`）为便于理解使用了概数。实际阈值判定**使用Tuning Knobs中的迟滞参数**（`HysteresisEnterAgitated = 71`, `HysteresisEnterRage = 90`, `HysteresisEnterBroken = 20` 等），以确保状态切换的平滑性并防止乒乓效应。
+>
+> **SOUL_SPLIT 判定**：当 `Sanity <= 30 AND Rage >= 71` 时，Sanity/Rage 系统会发送 `PsychologicalState.SOUL_SPLIT`。DPP 接收到此状态后，应用 BROKEN + FRENZIED 效果叠加（详见规则3）。
 
 **规则3：心理状态到滤镜的映射**
 
@@ -129,8 +137,16 @@ DPP 系统订阅 `LightingChangedEvent`，根据当前光照等级调整视觉�
 **公式1：滤镜强度插值**
 
 ```
-FilterIntensity = Lerp(TargetIntensity, CurrentIntensity, ExpDecay(TimeSinceChange, HalfLife))
+Alpha = 1.0 - ExpDecay(TimeSinceChange, HalfLife)
+FilterIntensity = Lerp(CurrentIntensity, TargetIntensity, Alpha)
 ```
+
+**语义说明**：
+- `Alpha`：过渡完成度系数，从0.0渐变到1.0，表示"过渡完成的比例"
+- 当 `TimeSinceChange = 0` 时，`Alpha = 0.0`，`FilterIntensity = Lerp(CurrentIntensity, TargetIntensity, 0.0) = CurrentIntensity`（无过渡，保持当前值）
+- 当 `TimeSinceChange → ∞` 时，`Alpha → 1.0`，`FilterIntensity = Lerp(CurrentIntensity, TargetIntensity, 1.0) = TargetIntensity`（完全过渡到目标值）
+- **正向插值语义**：`Alpha = 0.0` 表示无过渡，`Alpha = 1.0` 表示完全过渡
+- 过渡曲线：初期变化快（视觉效果明显），后期变化慢（收敛稳定）
 
 | 状态 | TargetIntensity | 说明 |
 |------|----------------|------|
@@ -150,6 +166,16 @@ FilterIntensity = Lerp(TargetIntensity, CurrentIntensity, ExpDecay(TimeSinceChan
 | AGITATED | -10° |
 | BROKEN | -20° (灰冷) |
 | FRENZIED | +15° (暖红) |
+| SOUL_SPLIT | +15° |
+
+> **SOUL_SPLIT 色调偏移特别说明**：
+> - SOUL_SPLIT 状态的 TargetHueShift 为 +15°，与 FRENZIED 一致
+> - 由于 SOUL_SPLIT 由 BROKEN（-20°）或 FRENZIED（+15°）状态进入，切换时色调变化幅度可能达到 35°（-20° → +15°）
+> - 为避免超出 Screen Effects 系统的 HueShift ±30° 限制，SOUL_SPLIT 状态切换采用**分步过渡策略**：
+>   - 第一步：先将当前色调向 0° 方向过渡（持续 0.3s）
+>   - 第二步：再从 0° 向目标 +15° 过渡（持续 0.3s）
+> - 这种过渡策略确保任意时刻的 HueShift 变化都在 ±30° 范围内
+> - 如果进入 SOUL_SPLIT 前状态已是 FRENZIED（+15°），则直接过渡到目标值（无分步过渡）
 
 ---
 
@@ -221,6 +247,13 @@ FilterIntensity = Lerp(TargetIntensity, CurrentIntensity, ExpDecay(TimeSinceChan
 | Screen Effects | 硬依赖 | 调用暗角/噪点/色调等基础特效 |
 | **光照系统 (Lighting System)** | 软依赖（订阅） | 订阅 `LightingChangedEvent`，根据当前光照等级调整视觉滤镜参数（色调、暗角强度） |
 
+**LightingChangedEvent 事件定义**：
+- **来源**：光照系统 (Lighting System)
+- **负载**：`{ lighting_intensity: float, lighting_color: Color }`
+  - `lighting_intensity`：光照强度等级（0.0 ~ 1.0），映射到 Bright/Normal/Dim/Dark
+  - `lighting_color`：当前光照颜色，用于色调调整
+- **订阅用途**：DPP 系统根据光照强度调整视觉滤镜参数（饱和度、暗角强度）
+
 ### Screen Effects 接口映射
 
 DPP 系统通过以下接口调用 Screen Effects 系统：
@@ -230,11 +263,11 @@ DPP 系统通过以下接口调用 Screen Effects 系统：
 | 饱和度调整 | `SaturationMultiplier` | 0.0 ~ 1.0 | ✅ 兼容 |
 | 暗角效果 | `VignetteIntensity` | 0.0 ~ 1.0 | ✅ 兼容 |
 | 噪点效果 | `NoiseIntensity` | 0.0 ~ 1.0 | ✅ 兼容 |
-| 准星抖动 | `ShakeIntensity` | 0.0 ~ 10.0 | ✅ 兼容 |
+| 准星抖动 | `ShakeIntensity` | 0.0 ~ 1.0（DPP 内部值 0.0~8.0，发送前除以 8.0 归一化） | ⚠️ 需归一化处理 |
 | 色调偏移 | `HueShift` | -30° ~ +30° | ✅ 兼容 |
 | 色调强度 | `HueIntensity` | 0.0 ~ 1.0 | ✅ 兼容 |
 
-**接口兼容性结论**：Screen Effects 提供的所有接口参数完全满足 DPP 需求，无需扩展或修改。
+**接口兼容性结论**：Screen Effects 提供的所有接口参数满足 DPP 需求。**注意**：DPP 的 `ShakeIntensity` 内部调参值范围为 0.0~8.0，在调用 `ShakeRequest` 时必须先除以 8.0 归一化到 0.0~1.0，再传入 Screen Effects。其余接口参数均为 0.0~1.0，可直接传入。
 
 ### 下游依赖
 
@@ -254,8 +287,11 @@ DPP 系统通过以下接口调用 Screen Effects 系统：
 | `HysteresisExitRage` | int | 75 | 70~80 | 退出 FRENZIED 状态的 Rage 阈值（迟滞） |
 | `HysteresisEnterBroken` | int | 20 | 15~25 | 进入 BROKEN 状态的 Sanity 阈值 |
 | `HysteresisExitBroken` | int | 35 | 30~40 | 退出 BROKEN 状态的 Sanity 阈值（迟滞） |
-| `HysteresisEnterAgitated` | int | 71 | 66~76 | 进入 AGITATED 状态的 Rage 上限/ Sanity 下限阈值 |
+| `HysteresisEnterAgitated` | int | 71 | 66~76 | 进入 AGITATED 状态的条件阈值：Rage > HysteresisEnterAgitated **且** Sanity < HysteresisEnterBroken（**AND 关系**，两个条件必须同时满足）。注：Sanity < HysteresisEnterBroken 等价于 Sanity <= 20，与 game-concept.md 的 Sanity 20-39 范围描述一致（Sanity 20 对应 HysteresisEnterBroken=20 的下界） |
 | `HysteresisExitAgitated` | int | 55 | 50~65 | 退出 AGITATED 状态的阈值（迟滞） |
+| `HysteresisEnterSoulSplit` | int | 71 | 66~76 | 进入 SOUL_SPLIT 状态的 Rage 阈值（需同时满足 Sanity <= 30） |
+| `HysteresisExitSoulSplit_Rage` | int | 65 | 60~70 | 退出 SOUL_SPLIT 的愤怒阈值（需低于进入阈值 71） |
+| `HysteresisExitSoulSplit_Sanity` | int | 25 | 20~30 | 退出 SOUL_SPLIT 的理智阈值（需高于进入阈值 20） |
 
 ### 过渡动画参数
 
@@ -279,8 +315,8 @@ DPP 系统通过以下接口调用 Screen Effects 系统：
 | `BrokenSaturation` | float | 0.3 | 0.2~0.4 | BROKEN 状态饱和度倍率（下限保护） |
 | `FrenziedHueShift` | float | 15° | 10°~20° | FRENZIED 状态色调偏移（暖红） |
 | `BrokenHueShift` | float | -20° | -25°~-15° | BROKEN 状态色调偏移（冷灰） |
-| `FrenziedShake` | float | 8.0 | 6.0~10.0 | FRENZIED 状态准星抖动强度 |
-| `SoulSplitShake` | float | 4.0 | 3.0~5.0 | SOUL_SPLIT 状态准星抖动强度（减半保护） |
+| `FrenziedShake` | float | 8.0 | 6.0~10.0 | FRENZIED 状态准星抖动强度（内部语义值，0.0~8.0 范围；调用 ScreenEffects.ShakeRequest 前需除以 8.0 归一化，即 ShakeRequest.intensity = FrenziedShake / 8.0 = 1.0） |
+| `SoulSplitShake` | float | 4.0 | 3.0~5.0 | SOUL_SPLIT 状态准星抖动强度（减半保护；内部语义值，调用 ScreenEffects.ShakeRequest 前需除以 8.0 归一化，即 ShakeRequest.intensity = SoulSplitShake / 8.0 = 0.5） |
 | `SoulSplitNoise` | float | 0.3 | 0.2~0.4 | SOUL_SPLIT 状态噪点强度（减半保护） |
 
 ### 性能降级参数
@@ -322,8 +358,8 @@ DPP 系统通过以下接口调用 Screen Effects 系统：
 | AC-1 | 系统能接收 Sanity/Rage 系统的 PsychologicalState 并正确映射到对应滤镜 | 模拟各状态输入，验证滤镜效果 |
 | AC-2 | 状态切换时滤镜平滑过渡，无跳变 | 在临界值附近触发状态切换，观察过渡 |
 | AC-3 | FRENZIED 状态正确显示血红色色调偏移（+15°） | 模拟 Rage > 90，测量色调偏移值 |
-| AC-4 | BROKEN 状态正确显示灰冷色调偏移（-20°） | 模拟 Sanity < 20，测量色调偏移值 |
-| AC-5 | SOUL_SPLIT 状态正确叠加 BROKEN + FRENZIED 效果 | 模拟 Sanity < 20 AND Rage >= 71，验证叠加效果 |
+| AC-4 | BROKEN 状态正确显示灰冷色调偏移（-20°） | 模拟 Sanity <= 30，测量色调偏移值 |
+| AC-5 | SOUL_SPLIT 状态正确叠加 BROKEN + FRENZIED 效果 | 模拟 Sanity <= 30 AND Rage >= 71，验证叠加效果 |
 | AC-6 | 迟滞阈值正确防止乒乓效应 | 在临界值附近反复横跳，验证状态不会频繁切换 |
 
 ### 性能验收
@@ -360,7 +396,6 @@ DPP 系统通过以下接口调用 Screen Effects 系统：
 | OQ-2（已解决） | **性能预算** | 性能分析师 | ✅ **已解决**：详见下方「性能预算」章节。 |
 | OQ-3（已解决） | **与场景美术的协调** | 关卡美术 | ✅ **已解决**：详见下方「场景美术协调方案」章节。 |
 | OQ-4（已解决） | **调色板定义** | 美术设计师 | ✅ **已解决**：详见下方「调色板参数定义」章节。 |
-| OQ-5（已解决） | ~~**光照变化事件订阅**~~ | ~~系统设计师~~ | ~~2026-04-30~~ | ✅ **已于 2026-04-10 解决**：在 Dependencies 中添加了光照系统作为软依赖（订阅）。在 Core Rules 规则1中添加了 LightingFilter 滤镜层，在规则5中定义了光照等级到滤镜参数的映射。详见「规则1：滤镜层叠架构」和「规则5：光照变化对滤镜的影响」章节。 |
 
 ### 性能预算（OQ-2 已解决）
 
@@ -504,6 +539,7 @@ DPP 系统通过以下接口调用 Screen Effects 系统：
 **说明**：
 - SOUL_SPLIT 状态下噪声强度上限为 0.3（而非 0.5），确保可玩性
 - SOUL_SPLIT 状态下准星抖动减半（4.0 而非 8.0），避免过度混乱
+- **ShakeIntensity 列为 DPP 内部调参值（范围 0.0~8.0）**。调用 ScreenEffects 的 `ShakeRequest` 接口时，必须先归一化：`ShakeRequest.intensity = ShakeIntensity / 8.0`。例如 FRENZIED 的内部值 8.0 归一化后为 1.0，SOUL_SPLIT 的内部值 4.0 归一化后为 0.5。
 
 ### 色调偏移实现说明
 
@@ -525,6 +561,19 @@ ScreenEffects.ReceiveRequest(
     transition_duration: 0.5~1.5s,
     priority: 10
 )
+```
+
+**ShakeIntensity 参数映射到 Screen Effects（归一化处理）**：
+```
+// DPP 内部值范围 0.0~8.0，必须归一化后再发送
+ScreenEffects.ReceiveRequest(
+    effect_type: SHAKE,
+    intensity: ShakeIntensity / 8.0,  // 归一化到 0.0~1.0
+    transition_duration: 0.05s,
+    priority: 10
+)
+// 示例：FRENZIED 内部值 8.0 → ShakeRequest.intensity = 1.0
+// 示例：SOUL_SPLIT 内部值 4.0 → ShakeRequest.intensity = 0.5
 ```
 
 ### 预设组合（用于 URP Volume Profile）

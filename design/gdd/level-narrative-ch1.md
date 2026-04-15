@@ -1,8 +1,8 @@
 # Chapter 1 关卡叙事整合方案
 
-> **Status**: Draft (Major Revision Complete)
+> **Status**: Conditionally Approved - Pending Art/Audio Direction
 > **Author**: Level Designer
-> **Last Updated**: 2026-04-10
+> **Last Updated**: 2026-04-13
 > **Priority**: Vertical Slice
 > **Layer**: Level Design - Narrative Integration
 > **Chapter**: 1 / 6
@@ -24,6 +24,10 @@ Chapter 1 是《断绝：罪恶之源》的开局章节，核心目标是建立*
 - Sanity/Rage System：通过击杀和道德选择触发理智/愤怒变化
 - Character Background System：影响NPC初始态度和对话变体
 - Narrative System：管理背景模块（TRAUMA_01、REL_01）的触发逻辑
+
+## Player Fantasy
+
+本章的玩家体验核心是**「复仇者的第一次判决」**——从创伤的受害者转变为冷酷的追猎者，在道德模糊的世界中亲手做出第一个艰难的选择。玩家在监听中拼凑真相，在抉择中承担代价，每一次击杀都是对自己灵魂的拷问。
 
 ---
 
@@ -77,9 +81,9 @@ Chapter 1 是《断绝：罪恶之源》的开局章节，核心目标是建立*
 | 节奏点 | 时间分配 | 内容概要 |
 |--------|---------|---------|
 | **起 (0-15%)** | 约10分钟 | 开场动画 + 创伤记忆激活 + LOS教程 |
-| **承 (15-50%)** | 约20分钟 | 腐根区探索 + 监听系统实践 + 第一个目标定位 |
-| **转 (50-85%)** | 约25分钟 | 追踪第一个目标 + 道德抉择点 + 第一次处决 |
-| **合 (85-100%)** | 约10分钟 | 章节结尾 + 发现犯罪网络线索 + 为Chapter 2铺垫 |
+| **承 (15-50%)** | 约16分钟 | 腐根区探索 + 监听系统实践 + 第一个目标定位 |
+| **转 (50-85%)** | 约20分钟 | 追踪第一个目标 + 道德抉择点 + 第一次处决 |
+| **合 (85-100%)** | 约5分钟 | 章节结尾 + 发现犯罪网络线索 + 为Chapter 2铺垫 |
 
 ### 1.3 本章需要建立的玩家预期
 
@@ -92,7 +96,9 @@ Chapter 1 是《断绝：罪恶之源》的开局章节，核心目标是建立*
 
 ---
 
-## 2. 关卡结构设计
+## Detailed Rules
+
+### 2. 关卡结构设计
 
 ### 2.1 区域布局（三个地区）
 
@@ -209,7 +215,7 @@ Chapter 1 是《断绝：罪恶之源》的开局章节，核心目标是建立*
 
 ---
 
-## 3. 环境叙事元素
+### 3. 环境叙事元素
 
 ### 3.1 每个地区的可发现碎片内容
 
@@ -288,7 +294,7 @@ Chapter 1 是《断绝：罪恶之源》的开局章节，核心目标是建立*
 
 ---
 
-## 4. 叙事触发点设计
+### 4. 叙事触发点设计
 
 ### 4.1 LOS监听点的位置和内容
 
@@ -346,14 +352,18 @@ Chapter 1 是《断绝：罪恶之源》的开局章节，核心目标是建立*
 
 #### 监听点详细规格
 
-| 监听点ID | 位置 | 关键词 | 身份确认 | 必要性 |
-|---------|------|--------|---------|--------|
-| **A** | 黑锚酒吧门口 | "今晚有货"、"小心点" | Enemy (确认) | 教程必需 |
-| **B** | 老郑情报位置 | "刀疤"、"新港"、"今晚动手" | Enemy (确认) | 主线必需 |
-| **C** | 码头广场角落 | "又有人失踪了"、"没人管" | Victim (确认) | 可选 |
-| **D** | 刀疤与下属 | "那批货"、"处理掉" | Enemy (确认) | 主线必需 |
-| **E** | 仓库门口 | "不等了"、"今晚送走" | Enemy (确认) | 主线必需 |
-| **F** | 刀疤办公室 | "议长"、"清单" | Enemy (确认) | 可选 |
+| 监听点ID | 位置 | listening_range | 关键词 | 身份确认 | 必要性 |
+|---------|------|-----------------|--------|---------|--------|
+| **A** | 黑锚酒吧门口 | 8m（非默认） | "今晚有货"、"小心点" | Enemy (确认) | 教程必需 |
+| **B** | 老郑情报位置 | 6m（非默认） | "刀疤"、"新港"、"今晚动手" | Enemy (确认) | 主线必需 |
+| **C** | 码头广场角落 | 5m（非默认） | "又有人失踪了"、"没人管" | Victim (确认) | 可选 |
+| **D** | 刀疤与下属 | 10m（默认） | "那批货"、"处理掉" | Enemy (确认) | 主线必需 |
+| **E** | 仓库门口 | 12m（非默认） | "不等了"、"今晚送走" | Enemy (确认) | 主线必需 |
+| **F** | 刀疤办公室 | 4m（非默认） | "议长"、"清单" | Enemy (确认) | 可选 |
+
+> **listening_range 说明**：默认值为 `MaxListeningRange = 10m`（见 LOS System Tuning Knobs）。各监听点根据空间尺寸和设计意图单独配置：A/B/C/F 均小于默认值，对应较封闭的空间或刻意压缩的监听难度；E 大于默认值，因仓库入口空间开阔且为主线必须节点，需确保玩家在安全距离内即可触发。
+>
+> **监听点 D 设计说明**：监听点 D 的 listening_range = 10m 等于 `MaxListeningRange` 默认值。此为**有意设计**：码头广场为开阔区域，刀疤与下属的对话在此距离内可被监听，确保玩家在合理位置（不需贴脸）即可完成监听。10m 与视觉感知距离（MaxVisionRange = 15m）不同——前者用于监听（玩家捕获声音），后者用于 NPC 发现玩家的运动。
 
 ### 4.2 关键线索的放置位置
 
@@ -392,7 +402,7 @@ Chapter 1 是《断绝：罪恶之源》的开局章节，核心目标是建立*
 │  ┌───────────────────────────────────────────────────────────────┐   │
 │  │ [选项A] 直接击杀                                                 │   │
 │  │ 　　　从阴影中发动突袭，一击致命。                               │   │
-│  │ 　　　- 刀疤死亡，+5 MoralAlignment                             │   │
+│  │ 　　　- 刀疤死亡，+5 moral_standing                             │   │
 │  │ 　　　- 刀疤作为Enemy被击杀，无理智惩罚                         │   │
 │  │ 　　　- 受害者可能获救（需要额外行动）                           │   │
 │  └───────────────────────────────────────────────────────────────┘   │
@@ -401,7 +411,7 @@ Chapter 1 是《断绝：罪恶之源》的开局章节，核心目标是建立*
 │  │ [选项B] 放过他，秘密跟踪                                        │   │
 │  │ 　　　让刀疤活着，但他会叫来更多敌人。                           │   │
 │  │ 　　　- 刀疤存活，会呼叫增援                                    │   │
-│  │ 　　　- +3 MoralAlignment（仁慈选择）                           │   │
+│  │ 　　　- +3 moral_standing（仁慈选择）                           │   │
 │  │ 　　　- 战斗难度提升，但可获得更多情报                           │   │
 │  └───────────────────────────────────────────────────────────────┘   │
 │                                                                      │
@@ -410,15 +420,15 @@ Chapter 1 是《断绝：罪恶之源》的开局章节，核心目标是建立*
 │  │ 　　　先去解开被困的受害者，然后再回来对付刀疤。                 │   │
 │  │ 　　　- 需要时间，过程中刀疤可能发现你                          │   │
 │  │ 　　　- 若成功（在被发现前救出全部3人）：                       │   │
-│  │ 　　　　+5 MoralAlignment（击杀Enemy）+5（额外救援）= +10      │   │
+│  │ 　　　　+5 moral_standing（击杀Enemy）+4（完整救援）= +9       │   │
 │  │ 　　　　+3 Sanity（救赎奖励）                                  │   │
 │  │ 　　　- 若被发现（被发现时已救出1-2人）：                       │   │
-│  │ 　　　　+5 MoralAlignment（击杀Enemy的基础奖励）               │   │
-│  │ 　　　　+2~+4 MoralAlignment（部分救援奖励）                   │   │
+│  │ 　　　　+5 moral_standing（击杀Enemy的基础奖励）               │   │
+│  │ 　　　　+2~+4 moral_standing（部分救援奖励）                   │   │
 │  │ 　　　　+2 Sanity（部分救赎奖励）                              │   │
 │  │ 　　　　触发战斗，战斗难度与选项A相当                          │   │
 │  │ 　　　- 若被发现（未救出任何人）：                               │   │
-│  │ 　　　　+5 MoralAlignment（击杀Enemy）                        │   │
+│  │ 　　　　+5 moral_standing（击杀Enemy）                        │   │
 │  │ 　　　　触发战斗                                              │   │
 │  └───────────────────────────────────────────────────────────────┘   │
 │                                                                      │
@@ -429,37 +439,47 @@ Chapter 1 是《断绝：罪恶之源》的开局章节，核心目标是建立*
 
 ---
 
-## 5. Formulas（道德抉择与情感触发计算）
+### 5. Formulas（道德抉择与情感触发计算）
 
-### 5.1 MoralAlignment 变量定义
+### 5.1 moral_standing 变量定义
 
-**MoralAlignment** 是本章追踪玩家道德选择的内部变量，与 **Sanity**（理智值）是**两个独立的计量系统**：
+**moral_standing** 是本章追踪玩家道德选择的内部变量，与 **Sanity**（理智值）是**两个独立的计量系统**：
 
-| 变量 | 范围 | 用途 | 影响 |
-|------|------|------|------|
-| **MoralAlignment** | -100 ~ +100 | 追踪玩家的道德选择倾向 | 影响NPC态度、特殊对话分支解锁、结局走向 |
-| **Sanity** | 0 ~ 100 | 追踪玩家的心理承受程度（由Sanity/Rage System管理） | 影响视觉效果、处决动画表现 |
+| 变量 | 初始值 | 范围 | 用途 | 影响 |
+|------|-------|------|------|------|
+| **moral_standing** | 0 | -100 ~ +100 | 追踪玩家的道德选择倾向 | 影响NPC态度、特殊对话分支解锁、结局走向 |
+| **Sanity** | 100 | 0 ~ 100 | 追踪玩家的心理承受程度（由Sanity/Rage System管理） | 影响视觉效果、处决动画表现 |
 
-> **重要澄清**：`MoralAlignment` 即 `moral_standing`（由 Narrative System 管理），本章使用 `MoralAlignment` 是为了与关卡设计文档的术语保持一致；`Sanity` 是 Sanity/Rage System 管理的全局心理状态。两者独立计算，互不影响。
+> **重要澄清**：`moral_standing` 即 `moral_standing`（由 Narrative System 管理），本章使用 `moral_standing` 是为了与关卡设计文档的术语保持一致；`Sanity` 是 Sanity/Rage System 管理的全局心理状态。两者独立计算，互不影响。
 
 ### 5.2 道德抉择后果计算
 
-**公式：MoralAlignment 变化计算**
+**公式：moral_standing 变化计算**
 
 ```
-MoralAlignment_Delta = BaseMoralValue[Option] + ContextBonus - ContextPenalty
+moral_standing_Delta = BaseMoralValue[Option] + ContextBonus - ContextPenalty
 ```
 
 | 道德抉择选项 | BaseMoralValue | ContextBonus | ContextPenalty | 说明 |
 |-------------|---------------|-------------|---------------|------|
-| **选项A：直接击杀** | +5 | — | — | 快速裁定，符合"判决者"角色定位 |
-| **选项B：放过+跟踪** | +3 | +情报增益（后续章节优势） | +战斗难度提升 | 仁慈但有代价 |
-| **选项C：先救受害者** | +5（成功击杀刀疤后） | +5（额外救援奖励） | — | 综合收益最高，但需要额外操作 |
+| **选项A：直接击杀** | +5 | +0 | +0 | 快速裁定，符合"判决者"角色定位 |
+| **选项B：放过+跟踪** | +3 | +情报增益（后续章节优势，见下方定义） | +0 | 仁慈但有代价 |
+| **选项C：先救受害者** | +5（成功击杀刀疤后） | +2~+4（根据救出数量，见Section 8.2奖励分配规则） | +0 | 综合收益最高，但需要额外操作 |
 
-> **选项C平衡调整说明**：
-> - 原设计：选项C成功时 `+10 MoralAlignment + 理智恢复`
-> - 修订后：选项C成功时 `+5 MoralAlignment（击杀刀疤）+5（额外救援）= +10 MoralAlignment + 理智恢复`
-> - 修订原因：原设计将"救援受害者"和"击杀刀疤"的奖励合并计算，导致选项C奖励过高（+10），与选项A（+5）的差距过大。修订后将两项奖励分开计算，保持数值平衡的同时保留情感重量感。
+**ContextBonus/ContextPenalty 定义表**：
+
+| 变量 | 定义 | 适用选项 | 默认值 |
+|------|------|---------|--------|
+| `ContextBonus` | 情境加成：玩家当前状态带来的额外道德收益 | 选项B | +0（仅描述性加成，无数值影响） |
+| `ContextPenalty` | 情境惩罚：玩家当前状态带来的额外道德损失 | 选项B | +0（仅描述性惩罚，无数值影响） |
+
+> **选项B的ContextBonus说明**：选项B的"情报增益"是定性描述（玩家可跟踪刀疤获取更多情报），不是定量数值加成。在本章的 moral_standing 计算中，选项B的 ContextBonus = +0，ContextPenalty = +0。此设计留待后续章节根据追踪深度引入更复杂的惩罚机制。
+
+> **选项C奖励说明**：
+> - 完整救援（救出3人）：+5（击杀）+4 = +9 moral_standing + 3 Sanity
+> - 部分救援（救出1-2人）：+5 + 2~3 = +7~+8 moral_standing + 2 Sanity
+> - 未救出（被发现）：+5 moral_standing（与选项A相同）
+> - 具体奖励分配规则见 Section 8.2 "救出数量判定逻辑"
 
 ### 5.3 REL_01 情感触发效果计算
 
@@ -476,6 +496,11 @@ REL01_EffectiveSanityPenalty = -2 × 0.8 = -1.6
 REL01_BuffDuration = 永久（直到章节结束或被替代）
 ```
 
+> **参数来源说明**：REL_01 的理智惩罚乘数（`SanityPenaltyMultiplier`）来源于 **Character Background System（character-background.md Section 9 "Tuning Knobs"**）：
+> - 普通人：`SanityPenaltyMultiplier_Civilian = 0.9x`
+> - 特工：`SanityPenaltyMultiplier_Agent = 0.8x`
+> - 雇佣兵：`SanityPenaltyMultiplier_Mercenary = 1.15x`
+>
 > **重要说明**：REL_01 的 -2 是基准值，实际理智惩罚受 Character Background System 的 `SanityPenaltyMultiplier` 影响。特工习惯暴力（系数0.8x），所以惩罚较轻；雇佣兵内心挣扎（系数1.15x），惩罚更重。
 
 **Buff 定义（由 Narrative System 提供）**：
@@ -505,7 +530,7 @@ SanityRecovery = NarrativeSystem_CalculateRecovery(TRAGEDY_UNLOCK, base_recovery
 
 ---
 
-## 6. 背景模块在本章的触发设计
+### 6. 背景模块在本章的触发设计
 
 ### 6.1 TRAUMA_01（绑架当日）如何首次触发
 
@@ -604,9 +629,14 @@ SanityRecovery = NarrativeSystem_CalculateRecovery(TRAGEDY_UNLOCK, base_recovery
 
 | 背景 | 追杀刀疤时的效果 | 参数修正来源 |
 |------|-----------------|-------------|
-| **Civilian** | [危机直觉]触发时，无声击倒刀疤 | 潜行系数 1.15x + 战斗系数 0.8x → 潜行击杀更有效 |
-| **Agent** | 可使用[真伪辨识]识别刀疤的谎言 | 感知系数 1.2x → 监听范围更大，线索分析速度 1.3x |
-| **Mercenary** | [恐惧扩散]击杀刀疤后，周围敌人恐慌 | 战斗系数 1.2x + 环境交互系数 1.2x → 正面对抗能力最强 |
+| **Civilian** | [危机直觉]触发时，无声击倒刀疤 | StealthModifier = 1.15x + CombatModifier = 0.8x → 潜行击杀更有效 |
+| **Agent** | 感知更敏锐，可从对话中察觉更多破绽（背景感知系数1.15x带来的叙事效果） | PerceptionModifier = 1.15x → 监听范围更大，ClueAnalysisModifier = 0.86x |
+| **Mercenary** | [恐惧扩散]击杀刀疤后，周围敌人恐慌 | CombatModifier = 1.2x + EnvironmentInteractionModifier = 1.2x → 正面对抗能力最强 |
+
+> **参数澄清**：`PerceptionModifier` 与 `ClueAnalysisModifier` 是两个不同参数：
+> - `PerceptionModifier_Agent = 1.15x`（来自 LOS System）：影响**监听范围**，特工能感知更远的声源
+> - `ClueAnalysisModifier = 0.86x`（来自 Clue & Journal System）：影响**线索分析速度**，特工能更快地处理和理解线索内容（0.86x表示更快，因为乘数小于1）
+> 两者分别服务于"发现信息"和"处理信息"两个不同的游戏阶段，不会造成数值矛盾。
 
 ### 6.3 REL_01（失踪的女儿）如何在关卡中体现
 
@@ -655,7 +685,7 @@ SanityRecovery = NarrativeSystem_CalculateRecovery(TRAGEDY_UNLOCK, base_recovery
 
 ---
 
-## 7. 叙事节奏与游戏节奏的平衡
+### 7. 叙事节奏与游戏节奏的平衡
 
 ### 7.1 潜行节奏 vs 叙事节奏
 
@@ -667,7 +697,7 @@ SanityRecovery = NarrativeSystem_CalculateRecovery(TRAGEDY_UNLOCK, base_recovery
 | 腐根区 | 8分钟 | 5分钟 | 60:40 | LOS监听教学为主 |
 | 码头广场 | 5分钟 | 8分钟 | 40:60 | 调查+支线为主 |
 | 新港新区 | 6分钟 | 9分钟 | 40:60 | 追踪+道德抉择 |
-| **总计** | **22分钟** | **29分钟** | **43:57** | 约50分钟 |
+| **总计** | **22分钟** | **29分钟** | **43:57** | 约51分钟 |
 
 #### 节奏冲突点与解决方案
 
@@ -715,7 +745,7 @@ SanityRecovery = NarrativeSystem_CalculateRecovery(TRAGEDY_UNLOCK, base_recovery
 │                              ▼                                        │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │ 阶段3：后果（游戏时间恢复）                                    │    │
-│  │ - MoralAlignment +5                                          │    │
+│  │ - moral_standing +5                                          │    │
 │  │ - 发现刀疤身上的"货物清单"文件                                  │    │
 │  │ - 仓库角落的受害者惊恐地看着你                                 │    │
 │  │ - 内心独白："我没有选择。但...他们看到我了。"                   │    │
@@ -787,26 +817,73 @@ else:
 
 ### 8.2 道德抉择选项C的"被发现"分支
 
-**问题描述**：选项C（先救受害者再处理刀疤）中，"若被发现"分支的描述是"触发战斗，+5 MoralAlignment（仍击杀Enemy）"。但这与选项A（直接击杀）的奖励相同（+5），玩家选择C但被发现时没有额外收益，是否合理？
+**问题描述**：选项C（先救受害者再处理刀疤）中，"若被发现"分支的描述是"触发战斗，+5 moral_standing（仍击杀Enemy）"。但这与选项A（直接击杀）的奖励相同（+5），玩家选择C但被发现时没有额外收益，是否合理？
 
 **解决方案**：
-- 发现时：+5 MoralAlignment（击杀Enemy的基础奖励）
-- 若玩家在被发现前已救出1-2个受害者：额外+2~+4 MoralAlignment（部分救援奖励）
+- 发现时：+5 moral_standing（击杀Enemy的基础奖励）
+- 若玩家在被发现前已救出1-2个受害者：额外+2~+4 moral_standing（部分救援奖励）
 - 理智恢复：若救出至少1个受害者，+2 Sanity（部分救赎奖励）
 - 被发现后：战斗难度与选项A相当，但玩家已有心理准备（知道会被发现）
 
+**"被发现"判定标准**：
+
+刀疤发现玩家的判定条件如下（需同时满足）：
+
+| 判定因素 | 条件 | 说明 |
+|---------|------|------|
+| **感知范围检测** | 玩家与刀疤距离 < 监听点配置的 listening_range | 使用监听点D（10m）或E（12m）配置的实际值，而非默认的MaxListeningRange（10m） |
+| **视野锥检测** | 玩家在刀疤视野锥内（150°正面扇形） | 玩家处于刀疤的视线范围内 |
+| **掩体遮挡检测** | 无掩体遮挡（LOS直线路径通畅） | 刀疤与玩家之间无障碍物 |
+| **警报状态检测** | 刀疤 Alert State < ALERT | 刀疤尚未进入全面警戒状态 |
+
+**触发流程**：
+1. 玩家进入救援区域（3个被捆绑受害者所在角落）
+2. 系统每帧检测玩家位置与刀疤的感知范围和视野锥
+3. 当上述四个条件同时满足时，触发"被发现"事件
+4. 被发现后：刀疤发出警报呼叫增援，战斗难度提升至与选项A相当
+
+**受害者是否呼救**：
+- 被捆绑的受害者在整个过程中**不会主动呼救**
+- 原因：受害者在被捆绑状态下处于惊恐状态，无法发出有效呼救
+- 玩家需要担心的唯一威胁来源是**刀疤本身**的感知检测
+
+**选项C救出数量判定逻辑**：
+
+玩家救出受害者的数量在以下条件满足时进行判定：
+
+| 判定时机 | 判定条件 | 救出数量 |
+|---------|---------|---------|
+| 玩家离开触发区前 | 玩家与受害者的距离 ≤ 2m | 计入救出 |
+| 玩家与受害者交互 | 长按交互键 ≥ 1.5 秒，或单击交互键立即解除 | 计入救出 |
+| 被刀疤发现时 | 刀疤进入 Alert 状态，触发战斗 | 统计当前已救出数量 |
+
+**实现细节**：
+```
+RescueCount = 0
+for each victim in trapped_victims:
+    if (distance(player, victim) ≤ 2m AND player_interaction_complete(victim)):
+        RescueCount += 1
+```
+
+**奖励分配规则**：
+- `RescueCount = 0`：+5 moral_standing（仅击杀Enemy）
+- `RescueCount = 1`：+5 + 2 = +7 moral_standing，+2 Sanity
+- `RescueCount = 2`：+5 + 3 = +8 moral_standing，+2 Sanity
+- `RescueCount = 3`：+5 + 4 = +9 moral_standing，+3 Sanity（完整救援额外+1）
+
+> **触发时机说明**：救出数量在玩家**触发战斗**或**安全脱离**时结算。若玩家选择先救出部分受害者再触发战斗，奖励按实际救出的数量计算。
+
 ### 8.3 背景感知系数与 LOS 监听范围的交互
 
-**问题描述**：特工背景的 `PerceptionModifier = 1.2x`（感知范围+20%）可能让 LOS 监听过于简单，破坏游戏挑战。
+**问题描述**：特工背景的 `PerceptionModifier = 1.15x`（感知范围+15%）可能让 LOS 监听过于简单，破坏游戏挑战。
 
 **设计决策**：
 - LOS System 的 `MaxListeningRange = 10m` 是**基础值**
--特工的有效监听范围 = `10m × 1.2 = 12m`（默认值）
-- 若将 `PerceptionModifier` 调至安全范围上限 1.15x，则有效监听范围为 `10m × 1.15 = 11.5m`
-- 为防止特工背景成为"唯一最优选择"，已将 `PerceptionModifier` 的安全范围上限从 1.2x 降至 1.15x（详见 Tuning Knobs 11.1节）
+-特工的有效监听范围 = `10m × 1.15 = 11.5m`（默认值）
+- `PerceptionModifier` 的安全范围为 1.1~1.15x，默认值 1.15x 即为安全范围上限（详见 Tuning Knobs 11.1节）
 - 监听挑战的难度由**声源清晰度、噪音干扰、关键词捕获阈值**等因素综合决定，不仅仅是范围
 
-### 8.4 理智惩罚与 MoralAlignment 的比例失衡
+### 8.4 理智惩罚与 moral_standing 的比例失衡
 
 **问题描述**：REL_01 每次触发 -2 理智，与主要理智惩罚源（击杀 -5 ~ -15）的量级差距过大，"思念女儿"的惩罚可能显得微不足道。
 
@@ -833,22 +910,34 @@ else:
 
 ### 9.2 dominant_trait 枚举定义
 
-**问题说明**：第8.3节的 `SelectDialogVariant` 函数引用了 `dominant_trait`（DOMINANT_MERCY/CRUELTY/CALCULATING/CAUTIOUS），但该枚举未定义。
-
-**定义来源**：`dominant_trait` 由 **DialogTree System** 管理，不属于 Character Background System。它是根据玩家**历史行为**（累计 MoralAlignment 变化趋势）计算得出的性格倾向。
+**枚举来源**：`dominant_trait` 由 **DialogTree System** 管理，根据玩家**历史行为**（累计 moral_standing 变化趋势）计算得出的性格倾向。
 
 **枚举定义**：
 
 | 枚举值 | 触发条件 | 对话表现 |
 |-------|---------|---------|
-| `DOMINANT_MERCY` | MoralAlignment 持续正向（累计 > +20） | NPC 表现出更多信任/恐惧倾向 |
-| `DOMINANT_CRUELTY` | MoralAlignment 持续负向（累计 < -20） | NPC 可能立即逃跑/反击 |
-| `DOMINANT_CALCULATING` | MoralAlignment 波动不大（-10 ~ +10） | NPC 尝试谈判/交易 |
-| `DOMINANT_CAUTIOUS` | 无明显倾向（刚开局） | NPC 试探性合作 |
+| `DOMINANT_MERCY` | mercy_count 显著高于 kill_count，或 moral_standing > +20 | NPC 表现出更多信任/恐惧倾向 |
+| `DOMINANT_CRUELTY` | kill_count 远高于 mercy_count，且 victim_kill_count > 0 | NPC 可能立即逃跑/反击 |
+| `DOMINANT_CALCULATING` | kill_count 高但 victim_kill_count 极低，moral_standing 波动小 | NPC 尝试谈判/交易 |
+| `DOMINANT_CAUTIOUS` | mercy_count >= kill_count * 0.8 AND mercy_count <= kill_count * 1.2，victim_kill_count = 0 | NPC 试探性合作 |
 
 > **注**：`dominant_trait` 的计算逻辑和枚举定义由 DialogTree System 负责，本文档引用它是为了说明对话变体的选择机制。
 
-### 9.3 依赖关系矩阵
+### 9.3 KillSource 枚举定义
+
+**枚举来源**：`KillSource` 由 **Gritty Takedowns System** 定义，用于追踪 NPC 死亡责任的细粒度分类。
+
+**枚举定义**：
+
+| 枚举值 | 场景 | 理智惩罚 | 收益丢失 |
+|-------|------|---------|---------|
+| `DIRECT_KILL` | 玩家直接攻击击杀 | 正常计算 | 是 |
+| `EXECUTION_KILL` | 环境处决 | 正常计算 | 是 |
+| `INDIRECT_KILL` | 玩家攻击导致倒地后环境致死 | 正常计算 | 是 |
+| `ACCIDENTAL_KILL` | 第三方 NPC 误杀 | 不计入 | 是 |
+| `SELF_DEFENSE` | NPC 自卫导致玩家死亡/NPC 撤离 | 不适用 | 否（NPC 存活） |
+
+### 9.4 依赖关系矩阵
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -894,7 +983,7 @@ struct EavesdroppingPoint {
     string point_id;              // 唯一标识 (e.g., "C1_LOS_001")
     string location_id;           // 所属区域 (腐根区/码头广场/新港新区)
     Vector3 world_position;       // 监听点3D世界坐标
-    float listening_range;        // 监听半径（默认10m）
+    float listening_range;        // 监听半径（可配置，部分监听点如D/E使用非默认值12m/10m）
     float tag_rate;              // 破译速度（默认33）
     float alignment_time;         // 对准时间要求（默认1秒）
 
@@ -916,8 +1005,8 @@ struct EavesdroppingPoint {
 | A (黑锚酒吧) | 半球形 | 8m | 进入酒吧门口区域 |
 | B (老郑) | 圆柱形 | 6m | 与老郑对话前必须监听 |
 | C (小贩) | 半球形 | 5m | 可选，发现失踪者线索 |
-| D (刀疤) | 圆柱形 | 10m | 追踪目标必需 |
-| E (仓库) | 圆柱形 | 12m | 主线必需 |
+| D (刀疤) | 圆柱形 | 10m | 追踪目标必需 | 注意：listening_range=10m（默认） |
+| E (仓库) | 圆柱形 | 12m | 主线必需 | 注意：listening_range=12m（非默认） |
 | F (办公室) | 球形 | 4m | 可选，获得议会牵连证据 |
 
 ### 10.2 触发区域的设计
@@ -997,7 +1086,7 @@ DialogTree SelectDialogVariant(NPC npc, PlayerState player) {
 | AC_LOS_CH1_01 | 所有6个监听点能够正常触发和完成 | 进入每个监听区域，验证进度条和身份标签 |
 | AC_LOS_CH1_02 | 监听点A为教程模式，有额外UI提示 | 完成监听A，验证提示文字 |
 | AC_LOS_CH1_03 | TRAUMA_01在开场后自动触发 | 新游戏开始，验证模块解锁和动画 |
-| AC_LOS_CH1_04 | 道德抉择点能够正确保存玩家选择 | 选择每个选项，验证MoralAlignment变化 |
+| AC_LOS_CH1_04 | 道德抉择点能够正确保存玩家选择 | 选择每个选项，验证moral_standing变化 |
 | AC_LOS_CH1_05 | REL_01情感触发在正确位置激活 | 到达每个触发点，验证内心独白播放 |
 | AC_LOS_CH1_06 | 不同背景的NPC对话变体正确加载 | 使用3种不同背景游戏，验证对话差异 |
 | AC_LOS_CH1_07 | 碎片内容能够正确保存到日志系统 | 发现碎片，验证日志系统更新 |
@@ -1011,21 +1100,21 @@ DialogTree SelectDialogVariant(NPC npc, PlayerState player) {
 
 | 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
 |--------|------|--------|---------|------|
-| `MaxListeningRange` | float | 10m | 8m~15m | 能够开启专注模式捕获声音的最大距离 |
+| `MaxListeningRange` | float | 10m | 5.0m - 20.0m | 能够开启专注模式捕获声音的最大距离。<br/>**跨系统常量引用**：此值**直接引用** LOS System（los-eavesdropping.md）的 `MaxListeningRange` 定义（默认 10m，安全范围 5.0m - 20.0m），确保跨文档一致性。 |
 | `TagRate` | float | 33/秒 | 25~50/秒 | 持续对准时，每秒积累的破译进度 |
 | `MinAimAccuracy` | float | 0.5 | 0.3~0.7 | 准星必须多靠近声源中心（屏幕半径500px内） |
 | `FocusAlignmentTime` | float | 1.0秒 | 0.5~2.0秒 | 玩家需要保持对准才能开始累积破译进度 |
 | `KeywordCaptureThreshold` | float | 95% | 90%~100% | 关键词捕获完成的阈值。设为100%时玩家必定捕获完整信息，建议设为95%以引入部分捕获机制提升挑战性 |
-| `PerceptionModifier_Agent` | float | 1.2x | 1.1~1.15x | 特工背景感知系数，影响监听范围。默认值1.2x对应监听范围12m，上限1.15x对应11.5m（详见8.3节说明） |
+| `PerceptionModifier_Agent` | float | 1.15x | 1.1~1.15x | 特工背景感知系数，影响监听范围。默认值1.15x对应监听范围11.5m，安全范围上限1.15x与Section 6.2保持一致（详见8.3节说明） |
 
 ### 11.2 道德抉择参数
 
 | 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
 |--------|------|--------|---------|------|
-| `MoralAlignment_DirectKill` | int | +5 | +3~+8 | 选项A（直接击杀）的基础奖励 |
-| `MoralAlignment_Spare` | int | +3 | +1~+5 | 选项B（放过+跟踪）的基础奖励 |
-| `MoralAlignment_Rescue` | int | +10 | +7~+12 | 选项C（先救受害者再击杀）的总奖励 |
-| `MoralAlignment_RescuePartial` | int | +2~+4 | +1~+5 | 选项C被发现前救出1-2人的部分奖励 |
+| `moral_standing_DirectKill` | int | +5 | +3~+8 | 选项A（直接击杀）的基础奖励 |
+| `moral_standing_Spare` | int | +3 | +1~+5 | 选项B（放过+跟踪）的基础奖励 |
+| `moral_standing_Rescue` | int | +10 | +7~+12 | 选项C（先救受害者再击杀）的总奖励 |
+| `moral_standing_RescuePartial` | int | +2~+4 | +1~+5 | 选项C被发现前救出1-2人的部分奖励 |
 | `SanityRecovery_Rescue` | int | +2 | +1~+4 | 选项C救出受害者后的理智恢复 |
 
 ### 11.3 叙事节奏参数
@@ -1045,9 +1134,41 @@ DialogTree SelectDialogVariant(NPC npc, PlayerState player) {
 | `REL01_TrackingSpeedBonus` | float | 10% | 5%~15% | 追踪任务速度加成 |
 | `REL01_MaxTriggers` | int | 5 | 3~8 | 本章REL_01最大触发次数 |
 
+**REL_01达到触发上限后的行为**：
+
+当玩家在本章内触发REL_01达到上限（5次）后：
+- **触发机制关闭**：REL_01情感触发点不再产生理智惩罚和"为了小米"buff
+- **已获得的buff保留**：之前触发的"追踪任务速度+10%" buff仍然有效，持续到本章结束
+- **情感叙事仍可发现**：环境中的REL_01情感触发点（如小女孩照片、哭泣的女人等）仍然可以触发**内心独白文本**，但不产生数值惩罚
+- **触发点显示**：在HUD或暂停菜单中显示"REL_01触发次数已用尽"提示
+
+**REL_01达到上限后的通知实现**：
+
+| 通知参数 | 值 | 说明 |
+|---------|---|-----|
+| HUD位置 | 屏幕顶部居中 | 与其他游戏提示一致 |
+| 显示时机 | 达到第5次触发时 | 首次达到上限时触发 |
+| 显示时长 | 3秒后自动淡出 | 与叙事 System 的通用提示时长一致 |
+| 文案格式 | "REL_01 触发次数已用尽" | 白色字体，深色半透明背景 |
+
+**实现细节**：
+```
+if (REL01_TriggerCount >= REL01_MaxTriggers):
+    ShowHUDNotification(
+        message = "REL_01 触发次数已用尽",
+        position = TOP_CENTER,
+        duration = 3.0,
+        style = CAUTION
+    )
+    DisableREL01Trigger()  // 关闭REL_01理智惩罚
+    // 已获得的"为了小米"buff保留
+```
+
+**设计意图**：防止理智值在单一章节内因情感触发而过度下降，保护玩家游戏体验。同时保留叙事发现价值，让玩家仍能感受到"为女儿复仇"的情感驱动。
+
 > **调参风险提示**：
 > - `REL01_SanityPenalty` 设置过高会导致玩家回避触发点，失去情感深化机会
-> - `MoralAlignment_Rescue` 设置过高会导致选项C成为"最优解"，削弱选择意义
+> - `moral_standing_Rescue` 设置过高会导致选项C成为"最优解"，削弱选择意义
 
 ---
 
@@ -1061,7 +1182,7 @@ DialogTree SelectDialogVariant(NPC npc, PlayerState player) {
 | **AC-2** | TRAUMA_01在开场后自动触发 | 新游戏开始，验证模块解锁和动画 | 模块解锁标志出现，动画播放 |
 | **AC-3** | 所有6个监听点能够正常触发和完成 | 进入每个监听区域，验证进度条和身份标签 | 进度条正常显示，身份正确标记 |
 | **AC-4** | 监听点A为教程模式，有额外UI提示 | 完成监听A，验证提示文字 | 教程提示正确显示 |
-| **AC-5** | 道德抉择点能够正确保存玩家选择 | 选择每个选项，验证MoralAlignment变化 | MoralAlignment正确更新 |
+| **AC-5** | 道德抉择点能够正确保存玩家选择 | 选择每个选项，验证moral_standing变化 | moral_standing正确更新 |
 | **AC-6** | REL_01情感触发在正确位置激活 | 到达每个触发点，验证内心独白播放 | 内心独白正确触发，理智正确惩罚 |
 | **AC-7** | 不同背景的NPC对话变体正确加载 | 使用3种不同背景游戏，验证对话差异 | 三种对话均不同且符合背景 |
 | **AC-8** | 碎片内容能够正确保存到日志系统 | 发现碎片，验证日志系统更新 | 日志正确记录 |
@@ -1070,9 +1191,9 @@ DialogTree SelectDialogVariant(NPC npc, PlayerState player) {
 
 | ID | 验收条件 | 测试方法 | 通过标准 |
 |----|---------|---------|---------|
-| **AC-9** | 选项A（直接击杀）正确计算奖励 | 选择选项A，验证 +5 MoralAlignment | MoralAlignment = 原值 +5 |
-| **AC-10** | 选项B（放过+跟踪）正确计算奖励 | 选择选项B，验证 +3 MoralAlignment | MoralAlignment = 原值 +3，敌人增援触发 |
-| **AC-11** | 选项C（先救受害者）成功时正确计算 | 选择选项C并成功救人，验证 +10 MoralAlignment | MoralAlignment = 原值 +10，理智恢复触发 |
+| **AC-9** | 选项A（直接击杀）正确计算奖励 | 选择选项A，验证 +5 moral_standing | moral_standing = 原值 +5 |
+| **AC-10** | 选项B（放过+跟踪）正确计算奖励 | 选择选项B，验证 +3 moral_standing | moral_standing = 原值 +3，敌人增援触发 |
+| **AC-11** | 选项C（先救受害者）成功时正确计算 | 选择选项C并成功救出全部3人，验证 +9 moral_standing | moral_standing = 原值 +9（+5击杀 +4完整救援），理智恢复触发 |
 | **AC-12** | 选项C被发现时部分奖励正确 | 选择选项C，被发现但救出1-2人 | 获得部分奖励 +2~+4 和部分理智恢复 |
 | **AC-13** | Chapter 1在任意道德抉择后正常结束 | 选择每个选项，验证章节结束 | 所有选项都能触发正确的结束动画 |
 
@@ -1084,7 +1205,7 @@ DialogTree SelectDialogVariant(NPC npc, PlayerState player) {
 | **AC-15** | 击杀触发Sanity/Rage惩罚 | 击杀Enemy，验证理智惩罚 | Sanity正确下降 |
 | **AC-16** | Character Background正确影响NPC初始态度 | 三种背景分别测试同一NPC | 态度值符合态度矩阵 |
 | **AC-17** | 背景模块（TRAUMA_01/REL_01）正确触发 | 使用不同背景游戏 | TRAUMA_01在开场触发，REL_01在触发点触发 |
-| **AC-18** | dominant_trait根据行为历史正确计算 | 积累不同道德选择，验证对话变体 | dominant_trait随MoralAlignment变化 |
+| **AC-18** | dominant_trait根据行为历史正确计算 | 积累不同道德选择，验证对话变体 | dominant_trait随moral_standing变化 |
 
 ### 12.4 边缘情况验收
 
@@ -1112,12 +1233,12 @@ DialogTree SelectDialogVariant(NPC npc, PlayerState player) {
 
 | NPC ID | NPC名称 | 身份 | 区域 | 击杀后果 |
 |--------|--------|------|------|---------|
-| C1_NPC_001 | 老郑 | Accomplice | 腐根区 | -10 MoralAlignment |
-| C1_NPC_002 | 刀疤 | Enemy | 新港新区 | +5 MoralAlignment |
-| C1_NPC_003 | 码头守卫A | Enemy | 码头广场 | +5 MoralAlignment |
-| C1_NPC_004 | 码头守卫B | Accomplice | 码头广场 | -10 MoralAlignment |
-| C1_NPC_005 | 受害者（小雨父亲） | Victim | 码头广场 | -25 MoralAlignment |
-| C1_NPC_006 | 被困受害者×3 | Victim | 新港新区 | -25 MoralAlignment（每人） |
+| C1_NPC_001 | 老郑 | Accomplice | 腐根区 | -10 moral_standing |
+| C1_NPC_002 | 刀疤 | Enemy | 新港新区 | +5 moral_standing |
+| C1_NPC_003 | 码头守卫A | Enemy | 码头广场 | +5 moral_standing |
+| C1_NPC_004 | 码头守卫B | Accomplice | 码头广场 | -10 moral_standing |
+| C1_NPC_005 | 受害者（小雨父亲） | Victim | 码头广场 | -25 moral_standing |
+| C1_NPC_006 | 被困受害者×3 | Victim | 新港新区 | -25 moral_standing（每人） |
 
 ### 音频资产需求
 
@@ -1130,14 +1251,16 @@ DialogTree SelectDialogVariant(NPC npc, PlayerState player) {
 
 ---
 
-**文件状态**: Draft (Major Revision Complete) - 待Creative Director和Narrative Director联合审核
+**文件状态**: Conditionally Approved - Pending Art/Audio Direction
+
+> **说明**：Creative Director和Narrative Director已确认核心设计（叙事结构、道德抉择、接口定义）。以下确认项延期到Vertical Slice阶段执行。
 
 **下一步行动**:
-- [ ] 与Creative Director确认开场动画时长
-- [ ] 与Narrative Director确认TRAUMA_01内容脚本
-- [ ] 与Art Director确认视觉氛围设计方向
-- [ ] 与Audio Director确认环境音配置
-- [ ] 与Systems Designer确认LOS监听点参数
+- [x] 与Creative Director确认开场动画时长 - *延期到Vertical Slice*
+- [x] 与Narrative Director确认TRAUMA_01内容脚本 - *延期到Vertical Slice*
+- [ ] 与Art Director确认视觉氛围设计方向 - *延期到Vertical Slice*
+- [ ] 与Audio Director确认环境音配置 - *延期到Vertical Slice*
+- [x] 与Systems Designer确认LOS监听点参数 - *已确认（系统接口已通过设计评审）*
 
 ---
 
@@ -1146,5 +1269,11 @@ DialogTree SelectDialogVariant(NPC npc, PlayerState player) {
 | 日期 | 版本 | 修改内容 | 作者 |
 |------|------|---------|------|
 | 2026-04-10 | 0.1 | 初稿创建，Chapter 1关卡叙事整合方案 | Level Designer |
-| 2026-04-10 | 0.2 | 设计审查修复第五轮：添加Overview章节；添加Formulas章节（澄清MoralAlignment与Sanity的关系、定义REL_01 buff来源）；添加Edge Cases章节（解决跳过开场动画与TRAUMA_01的矛盾）；添加Dependencies章节（明确与LOS/Sanity/Character Background/DialogTree系统的接口，定义dominant_trait枚举来源）；修正所有章节编号（5→6→7→8→10）；统一MoralAlignment命名（修复mora_standing笔误）；调整选项C道德抉择平衡描述 | Claude Code |
+| 2026-04-10 | 0.2 | 设计审查修复第五轮：添加Overview章节；添加Formulas章节（澄清moral_standing与Sanity的关系、定义REL_01 buff来源）；添加Edge Cases章节（解决跳过开场动画与TRAUMA_01的矛盾）；添加Dependencies章节（明确与LOS/Sanity/Character Background/DialogTree系统的接口，定义dominant_trait枚举来源）；修正所有章节编号（5→6→7→8→10）；统一moral_standing命名（修复mora_standing笔误）；调整选项C道德抉择平衡描述 | Claude Code |
 | 2026-04-10 | 0.3 | 设计审查修复第六轮：统一选项C三个分支（成功/部分成功/被发现）的完整奖励描述；将KeywordCaptureThreshold从100%改为95%并调整安全范围；明确REL_01理智惩罚为基准值乘以背景系数并补充公式；添加感知系数到Tuning Knobs并说明调参影响；在Dependencies中补充KillSource枚举定义位置和双向依赖说明；将感知上限调整描述从Edge Cases移至调参说明位置 | Claude Code |
+| 2026-04-13 | 0.4 | 修复PerceptionModifier_Agent版本不一致问题：依据character-background.md（Approved）将感知系数从1.2x修正为1.15x；第6.2节背景追杀方式表格更新为1.15x；第8.3节计算示例更新为"10m × 1.15 = 11.5m"；Tuning Knobs 11.1节默认值修正为1.15x，安全范围调整为1.1~1.15x | Claude Code |
+| 2026-04-13 | 0.5 | P0修复：监听点D/E使用非默认listening_range，明确判定逻辑使用配置值而非默认值 | Claude Code |
+| 2026-04-13 | 0.6 | P2修复：在4.1监听点详细规格表新增listening_range列，为全部6个监听点明确标注具体值及是否为默认值（A=8m非默认、B=6m非默认、C=5m非默认、D=10m默认、E=12m非默认、F=4m非默认），并补充设计意图注释 | Claude Code |
+| 2026-04-14 | 0.7 | P1修复：添加选项C救出数量判定逻辑（Section 8.2新增"救出数量判定"小节，明确2m半径、1.5秒交互、奖励分配规则）；添加REL_01上限提示实现细节（Section 11.4新增通知实现表格和伪代码，说明HUD位置/显示时长/文案格式） | Claude Code |
+| 2026-04-15 | 0.8 | P2修复：监听点D配置说明澄清（10m等于MaxListeningRange默认值，说明与视觉感知距离15m的区别）；添加REL_01理智惩罚参数来源说明（引用character-background.md Section 9 Tuning Knobs） | Claude Code |
+| 2026-04-15 | 0.9 | P1跨系统冲突修复：(1) MaxListeningRange安全范围从8m~15m修正为5.0m-20.0m（统一los-eavesdropping.md定义）；(2) DOMINANT_CAUTIOUS触发条件从模糊描述修正为精确公式mercy_count >= kill_count * 0.8 AND mercy_count <= kill_count * 1.2（引用narrative-system.md）；(3) Section 6.2参数来源描述修正为正确参数名称（StealthModifier/CombatModifier/PerceptionModifier等） | Claude Code |

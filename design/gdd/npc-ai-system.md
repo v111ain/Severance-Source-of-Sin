@@ -1,12 +1,18 @@
 # NPC AI系统 (NPC AI System)
 
-> **Status**: Approved (修订中)
+> **Status**: Approved
 > **Author**: [user + agents]
-> **Last Updated**: 2026-04-08
+> **Last Updated**: 2026-04-11
 > **Implements Pillar**: 致命的脆弱感 (Lethal Fragility)
-> **Revision Notes**: 根据团队评审进行全面修订。OQ-4、OQ-5 已解决；AC-19/20/24 移至 Alpha 阶段；修复多处一致性和完整性问题。
+> **Revision Notes**: 2026-04-15 P1一致性修复：
+> - **P1**: 公式5中 `MaxConfrontationRange` 默认值来源标注：明确默认值为 5米，引用自 Tuning Knobs 表格，程序员无需跨文档查找
+>
+> 根据团队评审进行全面修订。OQ-4、OQ-5 已解决；AC-19/20/24 移至 Alpha 阶段；修复多处一致性和完整性问题。
 >
 > **修订历史**：
+> - **2026-04-11** 苍白之手 BaseAllegiance 确认：
+>   - ✅ 确认 `BaseAllegiance_苍白之手 = -20`（由 Character Background 系统反向验证计算确认）
+>   - ✅ 在 Dependencies 下游依赖表中添加苍白之手 BaseAllegiance 确认说明
 > - **2026-04-08** 团队评审修订：
 >   - ✅ OQ-4 已解决：vulnerability 通过搜身/审问获取
 >   - ✅ OQ-5 已解决：NPC 唤醒后行为脚本（MVP 简化版）
@@ -122,13 +128,15 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 
 **派系关系矩阵**：
 
+> **数据权威来源**：派系关系矩阵以 `factions.md Section 7` 为准。本矩阵保持与之完全一致。
+
 |       | 凋亡议会 | 锈网 | 灰烬团 | 无声者 | 苍白之手 |
 |-------|---------|------|--------|-------|---------|
-| **凋亡议会** | — | 操控/联盟 | 出售劳动力(联盟) | 压制(敌对) | 客户(中立) |
-| **锈网** | 被操控(从属) | — | 清剿(敌对) | 监视(敌对) | 忌惮(紧张) |
-| **灰烬团** | 出售劳力(从属) | 被清剿(敌对) | — | 警惕(中立) | 交易(中立) |
-| **无声者** | 被压制(敌对) | 被监视(敌对) | 被警惕(中立) | — | 神秘(中立) |
-| **苍白之手** | 客户(中立) | 忌惮(紧张) | 交易(中立) | 神秘(中立) | — |
+| **凋亡议会** | — | 操控/联盟 | 出售劳动力/联盟 | 压制/敌对 | 未知/高度警觉 |
+| **锈网** | 被操控/从属 | — | 业务合作/竞争 | 警惕/利用 | 未知/好奇 |
+| **灰烬团** | 出售劳动力/从属 | 业务合作/竞争 | — | 警惕/中立 | 未知/中立 |
+| **无声者** | 被压制/敌对 | 被监视/敌对 | 警惕/中立 | — | 未知/中立 |
+| **苍白之手** | 未知/高度警觉 | 未知/好奇 | 未知/中立 | 未知/中立 | — |
 
 > **玩家阵营**：玩家（父亲）初始不属于任何派系，但与"无声者"天然联盟（都是失踪者家属）
 
@@ -180,7 +188,7 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 | **FREE** | SUSPECT | 有效 | 感到不安，暂停当前动作，开始观察周围。更频繁扫视，但尚未确认威胁。 |
 | **FREE** | SEARCH | 有效 | 已确认有异常，主动搜索。沿可疑路径移动，查看掩体，但尚未呼叫增援。 |
 | **FREE** | ALERT | 有效 | 确认威胁存在，大声呼叫增援，通知派系成员，但尚未主动追击。 |
-| **FREE** | ESCAPE | 有效 | 威胁过大，选择逃离并呼叫增援。不主动攻击，但会引导增援到玩家位置。 |
+| **FREE** | ESCAPE | 有效 | 威胁超出应对能力，选择逃离并呼叫增援。不主动攻击，但会用对讲机/尖叫等方式将玩家位置传递给同伴/增援。**与警报扩散的关系**：ESCAPE 状态的 NPC 已经**知道威胁存在**，即使被潜行击杀从背面，也会通过其未完成的通知行为（如对讲机、尖叫余音）触发警报扩散。这与 COMBAT 状态的 NPC 类似——两者都已知威胁存在，但实现方式不同（ESCAPE 通过逃跑+通知，COMBAT 通过战斗+呼叫）。
 | **FREE** | COMBAT | 有效 | 主动追击并尝试消灭威胁。射击/近战，持续呼叫增援。 |
 | **UNCONSCIOUS** | *(冻结→降级)* | 条件有效 | 保留原 Alert State，唤醒时降一级（如 COMBAT→ALERT）。 |
 | **TIED** | *(冻结→降级)* | 条件有效 | 保留原 Alert State，解开时降一级。 |
@@ -229,6 +237,10 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 | ESCAPE | SEARCH |
 | COMBAT | ALERT |
 
+> **降级说明**：降级规则每次唤醒最多降一级。如果原状态为 COMBAT，降级后为 ALERT——这是单次降级的最大幅度，不会直接降回 UNDETECTED。
+>
+> 边缘情况7（距离 < 2 米）在此基础上**再降一级**：即降级规则和距离判定分步执行，合计最多降两级。COMBAT 唤醒且距离 < 2 米时：第一步 COMBAT→ALERT（降级规则），第二步 ALERT→SEARCH（距离判定），最终结果为 SEARCH。
+
 ### Interactions with Other Systems
 
 #### 数据流入 (Inputs)
@@ -236,7 +248,7 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 | 来源系统 | 数据内容 | 说明 |
 |---------|---------|------|
 | **Player Controller** | 玩家世界坐标、运动状态、移动速度 | 用于计算 NPC 对玩家的感知距离和方向 |
-| **LOS & Eavesdropping** | `PlayerSpottedEvent` 事件 | 玩家被发现的暴露事件，触发 NPC Alert State 上升 |
+| **LOS & Eavesdropping** | `PlayerSpottedEvent` 事件 + `QueryCurrentExposure(npc_id)` 查询接口 | 玩家被发现的暴露事件（`CurrentExposure >= 100` 时触发），触发 NPC Alert State 上升；`QueryCurrentExposure` 接口用于持续获取玩家的中间暴露进度（0~100），供 NPC AI 系统计算 VisualScore |
 | **Health & Lethality** | 伤害结果通知 (内部接口) | Health 系统计算伤害后，通过内部接口通知 NPC AI 系统更新 World State；NPC AI 系统随后广播 `NPCStateChangedEvent` |
 | **Gritty Takedowns** | `ExecutionWitnessed(npc_id, witness_npc_id)` | 处决被第三方目击，触发 witness NPC 的 Alert State 变化（参见边缘情况6） |
 | **Environment Interaction** | 环境事件 | 如某扇门被打开、某物体被移动——NPC 可能感知到并触发 SUSPECT |
@@ -247,7 +259,7 @@ NPC 在各自的世界中巡逻、工作、社交，对周围的威胁浑然不�
 |---------|---------|------|
 | **LOS & Eavesdropping** | NPC 对话文本、关键词 | NPC 的语音/对话内容，供 LOS 系统提取和过滤 |
 | **Health & Lethality** | `QueryState(NPC_ID)` | 查询接口，返回 NPC 当前 World State |
-| **Health & Lethality** | `NPCStateChangedEvent` | NPC 状态转移（FREE→UNCONSCIOUS/DEAD）广播 |
+| **Health & Lethality** | `NPCStateChangedEvent` | NPC 状态转移（FREE→UNCONSCIOUS/DEAD）时由 Health 系统广播，本系统订阅此事件 |
 | **Sanity/Rage System** | 被击杀 NPC 的 `Tag` | 击杀事件携带的 NPC 身份标签（Enemy/Accomplice/Victim/Innocent） |
 | **Clue & Journal** | NPC 的 `knowledge` | NPC 掌握的线索列表，搜身/审问后可获取 |
 | **世界地图系统** | `AreaCleared(area_id)` | 地区内所有敌人被清除时通知，用于更新地区状态为 CLEARED |
@@ -266,8 +278,8 @@ knowledge: List[clue_id: String]  # 线索ID列表，如 ["ID_张三的身份", 
 | 接口类型 | 拥有者 | 说明 |
 |---------|-------|------|
 | `PlayerSpottedEvent` 事件 | LOS System | LOS 系统检测到玩家暴露时触发，NPC AI 系统订阅此事件 |
-| `DamageResult` (内部接口) | Health System | Health 系统计算伤害后，通过内部接口传递伤害结果给 NPC AI 系统，由 NPC AI 系统更新状态并广播 |
-| `NPCStateChangedEvent` | NPC AI System | NPC AI 系统拥有，Health 系统触发后由 NPC AI 系统广播。NPC 世界状态变化（FREE→UNCONSCIOUS/DEAD）时触发。 |
+| `DamageResult` (内部接口) | Health System | Health 系统计算伤害后，通过内部接口通知 NPC AI 系统状态更新需求（不广播事件，事件广播由 Health 系统负责） |
+| `NPCStateChangedEvent` | Health System | 由 Health 系统广播（NPC AI 系统订阅），NPC 世界状态变化（FREE→UNCONSCIOUS/DEAD）时触发。 |
 | **`AlertStateChangedEvent`** | NPC AI System | NPC AI 系统在 Alert State 转换时触发，通知外部系统（如 Gritty Takedowns）。参见下方事件定义。 |
 | `QueryState/QueryAlertState` | NPC AI System | 查询接口，其他系统通过接口获取 NPC 状态 |
 | `SharedAlert` 广播 | NPC AI System | NPC AI 系统内部派系共享机制，对其他系统透明 |
@@ -288,6 +300,35 @@ knowledge: List[clue_id: String]  # 线索ID列表，如 ["ID_张三的身份", 
 |------|------|------|
 | `NPC_ID` | int | NPC 的唯一标识符 |
 | **返回值** | `AlertState` (枚举) | NPC 的当前警觉状态：`UNDETECTED`, `SUSPECT`, `SEARCH`, `ALERT`, `ESCAPE`, `COMBAT` |
+
+**`GetNPCIdentities(NPC_ID: int) -> List[Faction]`**
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `NPC_ID` | int | NPC 的唯一标识符 |
+| **返回值** | `List[Faction]` | NPC 所属的所有派系列表，按优先级从高到低排序 |
+| **备注** | 多派系 NPC 示例：锈网成员 + 凋亡议会线人 → 返回 `[ODD_COUNCIL, ROTTEN_WEB]`；普通黑帮成员 → 返回 `[GANGS]` |
+| **提供方** | NPC AI System | Character Background 系统通过此接口查询 NPC 派系信息以计算初始态度 |
+
+> **实现草案（供开发参考）**：
+> ```csharp
+> List<Faction> GetNPCIdentities(NPC_ID npc_id) {
+>     // NPC 派系数据由 NPC Spawner/Level Designer 在场景初始化时设置
+>     // 每个 NPC 持有其派系身份列表，按优先级排序
+>     // 优先级定义：ODD_COUNCIL > ROTTEN_WEB > ASH_LEGION > SILENT_ONES > PALE_HAND > GANGS
+>     return NPCDatabase.Get(npc_id).FactionIdentities;  // 返回已排序的派系列表
+> }
+>
+> // 派系优先级定义（数值越高优先级越高）
+> // 用于多派系 NPC 的身份排序
+> enum FactionPriority {
+>     ODD_COUNCIL = 100,    // 凋亡议会（核心派系）
+>     ROTTEN_WEB = 80,      // 锈网（信息中介）
+>     ASH_LEGION = 60,      // 灰烬团（武装力量）
+>     SILENT_ONES = 40,     // 无声者（特殊组织）
+>     PALE_HAND = 20,       // 苍白之手（隐秘组织）
+>     GANGS = 10,           // 黑帮（普通帮派，优先级最低）
+> }
+> ```
 
 #### 事件接口定义
 
@@ -362,20 +403,62 @@ NPC AI 系统在 World State 发生转换时触发此事件，通知外部系统
 | `NPC_ID` | int | NPC 的唯一标识符 |
 | **返回值** | `List[String]` | NPC 掌握的线索 ID 列表，如 `["ID_仓库密码", "ID_接头人"]` |
 
+**`QueryOldAcquaintanceBonus(NPC_ID: int, player_background: BackgroundType) -> int`**
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `NPC_ID` | int | NPC 的唯一标识符 |
+| `player_background` | BackgroundType | 玩家当前背景类型（CIVILIAN/AGENT/MERCENARY） |
+| **返回值** | `int` | 旧识关系态度加成值 |
+
+> **接口说明**：此接口由 Character Background 系统实现，NPC AI 系统在计算 NPC 对玩家的初始态度时调用。
+>
+> **返回值查表（重要）**：
+> - **特殊组合（已吸收 FactionModifier）**：以下三种组合返回的是**吸收净值**（含 FactionModifier），NPC AI 系统在调用后**不应再单独应用 FactionModifier**：
+>   - `SAME_FACTION`（特工 + 锈网）：**+40**（吸收后净值）
+>   - `MERCE_TO_MERCE`（雇佣兵 + 灰烬团）：**+65**（吸收后净值）
+>   - `MERCE_EMPLOYER`（雇佣兵 + 凋亡议会）：**+90**（吸收后净值）
+> - **其他组合**：返回标准加成值：
+>   - `SAME_FACTION`（特工 + 锈网）：+25
+>   - `MERCE_TO_MERCE`（雇佣兵 + 灰烬团）：+20
+>   - `MERCE_EMPLOYER`（雇佣兵 + 凋亡议会）：+15
+> - **非特殊组合**：无加成（返回 0）
+>
+> **权威来源**：吸收净值的计算逻辑和最终值定义于 `character-background.md` Section 2.3.2 的 `IsSpecialCombination` 函数。
+
 ## Formulas
 
 ### 公式1：allegiance 变化计算
 
 NPC 对玩家的态度（allegiance）根据玩家交互行为实时更新。
 
-`AllegianceDelta = BaseChange * InteractionTypeMultiplier * ContextMultiplier * RelationshipMultiplier`
+`AllegianceDelta = BaseChange * |InteractionTypeMultiplier| * ContextMultiplier * RelationshipMultiplier`
+
+> **公式所有权说明**：`AllegianceDelta` 计算公式由 NPC AI System 唯一定义并持有。DialogTree Interface Protocol (dialog-tree-interface.md) 和 Gritty Takedowns (gritty-takedowns.md) 中的 allegiance 变化公式均引用本定义。
+>
+> **乘数取绝对值说明**：`InteractionTypeMultiplier` 可能为负值（如威胁=-1.0），表示态度变化的方向（降低）。但计算变化量的大小时，应使用其绝对值。例如，威胁NPC时 `BaseChange=-20`，`InteractionTypeMultiplier=-1.0`，则 `AllegianceDelta = -20 * |-1.0| * ContextMultiplier * RelationshipMultiplier = -20 * 1.0 * ...`，最终导致 allegiance 下降 20 点。
 
 | 变量 | 定义 | 范围/值 |
 |------|------|---------|
 | `BaseChange` | 基础变化值 | 见交互类型表 |
 | `InteractionTypeMultiplier` | 交互类型乘数 | 威胁=-1.0, 贿赂=1.0, 欺骗=0.8, 心理操纵=1.2 |
-| `ContextMultiplier` | 情境乘数 | NPC 当时 Alert State：UNDETECTED=1.0, SUSPECT=1.2, SEARCH=1.5 |
+| `ContextMultiplier` | 情境乘数 | NPC 当时 Alert State：UNDETECTED=1.0, SUSPECT=1.2, SEARCH=1.5, ALERT=2.0 |
 | `RelationshipMultiplier` | 关系乘数 | 派系敌对=0.8, 派系中立=1.0, 派系友好=1.2 |
+
+**RelationshipMultiplier 判定来源映射表**：
+
+`RelationshipMultiplier` 的"敌对/中立/友好"判定来源于**派系关系矩阵**（见 factions.md Section 7 派系关系矩阵），具体映射规则如下：
+
+| 派系关系类型 | RelationshipMultiplier | 说明 |
+|-------------|----------------------|------|
+| 敌对/压制/冲突 | 0.8 | 消极影响玩家行为的后果（威胁、攻击等） |
+| 中立/警惕/竞争 | 1.0 | 无加成，按默认变化量计算 |
+| 友好/联盟/从属 | 1.2 | 积极影响玩家行为的后果（贿赂、转化等） |
+
+> **映射规则说明**：
+> - `RelationshipMultiplier` 反映的是**派系**对玩家的整体态度，而非单个 NPC 的 allegiance 值
+> - 派系关系类型定义见 factions.md Section 7 "派系关系矩阵"
+> - NPC 的 individual allegiance 值（-100 ~ +100）由公式1独立计算，不直接影响 `RelationshipMultiplier`
+> - 但 individual allegiance 可以与 `RelationshipMultiplier` 叠加影响 NPC 行为（例如：友好派系的 NPC 即使 allegiance 略负，也不太可能主动攻击玩家）
 
 **立即后果变化量表（示例）**：
 
@@ -410,9 +493,11 @@ NPC 对玩家的态度（allegiance）根据玩家交互行为实时更新。
 
 `ThreatScore = DistanceScore + SeverityScore + UrgencyScore`
 
+> **权重说明**：三个评分采用均等权重（1.0 : 1.0 : 1.0），直接相加求和，无额外系数。
+
 | 变量 | 定义 | 计算方式 |
 |------|------|---------|
-| `DistanceScore` | 距离评分 | `1.0 - (DistanceToThreat / MaxPerceptionRange)`，范围 0.0~1.0 |
+| `DistanceScore` | 距离评分 | `Max(0.0, 1.0 - (DistanceToThreat / MaxPerceptionRange))`，**Clamp 到非负值**，范围 0.0~1.0。当 `DistanceToThreat >= MaxPerceptionRange` 时，DistanceScore = 0.0（不会产生负值）。 |
 | `SeverityScore` | 严重性评分 | 视觉威胁=1.0, 听觉威胁=0.6, 间接证据=0.3 |
 | `UrgencyScore` | 紧迫性评分 | 基于威胁类型：直接射击=1.0, 接近中=0.8, 静止=0.4 |
 
@@ -467,24 +552,25 @@ EffectiveVisionRange = MaxPerceptionRange
                       × WeatherModifier   // 天气系统提供
                       × LightModifier    // 光照系统提供
 
-// 限制下限：最低保留 30% 的基础感知范围
-EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
+// 限制下限：最低保留 35% 的基础感知范围（引用 MinVisionMultiplier = 0.35）
+EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × MinVisionMultiplier)
 ```
 
 | 变量 | 定义 | 来源 | 说明 |
 |------|------|------|------|
-| `MaxPerceptionRange` | 基础感知范围 | NPC AI Tuning Knobs | 默认 15 米 |
+| `MaxPerceptionRange` | 基础感知范围 | **直接引用 `SHARED_VISION_RANGE = 15.0m`（共享配置常量）** | 默认 15 米 |
 | `WeatherModifier` | 天气视野折扣 | Weather System `GetWeatherModifier()` | 雾天=0.7，其他=1.0 |
 | `LightModifier` | 光照视野折扣 | Lighting System `GetLightModifier()` | 昏暗=0.7，黑暗=0.4，明亮/正常=1.0 |
+| `MinVisionMultiplier` | 最低视野倍率下限 | Weather System `MinVisionMultiplier = 0.35` | 天气×光照叠加后保留 35% 下限 |
 
 > **接口调用说明**：
 > - `GetWeatherModifier()` 和 `GetLightModifier()` 由各自的系统提供，NPC AI 系统在计算感知时调用
 > - 两个 Modifier 直接相乘，叠加在 `MaxPerceptionRange` 上
-> - 如果 `WeatherModifier × LightModifier < 0.3`，强制设为 0.3（保留最低感知）
+> - 如果 `WeatherModifier × LightModifier < MinVisionMultiplier`（0.35），强制设为 0.35（保留最低感知，与 weather-system.md 的 MinVisionMultiplier 一致）
 
 | 变量 | 定义 | 计算方式 | 与 LOS 系统的关系 |
 |------|------|---------|------------------|
-| `VisualScore` | 视觉感知评分 | 直接读取 `LOS.CurrentExposure / 100`，范围 0.0~1.0 | LOS 系统计算玩家的暴露进度 |
+| `VisualScore` | 视觉感知评分 | 调用 `LOS.QueryCurrentExposure(npc_id) / 100`，范围 0.0~1.0 | LOS 系统提供 `QueryCurrentExposure(npc_id)` 查询接口，NPC AI 系统通过此接口获取玩家在当前 NPC 视野中的暴露进度。**重要说明**：LOS 的 `CurrentExposure` 已经内含阴影状态影响（通过 DeltaExposure 公式中的 `StealthBonus` 因子），因此 VisualScore 不需要二次处理阴影加成。CurrentExposure 代表"玩家当前被看到的程度百分比"，阴影的影响已经反映在这个百分比值中。 |
 | `AudioScore` | 听觉感知评分 | 静止=0, 潜行=0.3, 行走=0.6, 冲刺=1.0 | NPC AI 独立计算 |
 | `MemoryScore` | 记忆残留评分 | 离开视野后 10 秒内=0.8, 10-30 秒=0.4, 30 秒+=0 | NPC AI 独立计算 |
 
@@ -496,7 +582,7 @@ EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
   - NPC AI 的记忆评分反映 NPC **对玩家的记忆残留**
 - 当 LOS 的 `CurrentExposure >= 100` 时，NPC AI 收到 `PlayerSpottedEvent` 事件，VisualScore 瞬间设为 1.0
 
-> **重要**：NPC AI 系统的 `MaxPerceptionRange`（默认 15 米）与 LOS 系统的 `MaxVisionRange` 必须**保持同步修改**，两者定义的是同一种感知距离的不同视角。
+> **重要**：NPC AI 系统的 `MaxPerceptionRange`（15米）与 LOS 系统的 `MaxVisionRange`（15米）**都直接引用**共享配置常量 `SHARED_VISION_RANGE = 15.0m`，两者是同一个常量，确保完全同步。修改此常量时，两个系统同时生效。
 
 **感知评分到 Alert State 转换的触发条件映射**：
 
@@ -527,10 +613,12 @@ EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
 
 `ProximityScore = 1.0 - (DistanceToNPC / MaxConfrontationRange)`
 
-| 变量 | 定义 | 默认值 |
-|------|------|-------|
+| 变量 | 定义 | 来源 |
+|------|------|------|
 | `DistanceToNPC` | 玩家到 NPC 的欧几里得距离 | 动态计算 |
-| `MaxConfrontationRange` | 最大对峙触发距离 | 5米（见 Tuning Knobs `MaxConfrontationRange`） |
+| `MaxConfrontationRange` | 最大对峙触发距离 | 见 Tuning Knobs `MaxConfrontationRange`（默认 5米，安全范围 3~10米） |
+
+**默认值来源**：`MaxConfrontationRange` 的默认值为 **5米**，定义于本文档 Tuning Knobs 章节的「感知系统相关」表格中（安全范围 3~10米）。程序员在实现公式5时可直接引用此值，无需跨文档查找。
 
 **示例计算**：
 - 距离 1 米：`ProximityScore = 1.0 - (1/5) = 0.8` → 高威胁，对峙触发 SUSPECT
@@ -611,7 +699,7 @@ EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
 **处理方案**：
 - 发现同伴 **UNCONSCIOUS** 或 **TIED**：立即进入 **ALERT** 状态（确认有威胁，但未确认是玩家）
 - 发现同伴 **DEAD**：立即进入 **SEARCH** 状态（确认有威胁存在）
-- 这不受派系感知共享延迟影响，是即时反应
+- **"即时反应"定义**：延迟为 0 秒，即在发现事件的同一帧内立即触发 Alert State 变化。这不受派系感知共享延迟影响。
 
 **跨系统说明**：Gritty Takedowns 系统在处决被第三方目击时，会发送 `ExecutionWitnessed(npc_id, witness_npc_id)` 事件。本边缘情况6描述的是 NPC "主动发现"同伴异常的处理；当收到 `ExecutionWitnessed` 事件时，视为"被动通知"，处理逻辑同上（根据 witness 的当前状态决定行为）。
 
@@ -623,16 +711,18 @@ EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
 
 **处理方案**：
 - 唤醒后，NPC 首先应用降级规则（如 COMBAT→ALERT，SEARCH→SUSPECT）
-- 然后根据玩家距离进行**叠加判定**：
-  - **距离 < 2 米**：在降级后状态的基础上**额外降一级**（如 ALERT→SEARCH，ALERT→SUSPECT）
+- 然后根据玩家距离进行**分步降级**（两步合计最多降两级）：
+  - **距离 < 2 米**：在降级后状态的基础上**再降一级**（如 ALERT→SEARCH，SEARCH→SUSPECT）
   - **距离 2~5 米**：保持降级后的状态
   - **距离 > 5 米**：按正常感知评分计算
 - 最终状态取降级和距离判定的**较高者**（较警戒状态）
 
 > **逻辑示例**：NPC 在 COMBAT 状态被击晕，唤醒后：
-> 1. 降级规则：COMBAT→ALERT
-> 2. 距离判定（< 2米）：ALERT 额外降一级→SEARCH
+> 1. 第一步（降级规则）：COMBAT→ALERT
+> 2. 第二步（距离判定，< 2米）：ALERT→SEARCH
 > 3. 最终状态：SEARCH
+>
+> **两级降级说明**：这是分步执行的两步降级，不是"额外降一级"后在原状态基础上降。COMBAT 原状态唤醒且距离 < 2 米时：第一步 COMBAT→ALERT（降级规则），第二步 ALERT→SEARCH（距离 < 2 米触发），最终结果为 SEARCH。
 
 ---
 
@@ -693,10 +783,12 @@ EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
   - `ProximityScore > 0.7`（距离极近）
   - NPC 处于 UNDETECTED
   - `Random() < 0.3 + TimeScore * 0.2`
+  - **Random() 实现说明**：使用 `[0.0, 1.0)` 均匀分布的伪随机数生成器，每次判定独立采样
 
 **TimeScore 定义**：
 - `TimeScore = Clamp(TimeInConfrontation / MaxConfrontationTime, 0.0, 1.0)`
 - `TimeInConfrontation`：玩家保持在对峙距离内的累计时间（秒）
+- **`TimeInConfrontation` 追踪责任**：由 NPC AI 系统在内部追踪。当玩家进入对峙距离（`ProximityScore > 0.7`）时开始累计，玩家离开对峙距离或触发 SUSPECT 时重置为 0。**
 - `MaxConfrontationTime`：最大对峙时间阈值，默认 3.0 秒
 - 含义：玩家对峙越久，NPC 越容易产生怀疑（3秒后概率 = 0.3 + 1.0 × 0.2 = 0.5）
 - 分支：
@@ -745,13 +837,43 @@ EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
 **问题**：派系感知共享中"内容降级"后的信息结构是什么？
 
 **处理方案**：
-- 共享信息包含两个字段：`threat_level`（威胁等级）和 `location`（威胁位置，可选）
-- 威胁等级枚举：`SUSPICIOUS`（可疑）、`CONFIRMED`（确认）、`CRITICAL`（危急）
-- 降级规则：
-  - 同派系共享：保留原始 `threat_level`
-  - 联盟派系共享：降一级（如 CONFIRMED → SUSPICIOUS）
-  - 中立派系共享：降两级（如 CONFIRMED → SUSPICIOUS，最高为 SUSPICIOUS）
-- 位置信息：同派系共享包含位置，联盟/中立派系共享**不包含位置**
+
+**SharedAlertPacket 完整数据结构**：
+
+```csharp
+struct SharedAlertPacket {
+    ThreatLevel  threat_level;    // 威胁等级枚举
+    Vector3?     location;        // 威胁位置（可为 null 表示降级后不包含位置）
+    FactionID    source_faction;   // 发出警报的派系
+    uint         timestamp;        // 发出时间戳（Unix 时间戳，毫秒）
+    NPC_ID       source_npc_id;     // 发出警报的 NPC ID（用于去重）
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `threat_level` | `ThreatLevel` 枚举 | 威胁等级：`SUSPICIOUS`（可疑）、`CONFIRMED`（确认）、`CRITICAL`（危急） |
+| `location` | `Vector3?` | 威胁位置。同派系共享时包含位置（精确坐标）；联盟/中立派系共享时为 `null`（降级后不包含位置信息） |
+| `source_faction` | `FactionID` | 发出警报的派系标识符 |
+| `timestamp` | `uint` | 发出时间戳，用于判断警报是否过期（超过 5 秒的警报自动丢弃） |
+| `source_npc_id` | `NPC_ID` | 发出警报的 NPC 标识符，结合 timestamp 用于去重（同源同帧的重复警报只处理一次） |
+
+**威胁等级降级规则**：
+
+| 派系关系 | 共享概率 | 基础延迟 | 内容降级规则 |
+|---------|---------|---------|-------------|
+| 同派系 | 100% | 2秒 | 保留原始 `threat_level`，包含 `location` |
+| 联盟派系 | 50% | 4秒 | 降一级（如 CONFIRMED → SUSPICIOUS），`location` = `null` |
+| 中立派系 | 10% | 6秒 | 降两级（CONFIRMED/CRITICAL → SUSPICIOUS，因枚举最低值为 SUSPICIOUS），`location` = `null` |
+| 敌对派系 | 0% | — | 不共享 |
+
+**ThreatLevel 枚举值**：
+
+| 枚举值 | 说明 | 触发条件 |
+|--------|------|---------|
+| `SUSPICIOUS` | 可疑 | 对峙-回避、对峙-试探等低威胁场景 |
+| `CONFIRMED` | 确认 | 强制交互-屈服/沟通/抵抗等中等威胁场景 |
+| `CRITICAL` | 危急 | 发现同伴死亡、确认看到玩家入侵者等高威胁场景 |
 
 ---
 
@@ -761,8 +883,8 @@ EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
 
 | 系统 | 接口类型 | 依赖性质 | 说明 |
 |------|---------|---------|------|
-| **玩家控制器 (Player Controller)** | 数据读取 | 硬依赖 | 读取玩家世界坐标、运动状态、移动速度，用于计算感知距离和方向 |
-| **视野与监听系统 (LOS & Eavesdropping)** | 事件接收 | 硬依赖 | 接收 `PlayerSpottedEvent` 事件触发 Alert State 变化；NPC 对话文本作为 LOS 系统的输入源 |
+| **玩家控制器 (Player Controller)** | 数据读取 + 事件订阅 | 硬依赖 | 读取玩家世界坐标、运动状态、移动速度，用于计算感知距离和方向；订阅 `NoiseEvent`（玩家移动产生的噪音事件）用于 NPC 听觉感知计算 |
+| **视野与监听系统 (LOS & Eavesdropping)** | 事件接收 + 查询接口 | 硬依赖 | 接收 `PlayerSpottedEvent` 事件触发 Alert State 变化；调用 `QueryCurrentExposure(npc_id)` 查询接口获取玩家的中间暴露进度（0~100）用于计算 VisualScore；NPC 对话文本作为 LOS 系统的输入源 |
 | **脆弱度与伤害系统 (Health & Lethality)** | 内部接口 | 硬依赖 | 通过内部接口接收 Health 系统的伤害结果通知，触发 World State 更新；提供 `QueryState(NPC_ID)` 查询接口 |
 | **天气系统 (Weather System)** | 查询接口 | 软依赖 | 调用 `GetWeatherModifier()` 获取天气对 NPC 视野范围的折扣 |
 | **光照系统 (Lighting System)** | 查询接口 | 软依赖 | 调用 `GetLightModifier()` 获取光照对 NPC 视野范围的折扣；调用 `GetPlayerShadowState()` 获取玩家是否处于阴影中 |
@@ -776,6 +898,17 @@ EffectiveVisionRange = Max(EffectiveVisionRange, MaxPerceptionRange × 0.3)
 | **沉重处决系统 (Gritty Takedowns)** | 查询接口 + 事件订阅 | 软依赖 | 提供 `QueryAlertState(NPC_ID)` 和 `QueryState(NPC_ID)`；订阅 `InteractionEvent`（威胁/击杀/捆绑等）触发 NPC 状态变化 |
 | **理智/愤怒系统 (Sanity/Rage)** | 数据发送 | 软依赖 | 接收被击杀 NPC 的 `Tag`（Enemy/Accomplice/Victim）以计算理智增减 |
 | **环境交互系统 (Environment Interaction)** | 事件接收 | 软依赖 | 接收环境交互触发的事件（如某扇门被打开），NPC 可能感知到并触发 SUSPECT |
+| **主角背景角色系统 (Character Background)** | 数据接收 | 硬依赖 | 接收 `AttitudeModifier`（NPC 对玩家的初始态度修正）和 `OldAcquaintanceBonus`（旧识关系枚举定义）用于计算 NPC 对玩家的初始态度 |
+
+> **苍白之手 (The Pale Hand) BaseAllegiance 确认**：
+> 根据 Character Background 系统的反向验证计算（character-background.md Section 3 公式3），苍白之手对玩家的 `BaseAllegiance = -20`。
+> 验证计算：表2.1中特工 vs 苍白之手 = -10
+> - 公式3（NPC AI System内部计算）：`-10 = BaseAllegiance + AttitudeModifier_Agent(+15) + FactionModifier_苍白之手(-5) + OldAcquaintanceBonus(0)`
+> - 解得：`BaseAllegiance_苍白之手 = -20`
+>
+> ⚠️ **说明**：Character Background 系统引入了 BackgroundAdjustment 机制处理部分组合的计算差异，但 NPC AI System 的 `BaseAllegiance` 和 `FactionModifier` 值（苍白之手：-20 和 -5）保持不变。Character Background 提供的 BackgroundAdjustment 仅用于本系统内部的公式验证，不影响 NPC AI System 的态度计算。
+>
+> ✅ **已确认**：`BaseAllegiance_苍白之手 = -20`，`FactionModifier_苍白之手 = -5`
 
 ### 依赖关系矩阵
 
@@ -813,7 +946,7 @@ Health 系统 ───► 　　　
 | 帮派核心成员 | 7 | 6 | 抵抗倾向高，不易逃跑 |
 | 普通守卫 | 5 | 5 | 中等抵抗力 |
 | 胆小职员 | 3 | 2 | 容易屈服，容易回避或求饶 |
-| 无辜平民 | 2 | 3 | 极易屈服，极易逃跑或求饶 |
+| 无辜平民 | 2 | 3 | 容易屈服，可能回避或逃跑 |
 
 > **Courage 说明**：Courage < 3 时触发回避行为。胆小职员 Courage=2 会触发回避，符合直觉；无辜平民 Courage=3 接近阈值，描述为"极易逃跑"可能略有出入，但仍在合理范围内。
 
@@ -845,7 +978,7 @@ Health 系统 ───► 　　　
 
 | 参数名 | 默认值 | 安全范围 | 极端行为 | 说明 |
 |--------|-------|---------|---------|------|
-| `MaxPerceptionRange` | 15 米 | 8~30 米 | 过短=NPC 很迟钝，过长=无处可藏 | NPC 最大感知距离 |
+| `MaxPerceptionRange` | 15 米（引用 `SHARED_VISION_RANGE`） | 8~30 米 | 过短=NPC 很迟钝，过长=无处可藏 | NPC 最大感知距离，必须与 LOS 系统的 `MaxVisionRange` 同步修改 |
 | `MaxConfrontationRange` | 5 米 | 3~10 米 | 过短=难以对峙，过长=太容易触发 | 对峙威胁的触发距离 |
 | `SharedAlertBaseDelay` | 2 秒 | 1~5 秒 | 过短=警报传播太快，过长=玩家有时间差 | 同派系感知共享基础延迟 |
 | `SharedAlertSpeed` | 10 米/秒 | 5~20 米/秒 | 过短=跨区域警报，过长=本地化感知 | 感知共享传递速度 |
@@ -901,13 +1034,23 @@ Health 系统 ───► 　　　
 
 | 参数名 | 默认值 | 安全范围 | 极端行为 | 说明 |
 |--------|-------|---------|---------|------|
-| `ChokeOutWindow` | 1.0 秒 | 0.5~2.0 秒 | 过短=玩家几乎总能阻止警报，过长=无法阻止 | 玩家必须在 NPC 广播 SharedAlert 完成前完成击杀，才能阻止警报扩散 |
+| `ChokeOutWindow` | 1.0 秒 | 0.5~2.0 秒 | 过短=玩家几乎总能阻止警报，过长=无法阻止 | **Alpha阶段使用**。玩家必须在 NPC 广播 SharedAlert 完成前完成击杀，才能阻止警报扩散 |
+
+> **MVP 说明**：`ChokeOutWindow` 机制属于 Alpha 阶段实现内容。MVP 简化方案：NPC 死亡后不等待广播完成，直接死亡，警报在下一帧根据派系共享规则正常扩散。
 
 **锁喉机制时序精确定义**：
 - T+0.0s：NPC 进入 ALERT 状态，广播计时开始
 - T+0.0s：NPC 立即向调度器注册延迟广播任务（延迟=派系共享延迟）
 - T+ChokeOutWindow：锁喉窗口关闭。如果玩家在此之前完成击杀，广播任务被取消
 - T+派系延迟（如未被击杀）：广播任务执行，警报扩散
+
+---
+
+### 行为循环相关
+
+| 参数名 | 类型 | 默认值 | 安全范围 | 说明 |
+|--------|------|--------|---------|------|
+| `BehaviorCycleInterval` | float | 1.5秒 | 1.0~3.0秒 | NPC 行为循环评估间隔。过短=性能压力增大，过短频繁重新评估行为树；过长=NPC 反应迟钝，行为切换不及时 |
 
 ## Visual/Audio Requirements
 
@@ -1047,8 +1190,8 @@ Health 系统 ───► 　　　
 |---|---------|---------|
 | AC-14 | 对峙不自动触发 Alert State 变化 | 玩家接近但不进入交互范围，验证 NPC 保持 UNDETECTED |
 | AC-15 | 强制交互立即触发 SUSPECT | 执行强制交互，验证 NPC 立即进入 SUSPECT |
-| AC-16 | Bravery=8 的 NPC 在 allegiance=-20 时会抵抗 | 设置正确参数（Bravery=8, allegiance=-20），执行强制交互，验证抵抗行为。参数配置：Bravery=8（NPC类型模板的帮派核心成员），allegiance=-20（通过玩家威胁降至）。判定公式：`Allegiance < -30 OR Bravery × 10 > CurrentAllegianceChange` → -20 不小于 -30，但 Bravery×10=80 > |-20|=20，故抵抗 |
-| AC-17 | Bravery=2 的 NPC 在 allegiance=+10 时会屈服 | 设置正确参数（Bravery=2, allegiance=+10），执行强制交互，验证屈服行为。参数配置：Bravery=2（NPC类型模板的帮派核心成员），allegiance=+10。判定公式：`Allegiance > +20 OR Courage < 2` → +10 不大于 +20，但 Bravery=2 意味着 Courage 也可能较低，需同时验证 Courage<2 时屈服 |
+| AC-16 | Bravery=8 的 NPC 在 allegiance=-20 时会抵抗 | 设置正确参数（Bravery=8, allegiance=-20），执行强制交互，验证抵抗行为。参数配置：Bravery=8（NPC类型模板的帮派核心成员），allegiance=-20（通过玩家威胁降至）。判定公式：`Allegiance < -30 OR Bravery × 10 > |CurrentAllegianceChange|` → 条件1（-20 < -30）为 false，但条件2（Bravery×10=80 > |-20|=20）为 true，故 NPC 抵抗 |
+| AC-17 | Bravery=2 且 Courage<2 的 NPC 在 allegiance=+10 时会屈服 | 设置正确参数（Bravery=2, Courage=1, allegiance=+10），执行强制交互，验证屈服行为。参数配置：Bravery=2（无辜平民模板），Courage=1（低于阈值3），allegiance=+10（友好）。判定公式：`Allegiance > +20 OR Courage < 2` → 条件1（+10 > +20）为 false，但条件2（Courage=1 < 2）为 true，故 NPC 屈服 |
 
 ---
 

@@ -7,7 +7,9 @@
 > **Revision Notes**: 2026-04-08 协同修订（配合武器系统修复设计审查问题）：
 > - 补充 `ExplosionEvent` 数据结构定义
 > - 补充 Dependencies 接口说明表（含空间分区优化归属说明）
-> **2026-04-10 战斗团队评审修复**：
+> **2026-04-13 语义修复**：
+> - P1: Line 125 穿透公式注释歧义修复："穿透成功"与"无视护甲"的逻辑关系用 `→` 箭头明确连接，避免与赋值语句的 `=` 混淆
+> - P1: 战斗团队评审修复：
 > - P1: 爆炸伤害边界统一使用 `<=`（边界=致死），与 Weapon System 保持一致
 > - P1: 穿透公式使用 `>=`（穿透值 ≥ 护甲等级 = 穿透成功），Open Questions 描述已修正
 > - P2: 补充 Tuning Knobs 安全范围（StaggerDuration、DownedRecoveryTime、ArmorDurability）
@@ -57,7 +59,7 @@
 
 *   **监听 [所有攻击行为]**：系统接收一个 `DamageEvent` 数据包（包含：攻击者、受击者、伤害类型、命中部位）。
 *   **事件广播**：
-    - 当 NPC 状态发生转移时，由 NPC AI 系统广播 `NPCStateChangedEvent`（Health System 触发后 NPC AI 系统负责广播）
+    - 当 NPC 状态发生转移时，由 Health System 广播 `NPCStateChangedEvent`，NPC AI 系统订阅此事件
     - 当玩家状态发生转移时，Health System 广播 `PlayerDamagedEvent`
 *   **提供给 [沉重处决系统]**：判定目标是否处于 `Staggered` 或 `Downed` 状态，这是许多正面环境处决的触发前置条件（即：先用砖头砸晕，再进行处决）。
 
@@ -71,7 +73,7 @@
 | `source_entity_id` | int | 伤害来源实体 ID |
 | `is_lethal` | bool | 是否为致命伤害 |
 
-**`NPCStateChangedEvent` 数据结构**（由 NPC AI 系统广播）：
+**`NPCStateChangedEvent` 数据结构**（由 Health 系统广播，NPC AI 系统订阅）：
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -115,6 +117,9 @@ Healthy ←─────── StaggerDuration ─────── Staggered
 
 ```
 # 穿透判定（每次命中时重新评估）
+# ============================================================
+# 【设计决策】当穿透成功时，护甲完全不生效，目标直接死亡
+# ============================================================
 if (ArmorState == DESTROYED):
     # 护甲已损毁，无视护甲，直接判定
     if (DamageType == Lethal):
@@ -122,7 +127,7 @@ if (ArmorState == DESTROYED):
     else:
         TargetState = STAGGERED
 elif (weapon_penetration >= target_armor_level):
-    # 穿透成功，无视护甲，直接触发 Lethal 死亡
+    # 穿透值 >= 护甲等级 → 穿透成功（无视护甲，直接致死）
     TargetState = DEAD
 else:
     # 穿透失败，消耗护甲耐久，触发 Staggered
@@ -145,6 +150,71 @@ else:
 - 如果穿透值 >= 护甲等级，穿透成功，角色立即死亡
 - 如果穿透值 < 护甲等级，穿透失败，消耗1点护甲耐久，角色进入 Staggered
 - 护甲耐久耗尽后变为 DESTROYED 状态，不再提供保护
+- **护甲恢复机制**：
+
+护甲是"有限的战术资源"，其恢复机制设计必须服务于"致命的脆弱感"核心设计。
+
+**恢复方式**：
+
+| 恢复类型 | 恢复内容 | 触发条件 | 典型场景 |
+|---------|---------|---------|---------|
+| **主动修复** | 护甲耐久完全恢复 | 消耗医疗包资源或访问特定 NPC | 战斗间隙的资源管理 |
+| **自动解除** | 护甲状态从 DESTROYED 恢复为 ACTIVE，耐久不自动回复 | 脱离战斗后等待冷却时间 | 战斗失败/撤退后的惩罚性恢复 |
+
+**主动修复详细规则**：
+- 玩家可使用 `ArmorRepairKit`（护甲修复包）道具主动修复护甲
+- 修复使用条件：护甲状态为 ACTIVE（未损毁）但耐久 < 最大值，或刚经历战斗（冷却时间 3 秒内未受到伤害）
+- 修复效果：护甲耐久恢复至最大值（Light=1, Heavy=2）
+- 修复过程中角色处于轻微硬直（约 0.5 秒），无法移动或攻击
+
+**自动解除详细规则**：
+- 护甲进入 DESTROYED 状态后，经过 `ArmorReactivationDelay` 时间自动解除损毁
+- 解除后护甲状态变为 ACTIVE，但耐久归零（称为 FRAGILE 脆弱状态）
+- 脆弱状态下的护甲再承受一次穿透失败将直接永久损毁（PERMANENTLY_DESTROYED，无法自动解除，只能通过道具修复）
+- 自动解除计时器在玩家受到任何伤害时重置（防止玩家蹲守等待）
+
+**护甲状态机扩展**：
+```
+ACTIVE (有护甲)
+    │
+    │ (穿透失败 -1 耐久)
+    ▼
+WORN (耐久 > 0) ────► 主动修复 ───► ACTIVE
+    │
+    │ (耐久归零)
+    ▼
+DESTROYED (损毁)
+    │
+    │ (ArmorReactivationDelay 后自动解除)
+    ▼
+FRAGILE (脆弱) ────► 主动修复 ───► ACTIVE
+    │
+    │ (再承受穿透失败)
+    ▼
+PERMANENTLY_DESTROYED (永久损毁，无法自动恢复)
+```
+
+**护甲恢复公式**：
+
+1. **自动解除延迟计算**：
+   `ReactivationTimer = ArmorReactivationDelay × (1 - ArmorQualityBonus)`
+
+   | 变量 | 定义 | 典型值 |
+   |------|------|--------|
+   | `ArmorReactivationDelay` | 基础自动解除延迟 | 60s |
+   | `ArmorQualityBonus` | 护甲品质修正（影响自动解除速度） | Light=0.0, Heavy=0.3 |
+   | `ReactivationTimer` | 实际需要的等待时间 | Light=60s, Heavy=42s |
+
+2. **脆弱状态惩罚**：
+   - 脆弱状态下的护甲被穿透失败时，直接永久损毁
+   - 脆弱状态下的护甲被修复后，品质降级（Heavy → Light）
+
+**战术影响分析**：
+- 护甲恢复机制迫使玩家在"使用资源修复"和"冒险继续战斗"之间做出选择
+- 自动解除机制确保护甲不会永久损失，但等待过程使玩家在脆弱期暴露于风险中
+- FRAGILE 状态的引入增加了"护甲即将永久损毁"的高风险状态，提升紧张感
+- 修复过程的硬直使修复决策具有风险（被敌人趁虚而入）
+
 *   **爆炸伤害（混合型）**：
     *   *问题*：手榴弹、C4 等爆炸物造成范围伤害，与穿透伤害是独立机制。
     *   *处理*：爆炸伤害由武器系统计算，Health 系统执行最终判定：
@@ -154,15 +224,26 @@ else:
 ExplosionEvent:
     position: Vector3        // 爆炸中心位置
     radius: float           // 爆炸半径（米）
-    lethal_ratio: float      // 致死半径比例（如 0.3 表示 30% 半径内致死）
+    lethal_radius_ratio: float      // 致死半径比例（如 0.3 表示 30% 半径内致死）
     base_damage: float      // 基础伤害（爆炸中心）
+    stagger_multiplier: float // 硬直伤害倍率（远距离Blunt伤害的硬直效果放大系数）
 ```
 
-        1. Health 系统接收 `ExplosionEvent(position, radius, lethal_ratio, base_damage)`
+**统一命名说明**：为与武器系统保持一致，本系统所有 `lethal_ratio` 参数更名为 `lethal_radius_ratio`。
+
+**空间分区参数**：
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `SpatialPartitionType` | enum | Quadrant（2D）/ Octree（3D） | 空间分区算法选择 |
+| `SpatialPartitionCellSize` | float | 2.0m | 分区单元格大小 |
+| `SpatialPartitionMaxDepth` | int | 8 | 最大递归深度 |
+| `SpatialPartitionRebuildInterval` | float | 0.0s | 重建间隔（0=每帧重建） |
+
+        1. Health 系统接收 `ExplosionEvent(position, radius, lethal_radius_ratio, base_damage, stagger_multiplier)`
         2. 使用空间分区（Quadrant/Octree）预筛选范围内实体，避免 O(n) 全实体遍历
         3. 对范围内每个实体，基于距离计算伤害类型：
-           - 若 `distance <= radius × lethal_ratio`：Lethal 伤害 → DEAD
-           - 若 `distance > radius × lethal_ratio` 且在爆炸半径内：`Blunt` 伤害 → Staggered/Downed
+           - 若 `distance <= radius × lethal_radius_ratio`：Lethal 伤害 → DEAD
+           - 若 `distance > radius × lethal_radius_ratio` 且在爆炸半径内：`Blunt` 伤害 → Staggered/Downed
         4. 爆炸伤害绕过护甲直接作用于角色（护甲不被摧毁）
         5. **爆炸警报广播**：当爆炸造成任意 NPC 死亡时，Health 系统广播 `ExplosionAlertEvent`：
            - `position`：爆炸中心
@@ -185,16 +266,26 @@ ExplosionEvent:
 *   **上游依赖**：无 (基础层)。
 *   **下游依赖**：
     *   **武器系统 (Weapon System)**: 软依赖 (武器系统发送 `DamageRequest` 和 `ExplosionEvent` 到本系统，但不依赖本系统的输出)。
-    *   **NPC AI系统**: 软依赖 (需要依据自身和友军的健康状态切换行为树)。
+    *   **NPC AI系统**: 硬依赖 (NPC AI 系统订阅本系统广播的 `NPCStateChangedEvent`，需要依据自身和友军的健康状态切换行为树)。
     *   **沉重处决系统**: 硬依赖 (需要查询目标是否处于 Staggered/Downed 状态以触发环境处决；向 Health 系统发送 DamageRequest 执行伤害)。
+    *   **道具/库存系统 (Item System)**: 硬依赖 (护甲修复需要消耗 `ArmorRepairKit` 道具；道具系统需提供查询/扣除/冷却机制)。
+
+**接口扩展**：
+
+| 接口 | 方向 | 负载 | 说明 |
+|------|------|------|------|
+| `ArmorRepairRequest` | → 道具系统 | `{player_id, armor_type}` | 玩家请求修复护甲 |
+| `ArmorRepairResult` | ← 道具系统 | `{success, remaining_kits}` | 修复请求的结果（成功/失败/资源不足） |
+| `ArmorRepairCooldownQuery` | → 道具系统 | `{player_id}` | 查询玩家是否处于修复冷却期 |
+| `ArmorRepairCooldownEvent` | ← 道具系统 | `{player_id, cooldown_remaining}` | 冷却时间更新事件（用于 UI 显示） |
 
 **接口说明**：
 
 | 接口 | 方向 | 负载 | 说明 |
 |------|------|------|------|
 | `DamageRequest` | ← 武器系统/沉重处决 | `{target_id, damage_type, penetration, source}` | 伤害请求 |
-| `ExplosionEvent` | ← 武器系统 | `{position, radius, lethal_ratio, base_damage}` | 爆炸物引爆（混合型：近距离Lethal，远距离Blunt） |
-| `NPCStateChangedEvent` | → NPC AI 系统 | `{npc_id, old_state, new_state, damage_type}` | NPC 状态变化（由 NPC AI 系统广播） |
+| `ExplosionEvent` | ← 武器系统 | `{position, radius, lethal_radius_ratio, base_damage, stagger_multiplier}` | 爆炸物引爆（混合型：近距离Lethal，远距离Blunt）。`stagger_multiplier`参数值来源于武器系统的 Tuning Knobs 参数 `StaggerMultiplier`（默认值 1.5，安全范围 1.0~2.0），由武器系统在构造 ExplosionEvent 时直接传入。Health 系统不关心其计算过程，只负责将其应用于 Blunt 伤害的硬直效果计算 |
+| `NPCStateChangedEvent` | → NPC AI 系统 | `{npc_id, old_state, new_state, damage_type}` | NPC 状态变化（由 Health 系统广播，NPC AI 系统订阅） |
 | `PlayerDamagedEvent` | → 音频系统 | `{player_id, damage_type, hit_location, is_lethal}` | 玩家受击（由 Health 系统广播） |
 | `ExplosionAlertEvent` | → NPC AI 系统 | `{position, radius, victim_id, killer_is_player}` | 爆炸物引爆时广播，强制范围内 NPC 进入 ALERT 状态（详见 Edge Cases） |
 | `FriendlyFireExplosionEvent` | → NPC AI 系统 | `{victim_id, killer_id, faction_relation, explosion_position}` | 友军误伤爆炸时广播，触发派系感知惩罚（详见 Edge Cases） |
@@ -207,6 +298,11 @@ ExplosionEvent:
 | `DownedRecoveryTime` | float | 15s | 10s ~ 30s | 倒地后自动苏醒时间。太短让"地面处决"窗口价值降低，太长玩家可从容补刀。苏醒后先进入 Staggered，再经 StaggerDuration 转回 Healthy |
 | `ArmorDurability_Light` | int | 1 | 1 | 轻装护甲：可承受穿透失败的次数 |
 | `ArmorDurability_Heavy` | int | 2 | 2 | 重装护甲：可承受穿透失败的次数 |
+| `ArmorReactivationDelay` | float | 60s | 30s ~ 120s | 护甲从 DESTROYED 状态自动解除损毁的延迟时间。过长使玩家脆弱期太长，过短让护甲失去"稀缺感" |
+| `ArmorQualityBonus_Light` | float | 0.0 | 0.0 | 轻装护甲的品质修正（影响自动解除速度）。轻装护甲品质较低，无修正 |
+| `ArmorQualityBonus_Heavy` | float | 0.3 | 0.2 ~ 0.4 | 重装护甲的品质修正。重装护甲材质更好，自动解除更快 |
+| `ArmorRepairStaggerDuration` | float | 0.5s | 0.3s ~ 1.0s | 使用修复包时的硬直持续时间。太短使修复无风险，太长让敌人有可乘之机 |
+| `ArmorRepairCooldown` | float | 3s | 2s ~ 5s | 修复冷却时间（最近受击后的等待期）。防止玩家边打边修无脑续航 |
 
 **安全范围设计依据**：
 
@@ -215,6 +311,10 @@ ExplosionEvent:
 | `StaggerDuration` < 1.0s | 硬直几乎无法被利用，失去处决窗口 | 敌人硬直过长，玩家可无风险连击 |
 | `DownedRecoveryTime` < 10s | "地面处决"决策时间过短 | 玩家可从容处理多个倒地敌人 |
 | `ArmorDurability` > 2 | — | 护甲过强，削弱 Lethal 武器价值 |
+| `ArmorReactivationDelay` < 30s | 脆弱期过短，护甲稀缺感不足 | 脆弱期过长，玩家被迫放弃护甲战术 |
+| `ArmorQualityBonus` < 0.2 或 > 0.4 | 品质差异不明显，护甲分级失去意义 | 重装护甲过于强力 |
+| `ArmorRepairStaggerDuration` < 0.3s | 修复无风险，破坏资源管理决策 | 修复过于危险，玩家放弃修复 |
+| `ArmorRepairCooldown` < 2s | 玩家可边打边修，破坏战斗节奏 | 冷却过长，战斗后修复等待感明显 |
 
 ## Visual/Audio Requirements
 
@@ -237,6 +337,12 @@ ExplosionEvent:
 *   如果使用带有高 Penetration 属性的武器击中护甲，可以无视护甲直接致死。
 *   实体受到 Blunt 伤害时，播放硬直动画；连续受到 Blunt 伤害时正确转入 Downed 倒地状态。
 *   状态切换时（如受击硬直），必须能够正确向世界广播事件，以便 AI 和处决系统能监听到。
+*   **护甲恢复验收**：
+    *   护甲进入 DESTROYED 状态后，经过 `ArmorReactivationDelay` 时间自动解除，状态变为 FRAGILE，耐久归零。
+    *   玩家使用修复包后，护甲耐久恢复至最大值，状态从 FRAGILE/WORN 转回 ACTIVE。
+    *   FRAGILE 状态下的护甲再承受穿透失败，直接永久损毁为 PERMANENTLY_DESTROYED，无法自动恢复。
+    *   修复过程中玩家被强制进入轻微硬直（`ArmorRepairStaggerDuration`），无法移动或攻击。
+    *   修复冷却时间（`ArmorRepairCooldown`）内未受到伤害才允许修复，防止边打边修。
 
 ## Open Questions
 
@@ -245,3 +351,4 @@ ExplosionEvent:
 *   *问题3（已解决）*：**事件命名统一** — Health 系统发送 `PlayerDamagedEvent`（玩家受伤）和触发 NPC AI 系统的 `NPCStateChangedEvent`（NPC 状态变化）。详见 Interactions with Other Systems。
 *   *问题3（已解决）*：**穿透与护甲判定顺序** — 判定顺序为：1) 检查 Penetration >= ArmorLevel → 直接致死（穿透成功，无视护甲）；2) Penetration < ArmorLevel → 穿透失败，消耗护甲耐久，转为 Staggered。护甲耗尽后（ArmorState = DESTROYED），后续 Lethal 打击直接致死。注意：穿透值与护甲等级相等时视为穿透成功（>=），这是经过修订后的一致版本。
 *   *问题4（已解决）*：**Downed 状态恢复路径** — NPC 从 Downed 恢复时，路径为：Healthy → (受击) → Staggered → (再受击) → Downed → (恢复计时) → Staggered → (StaggerDuration 结束) → Healthy。NPC 不会直接从 Downed 跳回 Healthy，必须先经过 Staggered 状态作为过渡。玩家不受 Downed 机制影响（详见问题2）。
+*   *问题5（已解决）*：**护甲恢复机制** — 护甲恢复采用”主动修复 + 自动解除”混合机制。主动修复（消耗道具）完全恢复耐久；自动解除在等待 `ArmorReactivationDelay` 后将 DESTROYED 转为 FRAGILE（耐久归零）。详见 Edge Cases。

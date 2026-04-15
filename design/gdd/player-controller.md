@@ -38,8 +38,10 @@
 | **Idle (待机)** | 无方向输入 | Walk, Crouch, Sprint, Attack | 保持最后的面朝方向 |
 | **Walk (行走)** | 仅方向输入 | Idle, Crouch, Sprint, Attack | 产生低度噪音 |
 | **Sprint (冲刺)** | 方向输入 + 按住冲刺键 | Idle, Walk, Crouch (急停蹲下) | 产生高度噪音，消耗体力，禁止攻击 |
-| **Crouch (潜行)** | 潜行键 (Toggle/切换) | 站立状态下的任何移动 | 移动静音，缩小可视体积 |
-| **Action (动作中)** | 按下攻击或互动键 | 动画结束后返回 Idle/Walk | 锁定玩家所有位移输入 |
+| **StaminaExhausted (体力耗尽修饰符)** | Sprint 状态下 `CurrentStamina` 降至 0 | Walk（当 `CurrentStamina >= MaxStamina * StaminaRegenPenaltyThreshold` 时，`IsStaminaExhausted = false`，Sprint 重新可用） | **修饰符（非独立状态）**；附加在 Walk 状态上的修饰符；维持 Walk 速度与噪音；所有 Sprint 输入被屏蔽；`IsStaminaExhausted = true`；体力以 `StaminaRegenRate` 正常恢复 |
+| **Crouch (潜行)** | 潜行键 (Toggle/切换) | 站立状态下的任何移动；再次按潜行键主动解除；头顶碰撞检测通过时被动解除 | 移动静音，缩小可视体积 |
+| **Attack (攻击)** | 玩家按下攻击键且当前状态允许攻击（Idle/Walk/Crouch） | 动画播放完毕 → Idle；被打断（受击/死亡）→ 对应状态 | 播放攻击动画并造成伤害；动画播放期间 StateMultiplier=0（速度为零，不能移动）；攻击键长按可在动画结束后衔接下一次攻击 |
+| **Action (动作中)** | 按下攻击或互动键 | 动画结束后返回 Idle/Walk | 锁定玩家所有位移输入（速度为0），动画完成后自动释放 |
 
 ### Interactions with Other Systems
 
@@ -105,17 +107,39 @@ RaycastResult:
 - 锁定期间，Player Controller 的 `ProcessInput()` 函数跳过位移输入处理
 - 锁定持有者负责在 `duration` 到期后主动调用 `ReleaseLock()`，或调用 `ForceReleaseLock()` 紧急解锁
 - 若锁定持有者未在 `duration` 内释放，Player Controller 会在超时后自动解锁（防止死锁）
+- **超时阈值**：`LockTimeout = 5.0 秒`。当锁定持续时间超过此值时，Player Controller 自动强制释放锁定，并记录错误日志。
+
+**超时机制设计说明**：
+- 默认超时时间 5 秒足以覆盖绝大多数正常动作动画时长（处决动画通常 1-3 秒）
+- 超时后自动解锁防止玩家因锁定系统故障而永久卡死
+- 超时释放视为异常终止，锁定持有者应在下一次动作开始前检查并重置状态
 
 ## Formulas
 
 **1. 移动速度计算**
-`CurrentVelocity = InputDirection * BaseSpeed * StateMultiplier`
+`CurrentVelocity = InputDirection * BaseSpeed * StateMultiplier * (1.0 + RageSpeedBonus)`
+
 *   **InputDirection**: 玩家输入的单位方向向量（长度为 0 到 1 之间）。
-*   **BaseSpeed**: 基础移动速度。
+*   **BaseSpeed**: 基础移动速度（默认 5.0 m/s）。
 *   **StateMultiplier (状态乘数)**:
     *   Walk (默认) = 1.0
     *   Sprint (冲刺) = 1.6
     *   Crouch (潜行) = 0.5
+    *   Attack (攻击) = 0（攻击动画播放期间，位移速度为零）
+
+**Action Lock 与 IsLocked 的独立机制澄清**：
+
+| 机制 | 来源 | 作用 | 独立性说明 |
+|------|------|------|-----------|
+| **Action Lock** | Player Controller 内部状态机 | 攻击/互动动画播放期间，StateMultiplier设为0，速度为零，动画完成后自动释放 | 独立于IsLocked，是状态机内部的速度控制机制 |
+| **IsLocked** | Player Controller 的系统级接口 | 外部系统（如GrittyTakedowns）通过 `AcquireLock()` 请求接管，位移输入被完全忽略 | 独立于Action Lock，是供外部系统使用的锁定接口 |
+
+**叠加关系**：Action Lock 和 IsLocked 可以叠加。当玩家在攻击动画期间（Action Lock激活），外部系统同时通过 `AcquireLock()` 接管时，两种锁定同时生效，位移输入被完全忽略。这种叠加用于处决等场景——攻击动画的位移锁定（StateMultiplier=0）确保动画播放期间的视觉一致性，而IsLocked确保外部系统在必要时完全接管控制权。
+*   **RageSpeedBonus (愤怒速度加成)**:
+    *   来源：理智/愤怒系统（`sanity-rage-meter.md`）的 `MovementSpeedMultiplier`
+    *   范围：0.0 ~ 0.1（+10% 上限）
+    *   叠加规则：当玩家同时处于 Crouch 状态和 FRENZIED 状态时，`FinalSpeed = BaseSpeed × 0.5 × (1.0 + RageSpeedBonus)`
+    *   数据流向：Sanity/Rage 系统 → 玩家控制器的速度计算模块（每帧更新）
 
 **2. 体力消耗与恢复系统**
 `CurrentStamina = Clamp(PreviousStamina + DeltaStamina, 0, MaxStamina)`
@@ -130,9 +154,15 @@ RaycastResult:
 *   **对角线移动速度叠加**：
     *   *问题*：如果同时按下 W 和 D，未归一化的向量会导致速度变为 1.414 倍。
     *   *处理*：在计算 `CurrentVelocity` 之前，必须对输入向量 `InputDirection` 进行归一化（Normalize）或使用圆形死区限制，确保最大输入幅度为 1.0。
-*   **体力耗尽时的强制惩罚**：
+*   **体力耗尽时的强制惩罚 (StaminaExhausted 状态正式定义)**：
     *   *问题*：玩家如果反复点按冲刺键，可能会在体力为 0 附近反复横跳，导致动画和状态抽搐。
-    *   *处理*：如果体力降至 0，不仅强制降为 Walk 状态，还会触发 `StaminaExhausted` 惩罚状态。在此状态下，体力必须恢复至至少 30%（`StaminaRegenPenaltyThreshold`）后，才允许再次进入 Sprint 状态。
+    *   *处理*：如果体力降至 0，强制退出 Sprint，进入 Walk 状态，同时触发 `StaminaExhausted` 惩罚修饰符。详细行为定义如下：
+        *   **本质**：`StaminaExhausted` 是附加在 Walk 状态上的修饰符，对应控制器内部标志位 `IsStaminaExhausted: bool`，不是独立的平行状态。Walk 状态的所有规则（速度、噪音等）继续生效。
+        *   **进入条件**：`CurrentStamina == 0 AND 当前状态 == Sprint`。控制器检测到此条件时，立即将 `IsStaminaExhausted = true` 并强制切换到 Walk 状态。
+        *   **持续效果**：控制器在处理每帧输入时，若 `IsStaminaExhausted == true`，则所有 Sprint 输入请求（按住冲刺键）一律被屏蔽返回，不触发状态切换。角色以正常 Walk 速度和噪音级别移动。体力仍以 `StaminaRegenRate` 正常恢复（`StaminaRegenDelay` 延迟同样生效）。
+        *   **退出条件**：每帧检测 `CurrentStamina >= MaxStamina * StaminaRegenPenaltyThreshold`（即 ≥ 30%，对应 `StaminaRegenPenaltyThreshold = 0.30`）。条件首次满足时，`IsStaminaExhausted = false`，Sprint 重新可用，不需要玩家任何额外操作。
+        *   **与 Crouch 的交互**：`StaminaExhausted` 修饰符不阻止玩家进入 Crouch 状态。玩家在 StaminaExhausted 期间可以正常下蹲；从 Crouch 回到 Walk/Sprint 时，Sprint 的屏蔽规则仍然生效直到体力恢复阈值。
+        *   **设计意图**：防止"体力抖动"的同时传递"上气不接下气"的沉重感，强化"致命的脆弱感"支柱——玩家过度冲刺会进入一段脆弱的受限窗口期。
 *   **处决动画期间受击**：
     *   *问题*：由于不是无敌特工，如果在处决敌人（处于 Action Lock）时被其他敌人开枪击中怎么办？
     *   *处理*：玩家在处决期间**没有无敌帧 (No i-frames)**。如果受到致命伤害，处决动作会立刻中断并转入死亡状态，被处决的敌人存活（或视动画进度判定为死亡）。这进一步强化了“致命的脆弱感”支柱，要求玩家必须确保环境安全才能执行处决。
@@ -140,11 +170,24 @@ RaycastResult:
     *   *问题*：在低矮掩体下从潜行（Crouch）切换回站立（Walk/Sprint）时，头顶有碰撞物导致穿模或卡死。
     *   *处理*：在执行 `Crouch -> Walk` 状态转换前，向上方发射射线检测。如果有碰撞体阻挡，则拒绝解除下蹲状态，直到玩家移动到开阔区域。
 
+**Crouch → Idle/Walk 状态转换的详细触发条件**：
+
+| 转换类型 | 触发条件 | 说明 |
+|---------|---------|------|
+| **Crouch → Idle** | 潜行状态下松开方向键 | 停止移动后保持下蹲姿态，进入待机 |
+| **Crouch → Walk** | 潜行状态下按下方向键 | 开始移动时自动切换为下蹲行走 |
+| **Crouch → Sprint** | 潜行状态下按方向键+冲刺键 | 解除下蹲后立即进入冲刺（需要足够体力） |
+| **主动解除** | 再次按潜行键 | 玩家主动切换回站立姿态 |
+| **被动解除** | 头顶碰撞检测通过 | 当从低矮掩体移动到开阔区域时自动解除 |
+
+> **注意**：从 Crouch 转换到站立（Idle 或 Walk）时，如果头顶空间不足（上方 `RaycastLength` 范围内有碰撞物），转换会被拒绝，角色保持 Crouch 状态。玩家需要侧向移动到无遮挡区域后才能站立。
+
 ## Dependencies
 
-*   **上游依赖 (本系统依赖谁)**：无 (本系统属于基础层)。
+*   **上游依赖 (本系统依赖谁)**：
+    *   **Sanity/Rage 系统 (sanity-rage-meter.md)**：硬依赖。读取 `RageSpeedBonus`（愤怒速度加成）用于公式1的速度计算。当玩家处于 FRENZIED 状态时，Sanity/Rage 系统向本系统发送 `MovementSpeedBonus`（范围 0.0~0.1），本系统将其应用于 `CurrentVelocity = InputDirection * BaseSpeed * StateMultiplier * (1.0 + RageSpeedBonus)` 公式中。
 *   **下游依赖 (谁依赖本系统)**：
-    *   **视野与监听系统 (LOS & Eavesdropping)**: 软依赖（需要本系统提供玩家坐标与面朝方向）。
+    *   **视野与监听系统 (LOS & Eavesdropping)**: 软依赖（需要本系统提供玩家坐标与面朝方向）。**视野状态查询**：LOS 系统提供 `GetPlayerVisibilityState()` 查询接口，返回玩家当前的视野暴露状态。**移动乘数由本系统自主决定**：Formulas 中的 `StateMultiplier` 由本系统根据玩家当前移动状态（Walk/Sprint/Crouch）独立计算，无需引用 LOS 系统。
     *   **NPC AI系统 (NPC AI System)**: 软依赖（需要本系统广播的 `NoiseEvent`）。
     *   **环境交互系统 (Environment Interaction)**: 硬依赖（需要本系统触发射线检测）。
     *   **沉重处决系统 (Gritty Takedowns)**: 硬依赖（需要接管本系统的 `IsLocked` 状态）。
@@ -152,16 +195,20 @@ RaycastResult:
 ## Tuning Knobs
 
 *   *这些参数将暴露给策划在 Unity Inspector 中直接调整，无需修改代码。*
-*   `BaseSpeed` (基础移速)
-*   `SprintMultiplier` (冲刺速度乘数)
-*   `CrouchMultiplier` (下蹲速度乘数)
-*   `MaxStamina` (最大体力值)
-*   `StaminaDrainRate` (冲刺时的体力消耗速率)
-*   `StaminaRegenRate` (体力恢复速率)
-*   `StaminaRegenDelay` (停止冲刺到开始恢复体力的延迟时间)
-*   `NoiseRadius_Walk` (行走时的噪音广播半径)
-*   `NoiseRadius_Sprint` (冲刺时的噪音广播半径)
-*   `NoiseRadius_Crouch` (潜行时的噪音广播半径，默认 0m，即静音)
+*   `BaseSpeed` (基础移速): **5.0 m/s**（安全范围: 3.0 - 8.0 m/s）
+*   `SprintMultiplier` (冲刺速度乘数): **1.6**（安全范围: 1.4 - 2.0）
+*   `CrouchMultiplier` (下蹲速度乘数): **0.5**（安全范围: 0.3 - 0.7）
+*   `MaxStamina` (最大体力值): **100**（安全范围: 50 - 200）
+*   `StaminaDrainRate` (冲刺时的体力消耗速率): **20/s**（安全范围: 10 - 40/s）
+*   `StaminaRegenRate` (体力恢复速率): **15/s**（安全范围: 10 - 30/s）
+*   `StaminaRegenDelay` (停止冲刺到开始恢复体力的延迟时间): **1.0 s**（安全范围: 0.5 - 2.0 s）
+*   `StaminaRegenPenaltyThreshold` (体力耗尽后恢复阈值): **0.30 (30%)**（安全范围: 0.20 - 0.40）
+*   `NoiseRadius_Walk` (行走时的噪音广播半径): **3.0 m**（安全范围: 1.0 - 5.0 m）
+*   `NoiseRadius_Sprint` (冲刺时的噪音广播半径): **8.0 m**（安全范围: 5.0 - 15.0 m）
+*   `NoiseRadius_Crouch` (潜行时的噪音广播半径): **0.0 m**（静音）
+*   `RaycastLength` (射线检测长度): **2.0 m**（安全范围: 1.0 - 3.0 m）
+*   `RaycastConeAngle` (射线检测锥形角度): **60°**（安全范围: 30° - 90°）
+*   `LockTimeout` (锁定超时时间): **5.0 秒**（安全范围: 3.0 - 10.0 秒）
 
 ## Visual/Audio Requirements
 
@@ -185,5 +232,12 @@ RaycastResult:
 
 ## Open Questions
 
-*   *问题1*：体力耗尽后的“喘息状态”是否需要限制角色的转身速度？（目前仅限制为 Walk 速度，由后续手感测试决定）
+*   *问题1*：体力耗尽后的”喘息状态”是否需要限制角色的转身速度？（目前仅限制为 Walk 速度，由后续手感测试决定）
 *   *问题2*：在斜坡或楼梯上移动时，速度是否需要做坡度衰减？（如果在 3D 物理下开发需要考虑，纯 2D 则可忽略）
+
+## Change Log
+
+| 日期 | 修改人 | 修改内容 |
+|------|--------|----------|
+| 2026-04-13 | Claude | 修复 P1 问题：1) 公式1中 Attack 状态说明更清晰，明确速度为零；2) 状态转换表中 Action 行补充”速度为0”和”动画完成后自动释放”描述；3) 在 Tuning Knobs 中添加 LockTimeout 参数 |
+| 2026-04-15 | Claude | 修复 P2 问题：1) 状态转换表添加 Attack 状态条目（含进入/退出条件、行为、与移动的关系）；2) Crouch→Stand 头顶检测引用统一参数 RaycastLength 替代硬编码值 1.8m；修复 P1 问题：在状态转换表 StaminaExhausted 行添加"修饰符（非独立状态）"标注，消除状态机歧义 |

@@ -7,7 +7,7 @@
 > **Priority**: MVP
 > **Layer**: Presentation
 > **Implements Pillar**: 所有支柱（支撑系统）
-> **Depends On**: 无 (基础展示层)
+> **Depends On**: World Map系统
 
 ## Overview
 
@@ -102,6 +102,72 @@ UI 系统是游戏的所有用户界面元素的中心管理系统，包括 HUD�
 | 对话进行中 | 全部游戏输入 | 对话选择外的所有输入 |
 | 过场动画 | 全部游戏输入 | 全部输入 |
 
+**BlockingReason 枚举定义**
+
+输入屏蔽的原因枚举，用于 `IsInputBlocked = (BlockingLayerActive == true) AND (BlockingReason != NONE)` 判定：
+
+| 枚举值 | 说明 | 优先级 | 触发条件 | 持续时间 | 负责系统 |
+|--------|------|--------|----------|----------|----------|
+| `NONE` | 无屏蔽原因，输入正常 | 0（最低） | 不适用 | 不适用 | 不适用 |
+| `DIALOG` | 对话进行中 | 1 | 玩家进入 NPC 对话范围并触发对话 | 对话持续时间 | Dialog Tree 系统 |
+| `MENU` | 菜单打开（暂停/系统菜单） | 2 | 玩家按下暂停键/ESC | 菜单打开到关闭的持续时间 | UI 系统 |
+| `CINEMATIC` | 过场动画播放中 | 3 | 过场动画开始播放 | 过场动画时长 | Narrative System |
+| `STUNNED` | 角色被击晕/昏迷 | 4 | 受到击晕效果时（如敌人攻击命中） | 击晕持续时间（由战斗系统控制） | 战斗系统 |
+| `REVELATION` | 揭示动画播放中（World Map 地点揭示） | 5 | World Map 系统触发地点揭示事件 | 揭示动画时长（可被玩家确认键中断） | World Map 系统 |
+| `INTERACTION` | 特殊交互进行中（如拾取、开门） | 6 | 玩家与环境物件/NPC 交互触发 | 交互动画持续时间 | 环境交互系统 |
+| `HURT` | 角色受伤（受伤动画播放时屏蔽输入） | 6 | 玩家受到伤害且触发受伤动画 | 受伤动画时长 | Health 系统 |
+| `DEATH` | 角色死亡（死亡动画/黑屏期间屏蔽输入） | 7 | 玩家生命值归零 | 死亡动画/黑屏持续时间 | Health 系统 |
+| `FORCED` | 强制输入屏蔽（最高优先级） | 8（最高） | 特定极端情况（如载入画面、特殊过场） | 由触发源决定 | 任意系统 |
+
+> **优先级说明**：当多个屏蔽原因同时发生时，取优先级最高的 `BlockingReason`。例如，对话中触发揭示动画时，`BlockingReason = REVELATION`（优先级5）而非 `DIALOG`（优先级1）。
+
+**同优先级屏蔽冲突处理规则**：
+
+当多个屏蔽原因具有相同优先级时（如 `INTERACTION` 和 `HURT` 都是优先级 6），使用以下裁决规则：
+
+| 规则 | 说明 |
+|------|------|
+| **新请求优先** | 同优先级时，新发生的屏蔽请求覆盖旧的屏蔽请求 |
+| **时间戳判定** | 通过屏蔽请求的时间戳（`BlockingRequestTimestamp`）确定新旧 |
+| **持续时间保留** | 新屏蔽请求覆盖后，原屏蔽请求的持续时间计时器不重置（如果原屏蔽仍在持续，可用于恢复） |
+| **主动解除** | 高优先级屏蔽结束后，自动恢复低优先级的屏蔽请求（如果其持续时间尚未结束） |
+
+**裁决公式**：
+
+```
+ActiveBlockingReason = Max(ActiveBlockingReasons)
+
+// 同优先级裁决
+if (存在多个相同优先级的屏蔽原因):
+    ActiveBlockingReason = 最晚发生的屏蔽原因（最大时间戳）
+```
+
+**示例**：玩家在交互过程中受到伤害（`INTERACTION` 和 `HURT` 同时触发，优先级都是 6）：
+- `INTERACTION` 在时间戳 T=10.0s 触发
+- `HURT` 在时间戳 T=10.5s 触发
+- 由于 `HURT` 的时间戳更晚（10.5 > 10.0），`ActiveBlockingReason = HURT`
+- 当 `HURT` 的受伤动画结束后，`INTERACTION` 自动恢复（如果其交互动画仍在进行中）
+
+**Alert Layer 队列合并规则**
+
+Alert Layer 负责显示警告/提示信息，采用以下队列管理规则：
+
+| 规则 | 说明 |
+|------|------|
+| **同类型合并** | 同一类型的警告（如同一种伤害指示器）在 `AlertDuration`（默认3秒）内只显示一次，后来的相同警告更新现有警告的显示时间而非创建新警告 |
+| **不同类型垂直堆叠** | 不同类型的警告可以同时显示，按发布时间垂直堆叠（ newest 在顶部） |
+| **最大数量限制** | 同时显示的警告数量受 `MaxAlerts`（默认3个）限制。当达到上限时，最早的警告自动消失（"最早"按创建时间 EventCreationTime 判定） |
+| **优先级覆盖** | 高优先级警告（如"NPC 被击杀！"）可以强制显示，即使达到 `MaxAlerts` 上限也会替换最早的低优先级警告 |
+| **手动关闭** | 玩家可以手动关闭警告（点击或按键），立即从队列移除 |
+
+**警告优先级定义**：
+
+| 优先级 | 警告类型 | 示例 |
+|--------|---------|------|
+| 高 | 击杀/死亡警告 | "NPC被击杀！"、"玩家受伤！" |
+| 中 | 状态变化警告 | "理智下降"、"进入警戒状态" |
+| 低 | 任务更新提示 | "新任务！"、"任务目标更新" |
+
 ---
 
 ## Interactions with Other Systems
@@ -114,7 +180,12 @@ UI 系统是游戏的所有用户界面元素的中心管理系统，包括 HUD�
 | Sanity/Rage 系统 | 心理状态 | 调整 HUD 样式（色调、透明度） |
 | Clue & Journal | 线索数量、任务进度 | 更新 HUD 提示 |
 | World Map | 揭示动画触发 | 播放揭示动画并屏蔽输入 |
-| 任意系统 | 通知/警告 | 在 Alert Layer 显示 |
+| **NPC AI 系统** | `AlertStateChangedEvent`（Alert State 转换） | **订阅此事件以更新 Alert Layer**：当 NPC Alert State 转换为 ALERT/ESCAPE/COMBAT 时，Alert Layer 显示"进入警戒状态"警告（中优先级）；当 NPC 发现玩家（UNDETECTED→SUSPECT）时，显示"感觉有动静"提示（低优先级）；**映射关系**：UNDETECTED/SUSPECT/SEARCH → 低优先级提示，ALERT → 中优先级警告，ESCAPE/COMBAT → 高优先级警告 |
+
+> **HUD 色调调整与 DPP 职责边界说明**：
+> - **UI 系统负责**：HUD 元素本身的色调调整（如 HUD 背景、文字颜色的变化），以及 HUD 透明度响应心理状态
+> - **Dynamic Post-Processing（DPP）负责**：场景级视觉滤镜（整体画面色调、饱和度、暗角、噪点等），DPP 的滤镜效果覆盖整个游戏画面，包括 HUD
+> - 两者协作方式：UI 系统调整 HUD 局部色调以呼应心理状态，DPP 提供全局视觉风格变化。极端心理状态（如 BROKEN、SOUL_SPLIT）下的全局滤镜效果不受 HUD 色调调整影响
 
 ### 数据流出 (Outputs)
 
@@ -123,6 +194,9 @@ UI 系统是游戏的所有用户界面元素的中心管理系统，包括 HUD�
 | 事件总线 | `UIButtonClicked` | UI 交互事件，用于 Audio 系统播放音效 |
 | World Map | `DiscoveryAnimationComplete` | 揭示动画播放完毕，解除输入屏蔽 |
 | 任意系统 | `UIPanelOpened/PanelClosed` | UI 状态变化通知 |
+| **Screen Effects** | `ShakeRequest`（通过事件总线） | HUD 专注模式时发送震动请求，增强反馈感 |
+
+> **VignetteRequest 说明**：极端心理状态下的暗角效果由 Sanity/Rage 系统通过 `VignetteRequest` 直接发送给 Screen Effects（详见 Screen Effects 的 Effects Triggers Matrix），UI 系统不直接发送此事件。 |
 
 ### World Map 揭示动画的输入屏蔽职责
 
@@ -140,14 +214,30 @@ UI 系统是游戏的所有用户界面元素的中心管理系统，包括 HUD�
 ```
 
 **屏蔽的输入类型**：
-- 地图拖拽/缩放
-- 地区选择
-- 菜单打开（ESC）
-- 快速存档
+- **被屏蔽的输入**：地图拖拽/缩放、地区选择、菜单打开（ESC）、快速存档、移动、攻击
+- **可触发中断的输入**：确认键（Enter/左键/A/X）→ 直接完成动画
+- **始终不屏蔽的输入**：无
 
 **动画中断处理**：
 - 玩家点击"确认"按钮 → 动画立即完成 → 发送 DiscoveryAnimationComplete
 - 动画正常播放完毕 → 发送 DiscoveryAnimationComplete
+
+**BlockingReason 裁决公式**：
+
+当多个屏蔽原因同时发生时，使用以下公式确定 ActiveBlockingReason：
+
+```
+ActiveBlockingReason = Max(ActiveBlockingReasons)
+```
+
+裁决规则：
+- 遍历所有当前处于激活状态的 BlockingReason
+- 取优先级数值最大的（Priority 值最大）作为 ActiveBlockingReason
+- 最终输入屏蔽判定：`IsInputBlocked = (BlockingLayerActive == true) AND (ActiveBlockingReason != NONE)`
+
+**示例**：当对话（DIALOG，Priority=1）和揭示动画（REVELATION，Priority=5）同时发生时：
+- ActiveBlockingReason = Max(1, 5) = REVELATION
+- 揭示动画优先级更高，输入继续被屏蔽
 
 ---
 
@@ -246,13 +336,18 @@ UI 系统是游戏的所有用户界面元素的中心管理系统，包括 HUD�
 
 ### 色调规范
 
-| 元素 | 颜色 | Hex |
-|------|------|-----|
-| 正常状态文字 | 白色 | #FFFFFF |
-| 警告文字 | 黄色 | #F4A261 |
-| 错误/危险文字 | 红色 | #E63946 |
-| 提示文字 | 灰色 | #95A5A6 |
-| 背景遮罩 | 半透明黑 | #000000 (60% opacity) |
+| 元素 | 颜色 | Hex | 使用场景说明 |
+|------|------|-----|-------------|
+| 正常状态文字 | 白色 | #FFFFFF | 默认文字显示 |
+| 警告文字 | 黄色 | #F4A261 | UI 层警告提示（如任务目标更新、数量不足） |
+| 错误/危险文字 | 红色 | #E63946 | UI 层严重警告（如死亡、任务失败） |
+| 提示文字 | 灰色 | #95A5A6 | 次要提示、禁用状态 |
+| 背景遮罩 | 半透明黑 | #000000 (60% opacity) | 菜单/面板背景 |
+
+> **UI 警告色与 World Map 危险色的区别**：
+> - **UI 警告色**（黄色 #F4A261、红色 #E63946）用于 UI 元素本身的状态表达，如 HUD 警告文字、背包物品不足提示
+> - **World Map 危险色**用于地图上的危险区域标记、敌人分布显示等地理信息
+> 两者服务于不同的信息维度，UI 系统不直接控制 World Map 的颜色定义
 
 ### 音效反馈
 
@@ -272,11 +367,21 @@ UI 系统是游戏的所有用户界面元素的中心管理系统，包括 HUD�
 ### UI 淡入淡出公式
 
 ```
-CurrentAlpha = Lerp(TargetAlpha, CurrentAlpha, ExpDecay(TimeSinceChange, HalfLife))
+Alpha = 1.0 - ExpDecay(TimeSinceChange, HalfLife)
+CurrentAlpha = Lerp(CurrentValue, TargetValue, Alpha)
 ```
+
+**语义说明**：
+- `Alpha`：插值系数，从0.0线性增长到1.0（经过1.0-ExpDecay转换）
+- 当 `TimeSinceChange = 0` 时，`Alpha = 0.0`，`CurrentAlpha = Lerp(CurrentValue, TargetValue, 0.0) = CurrentValue`（无过渡，保持当前值）
+- 当 `TimeSinceChange → ∞` 时，`Alpha → 1.0`，`CurrentAlpha = Lerp(CurrentValue, TargetValue, 1.0) = TargetValue`（完成过渡，到达目标值）
+- **本实现与 Screen Effects 系统一致**：使用 `1.0 - ExpDecay` 形式，确保过渡从起点开始逐渐到达目标值
+- 过渡曲线：初期变化快（视觉效果明显），后期变化慢（收敛稳定）
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
+| `TargetAlpha` (Visible) | 1.0 | 面板完全可见时的透明度 |
+| `TargetAlpha` (Hidden) | 0.0 | 面板完全隐藏时的透明度 |
 | HalfLife | 0.2s | 透明度过渡半衰期 |
 
 ### 输入屏蔽判定
@@ -314,10 +419,10 @@ IsInputBlocked = (BlockingLayerActive == true) AND (BlockingReason != NONE)
 **问题**：玩家在揭示动画期间反复按确认键。
 
 **处理**：
-- 动画开始时屏蔽输入
-- 第一次确认键直接完成动画
-- 后续确认键忽略
-- 动画完成后才响应新输入
+- 动画开始时屏蔽所有游戏输入（移动、攻击、地图交互等），但**确认键可以触发中断**
+- 第一次确认键：动画立即完成，发送 DiscoveryAnimationComplete
+- 后续确认键：**忽略**（动画已完成，无需再次中断）
+- 动画完成后：所有输入恢复正常响应
 
 ### 边缘情况4：HUD 元素与游戏元素重叠
 
@@ -386,8 +491,8 @@ IsInputBlocked = (BlockingLayerActive == true) AND (BlockingReason != NONE)
 | # | 问题 | 负责人 | 说明 |
 |---|------|--------|------|
 | OQ-1 | ✅ **已解决**：MVP阶段不需要小地图。俯视角本身提供了良好的空间感知，且开发小地图会分散UI资源。 | 游戏设计师 | 俯视角游戏中是否需要小地图 |
-| OQ-2 | HUD 样式是否需要根据心理状态变化？ | 美术设计师 | 目前只调整色调，是否需要更明显变化 |
-| OQ-3 | 游戏手柄是否需要特殊 HUD 布局？ | UX 设计师 | 手柄模式下某些元素可能需要重新定位 |
+| OQ-2 | ✅ **已解决**：MVP采用最小化响应方案（透明度0.9→0.7 + 微弱色调偏移），极端状态由DPP主导 | 游戏设计师 | HUD样式是否需要根据心理状态变化 |
+| OQ-3 | ✅ **已解决**：MVP采用响应式布局检测，手柄模式自动切换 | UX 设计师 | 游戏手柄是否需要特殊HUD布局 |
 
 ---
 
@@ -396,3 +501,4 @@ IsInputBlocked = (BlockingLayerActive == true) AND (BlockingReason != NONE)
 | 日期 | 版本 | 修改内容 | 作者 |
 |------|------|---------|------|
 | 2026-04-08 | 0.1 | 初稿创建 | UI Programmer Agent |
+| 2026-04-15 | 0.2 | P2修复：BlockingReason枚举添加详细说明表格（触发条件、持续时间、负责系统）；添加同优先级屏蔽冲突处理规则（新请求优先+时间戳判定）；更新优先级说明和裁决公式 | Claude Code |

@@ -43,12 +43,12 @@
 ```
 [国家] 小型虚构国家 "毒雾湾"（Gulf of Poison）
   │
-  ├── [城市1] 锈港（Rust Harbor）— 港口工业区
-  │     ├── 地区1.1 旧码头区
-  │     ├── 地区1.2 废品回收站
-  │     └── 地区1.3 船员宿舍区
+  ├── [城市1] 锈港（Rust Harbor）— 港口区域
+  │     ├── [锈港-下港区] The Underport（凋亡议会控制）
+  │     ├── [锈港-工业废墟区] The Rustlands（锈网控制）
+  │     └── [锈港-旧城居民区] The Old Quarter（灰色控制）
   │
-  ├── [城市2] 灰桥（Ash Bridge）— 商业中心
+  ├── [城市2] 灰烬城（Ash City）— 内陆工业城市
   │     ├── 地区2.1 中央市场
   │     ├── 地区2.2 市政广场
   │     └── 地区2.3 后巷街区
@@ -86,7 +86,7 @@
 
 | 地区类型 | 解锁方式 | 示例 |
 |---------|---------|------|
-| **初始可见可进** | 无条件 | 锈港的所有地区、灰桥的所有地区 |
+| **初始可见可进** | 无条件 | 锈港的所有地区、灰烬城的所有地区 |
 | **初始可见但有进入条件** | 需要满足条件（如钥匙、帮派关系） | 被封锁的帮派总部 |
 | **初始不可见，线索揭示** | 收集特定线索后揭示 | 秘密接头点、人口贩卖转运点 |
 
@@ -185,18 +185,24 @@ OnPlayerChooseWait():
 
 #### 地区完成状态
 
-| 状态 | 描述 | 可否重新进入 |
-|------|------|------------|
-| UNEXPLORED | 未探索 | 可以 |
-| EXPLORED | 已探索但未完成核心目标 | 可以 |
-| COMPLETED | 完成核心目标（如击杀关键NPC、获取关键道具） | 可以（重复探索） |
-| CLEARED | 清除所有敌人 | 可以（敌人会重生） |
+> **数据结构**：地区完成状态由三个独立布尔标志位组成，不再使用单一枚举。
 
-**状态区别说明**：
-- `COMPLETED` 由玩家主动触发（通常通过触发撤离点），与敌人清除无关
-- `CLEARED` 由NPC AI系统发送 `AreaCleared` 事件，仅表示敌人全灭
-- 一个地区可以同时是 COMPLETED 和 CLEARED（完成了核心目标且清除了敌人）
-- 一个地区可以是 CLEARED 但不是 COMPLETED（清除了敌人但没完成核心目标）
+| 状态 | 描述 | 标志位 | 可否重新进入 |
+|------|------|--------|------------|
+| **未探索** | 三个标志位均为 false | `is_explored=false`, `is_completed=false`, `is_cleared=false` | 可以 |
+| **已探索** | 玩家曾进入过地区 | `is_explored=true`, `is_completed=false`, `is_cleared=false` | 可以 |
+| **已完成** | 玩家完成核心目标（触发撤离点） | `is_completed=true`（其他标志位不变） | 可以（重复探索） |
+| **已清除** | 地区内所有敌人被消灭 | `is_cleared=true`（其他标志位不变） | 可以（敌人会重生） |
+
+**标志位触发条件**：
+- `is_explored`：玩家**首次进入**地区时触发（无论是否成功撤离）
+- `is_completed`：玩家触发**撤离点**后设置（完成核心目标）
+- `is_cleared`：**NPC AI系统**发送 `AreaCleared` 事件后设置（敌人全灭）
+
+**关键设计**：三个标志位**独立记录，互不影响**。例如：
+- 玩家完成核心目标后 `is_completed=true`，但地区可能有敌人残留（`is_cleared=false`）
+- 玩家清除所有敌人后 `is_cleared=true`，但可能没有触发撤离点（`is_completed=false`）
+- 地区不会"永久完成"——玩家可以随时返回任何已探索的地区
 
 **关键设计**：地区不会"永久完成"——玩家可以随时返回任何已探索的地区。这是非线性叙事的基础。
 
@@ -208,13 +214,13 @@ OnPlayerChooseWait():
 |------|------|---------|
 | **普通敌人** | 地图上随机生成的杂兵 | 每次进入地区时重新生成 |
 | **精英敌人** | 区域性固定敌人 | 每7游戏天重生一次（如果被击杀） |
-| **BOSS/关键NPC** | 剧情关键角色 | 永久死亡，不重生 |
+| **关键NPC** | 剧情关键角色（如章节头目、关键线索NPC） | 永久死亡，不重生 |
 
 **清除判定**：
 
 ```
 OnAreaCleared(area_id):
-    area_save.exploration_state = CLEARED
+    area_save.is_cleared = true
     area_save.enemies_killed_count += enemies_defeated_this_visit
 ```
 
@@ -224,7 +230,7 @@ OnAreaCleared(area_id):
 
 ```
 CanRespawnEnemies(area_id) =
-    area_save.exploration_state == CLEARED
+    area_save.is_cleared == true
     AND last_cleared_time + respawn_interval <= current_time
     AND enemy_type != BOSS
 ```
@@ -253,7 +259,7 @@ CanRespawnEnemies(area_id) =
 
 | 目标系统 | 发送数据 | 说明 |
 |---------|---------|------|
-| **存档系统** | `AreaStateUpdate(area_id, state)` | 地区状态变更时同步（内部事件，触发存档保存） |
+| **存档系统** | `AreaStateUpdate(area_id, state)` | 地区状态变更时同步（内部接口，触发存档保存，非外部事件） |
 | **存档系统** | `LocationRevealed(location_id)` | 隐藏地点揭示时同步 |
 | **UI系统** | `MapDisplayRequest(world_state)` | 请求显示世界地图 |
 | **UI系统** | `AreaInfoRequest(area_id)` | 请求显示地区详情 |
@@ -326,9 +332,12 @@ CitySave:
 
 AreaSave:
     area_id: String
-    exploration_state: Enum                -- UNEXPLORED / EXPLORED / COMPLETED / CLEARED
-    completion_count: Integer               -- 完成次数
+    is_explored: Boolean                   -- 是否已探索过（触发过EXPLORED状态）
+    is_completed: Boolean                  -- 是否完成核心目标（触发过COMPLETED状态，由撤离点触发）
+    is_cleared: Boolean                    -- 是否清除所有敌人（由NPC AI系统发送AreaCleared事件触发）
+    completion_count: Integer              -- 完成次数
     is_unlocked: Boolean                   -- 是否解锁
+    elite_last_cleared_game_days: Integer  -- 精英敌人上次清除的游戏天计数（用于7天重生计时）
 ```
 
 ### 4.2 地区进入判定
@@ -353,7 +362,7 @@ MeetsEntryRequirements(area_id) =
 | is_unlocked | Boolean | 地区是否已解锁（剧情/进度锁定） |
 | requirements | List | 进入地区需要满足的条件列表 |
 | revealed_locations | Set | 已揭示的隐藏地点集合 |
-| initial_areas | Set | 初始开放地区集合（由策划在关卡编辑器中配置） |
+| initial_areas | Set<String> | 初始开放地区ID集合（由策划在关卡编辑器中配置） |
 
 **进入条件类型**：
 
@@ -409,19 +418,18 @@ OnLocationRevealed(location_id):
 ```lua
 -- 探索完成时
 OnAreaExtracted(area_id):
-    if area_save.exploration_state == UNEXPLORED:
-        area_save.exploration_state = EXPLORED
-    else if area_save.exploration_state == EXPLORED:
-        area_save.exploration_state = COMPLETED
-    -- 如果已经是 COMPLETED 或 CLEARED 状态，保持不变（不重复升级）
+    if not area_save.is_explored:
+        area_save.is_explored = true
+    else if not area_save.is_completed:
+        area_save.is_completed = true
+    -- 已完成或已清除的状态保持不变（不重复升级）
 
     area_save.completion_count += 1
 
 -- 地区清除时
 OnAreaCleared(area_id):
-    area_save.exploration_state = CLEARED
-    -- 清除状态优先级高于完成状态
-    -- 即使地区已完成核心目标，被清除后仍标记为 CLEARED
+    area_save.is_cleared = true
+    -- 清除状态与完成状态独立，互不影响
 ```
 
 ### 4.5 存储空间估算
@@ -466,7 +474,9 @@ SaveWorldState() =
     for each area_id in game_world.areas:
         area_save: AreaSave
         area_save.area_id = area_id
-        area_save.exploration_state = area.exploration_state
+        area_save.is_explored = area.is_explored
+        area_save.is_completed = area.is_completed
+        area_save.is_cleared = area.is_cleared
         area_save.completion_count = area.completion_count
         area_save.is_unlocked = area.is_unlocked
         world_save.areas[area_id] = area_save
@@ -491,7 +501,9 @@ LoadWorldState(world_save: WorldSave) =
     for each area_id, area_save in world_save.areas:
         if area_id exists in game_world.areas:
             area = game_world.areas[area_id]
-            area.exploration_state = area_save.exploration_state
+            area.is_explored = area_save.is_explored
+            area.is_completed = area_save.is_completed
+            area.is_cleared = area_save.is_cleared
             area.completion_count = area_save.completion_count
             area.is_unlocked = area_save.is_unlocked
 
@@ -528,21 +540,24 @@ OnVersionMismatch(current_version, save_version) =
 
 ```
 EnemyDensityRating(area_id) =
-    expected_enemy_count = GetExpectedEnemyCount(area_id)
-    normalized = Clamp(expected_enemy_count / baseline_enemy_count, 0.0, 2.0)
-    stars = Round(normalized * 5)
+    enemy_count = GetExpectedEnemyCount(area_id)
+    stars = Floor((enemy_count + 3) / 4) + 1
 
--- 星级映射：
--- ★☆☆☆☆ = 1-3 普通敌人
--- ★★☆☆☆ = 4-6 普通敌人
--- ★★★☆☆ = 7-10 普通敌人
--- ★★★★☆ = 11-15 普通敌人
--- ★★★★★ = 16+ 普通敌人
+-- 星级映射（均匀分布）：
+-- ★☆☆☆☆ = 1-4 普通敌人
+-- ★★☆☆☆ = 5-8 普通敌人
+-- ★★★☆☆ = 9-12 普通敌人
+-- ★★★★☆ = 13-16 普通敌人
+-- ★★★★★ = 17+ 普通敌人
 ```
+
+> **0敌人地区的特殊处理**：
+> - `Floor((0 + 3) / 4) + 1 = Floor(0.75) + 1 = 0 + 1 = 1` 星
+> - 显示为 1 星（而非 0 星）表示该地区为空地区，但仍有探索价值
+> - UI 上可额外标注"无敌人"文字提示
 
 | 变量 | 类型 | 默认值 | 说明 |
 |------|------|-------|------|
-| `baseline_enemy_count` | Integer | 5 | 标准敌人数量基准（策划配置） |
 | `expected_enemy_count` | Integer | — | 地区内配置的预期敌人数量（由关卡编辑器配置） |
 
 **配置方式**：敌人密度由策划在关卡编辑器中直接配置（`expected_enemy_count`），星级根据该数值自动计算并显示在UI上。
@@ -585,35 +600,58 @@ EnemyDensityRating(area_id) =
 | **精英敌人** | 标记为"待重生"，在以下条件满足时重生 | 距上次清除≥7游戏天 |
 | **关键NPC** | 永久死亡，不重生 | 不适用 |
 
-**详细规则**：
+**详细规则（简化版 - MVP推荐）**：
+
+> **设计决策 (2026-04-14)**：精英敌人重生计时器已简化为全局游戏天方案。本方案移除城市追踪逻辑，降低实现复杂度。
 
 ```lua
+-- =============================================
+-- 精英敌人重生判定（简化版 - MVP推荐）
+-- =============================================
 OnEnterArea(area_id):
     for each enemy in area.enemies:
         if enemy.type == NORMAL:
             SpawnEnemy(enemy)                    -- 每次进入都重新生成
+
         else if enemy.type == ELITE:
-            if TimeSinceLastCleared(area_id) >= 7_game_days:
-                SpawnEnemy(enemy)                -- 7游戏天后在游戏内重生
+            -- 获取精英上次清除的游戏天
+            last_cleared_days = elite_last_cleared_game_days[area_id]
+            current_days = GetGlobalGameDay()
+            days_accumulated = current_days - last_cleared_days
+
+            if days_accumulated >= 7:
+                SpawnEnemy(enemy)
+                elite_last_cleared_game_days[area_id] = current_days
             else:
                 -- 精英敌人仍未到重生时间，地区保持"部分清除"状态
                 Pass
+
         else if enemy.type == KEY_NPC:
             -- 关键NPC永久死亡，不生成
             Pass
+
+-- =============================================
+-- 地图模式游戏天累加
+-- =============================================
+OnMapModeTick(delta_time_seconds):
+    if IsInMapMode():
+        global_game_days += (delta_time_seconds / 60.0)   -- 每分钟1游戏天
 ```
 
 **游戏天定义**：
-- 1 游戏天 = 玩家在地图模式累计停留 1 分钟
-- 游戏天计数器由**存档系统**持久化保存
+- **游戏天累积规则**：1 游戏天 = 玩家在**地图模式**累计停留 **1 分钟**
+- 地图模式期间，游戏天计数器持续累加；进入**地区内模式**（探索/战斗）时，计时暂停
 - 游戏天与现实时间无关，只与游戏内活动相关
+- 示例：玩家在地图上移动消耗 10 分钟，则增加 10 游戏天
 
-**防刷机制**：
-- 精英敌人重生后，上一次清除时间被重置
-- 玩家反复刷同一地区时，精英敌人会持续保持"已清除"状态（不会每次进入都重置）
-- 只有经过足够的游戏内时间（7游戏天）后，精英敌人才会重生
+**简化方案说明（MVP推荐）**：
+- 精英敌人使用**全局游戏天**计时，无需追踪玩家当前城市
+- 重生条件：距上次清除 ≥ 7 游戏天
+- **优点**：实现简单，无需维护 `EliteTracker` 数据结构
+- **防刷机制**：玩家在地图上消耗时间才能累积游戏天，反复刷同一地区会自然累积时间
+- **Full Vision 扩展**：如需更精确的防刷机制（如确保玩家真正"推进探索"），可在 Full Vision 阶段重新引入城市追踪逻辑
 
-**风险等级**：中 — 需要与NPC AI系统协调，确保精英敌人重生时间与游戏日历同步
+**风险等级**：低 — 简化方案通过游戏天自然累积实现基本防刷，MVP阶段可接受
 
 **边缘情况5：玩家尝试进入已锁定的地区**
 
@@ -641,7 +679,7 @@ OnEnterArea(area_id):
   - 提供基地/安全屋作为检查点
 - 风险等级：低
 
-**边缘情况9：揭示动画播放期间游戏崩溃**
+**边缘情况8：揭示动画播放期间游戏崩溃**
 
 - 问题：地点已通过 `LocationRevealed` 事件标记为已揭示，但揭示动画尚未播放完成时玩家退出游戏
 - 处理：
@@ -650,7 +688,7 @@ OnEnterArea(area_id):
   - UI系统应检测地点是否已揭示过，对已揭示地点直接显示，不重复播放动画
 - 风险等级：低
 
-**边缘情况8：玩家在地图移动中遭遇战斗，死亡后是否返回地图？**
+**边缘情况9：玩家在地图移动中遭遇战斗，死亡后是否返回地图？**
 
 - 问题：地图移动中触发的可选战斗，死亡后是返回地图还是当前位置？
 - 处理：
@@ -667,7 +705,7 @@ OnEnterArea(area_id):
 | 系统 | 依赖类型 | 接口说明 | 事件/接口 |
 |------|---------|---------|----------|
 | **存档系统** | 硬依赖 | 从存档恢复世界状态；保存揭示状态和地区完成度 | `SaveWorldState()` / `LoadWorldState()` |
-| **存档系统** | 硬依赖 | 游戏天计时器持久化；世界地图系统查询当前游戏天数用于精英敌人重生判定 | `GetGameDayCount()` / `IncrementGameDay()` |
+| **存档系统** | 硬依赖 | 游戏天计时器持久化；世界地图系统查询当前游戏天数用于精英敌人重生判定 | `GetGameDayCount(): Integer` / `IncrementGameDay(): void` |
 | **线索系统** | 硬依赖 | 接收 `LocationRevealed(location_id)` 事件，触发地点揭示 | 事件订阅 |
 | **加载画面系统** | 硬依赖 | 地区进入/离开时触发加载 | `LoadingScreenRequest()` |
 | **UI系统** | 硬依赖 | 地图显示、地区信息展示 | `MapDisplayRequest()` / `AreaInfoRequest()` |
@@ -723,7 +761,7 @@ UI系统播放揭示动画
 - 揭示状态变更通过存档系统持久化，崩溃后可恢复
 
 **示例场景**：
-1. 玩家在"旧码头区"收集到线索"CLUE_接头点位置"
+1. 玩家在"锈港-下港区"收集到线索"CLUE_接头点位置"
 2. 线索系统检查 `clue_reveals` 发现 `CLUE_接头点位置 → "secret_shandian"`
 3. 线索系统发送 `LocationRevealed("secret_shandian")`
 4. 世界地图系统将 "secret_shandian" 加入 `revealed_locations`
@@ -823,7 +861,7 @@ UI系统播放揭示动画
 │                                        │
 │     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░     │  ← 进度条
 │                                        │
-│   "正在加载：旧码头区..."               │  ← 提示文字
+│   "正在加载：锈港-下港区..."               │  ← 提示文字
 │                                        │
 └────────────────────────────────────────┘
 ```
@@ -877,9 +915,9 @@ UI系统播放揭示动画
 
 ```
 ┌─────────────────────────────┐
-│ 旧码头区                    │
+│ 下港区                    │
 │ ─────────────────────────── │
-│ 锈港 · 港口工业区            │
+│ 锈港 · 下港区            │
 │                             │
 │ 状态: 已探索                 │
 │ 完成度: 1次                  │
@@ -915,7 +953,7 @@ UI系统播放揭示动画
 │  🗺️  新地点发现                      │
 │                                     │
 │  秘密接头点                          │
-│  位于: 锈港 · 旧码头区               │
+│  位于: 锈港 · 下港区               │
 │                                     │
 │  在地图上显示为可疑地点               │
 │                                     │
@@ -980,10 +1018,10 @@ UI系统播放揭示动画
 
 | # | 问题 | 状态 | 负责人 | 说明 |
 |---|------|------|--------|------|
-| OQ-1 | **地图是否需要缩放功能** | 待确认 | UX设计师 | 缩放可以看更多细节，但可能影响性能 |
-| OQ-2 | **基地/安全屋的位置** | 待确认 | 游戏设计师 | 基地应该是地图上的一个固定点还是有多个？ |
-| OQ-3 | **不同城市的视觉风格差异** | 待确认 | 美术总监 | 每个城市应有独特的视觉语言来区分派系 |
-| OQ-4 | **隐藏地区的揭示方式** | 待确认 | 叙事设计师 | 是自动揭示还是需要玩家主动调查地图？ |
+| OQ-1 | ✅ **已解决**：MVP采用5m~15m范围 | UX设计师 | 地图是否需要缩放功能 |
+| OQ-2 | ✅ **已解决**：金色图标+脉冲光晕+顶层显示 | 游戏设计师 | 基地/安全屋的位置 |
+| OQ-3 | ✅ **已解决**：已探索：低透明+绿色勾号；未探索：高对比灰色 | 美术总监 | 不同城市的视觉风格差异 |
+| OQ-4 | ✅ **已解决**：混合策略：关键地点自动揭示，高风险地点手动揭示 | 叙事设计师 | 隐藏地区的揭示方式 |
 | OQ-5 | **快速旅行（未来扩展）** | 预留 | — | 当前设计不支持快速旅行，未来版本可能需要 |
 
 ## Open Questions Resolution Log
@@ -996,3 +1034,10 @@ UI系统播放揭示动画
 | 2026-04-08 | 地图表现形式 | 连续俯视角地图 | 用户 |
 | 2026-04-08 | 地区过渡 | 加载画面 | 用户 |
 | 2026-04-08 | 初始开放 | 全开放 | 用户 |
+
+## Change Log
+
+| 日期 | 版本 | 变更内容 | 修复类型 |
+|------|------|---------|---------|
+| 2026-04-15 | P0 | 修复 Section 3.2 状态机与 Section 4.1 存档数据结构不一致问题：更新地区完成状态描述和 `LoadWorldState` 代码以使用三个独立布尔标志位（`is_explored`、`is_completed`、`is_cleared`）；修复公式 4.4 清除判定注释以使用新结构 | P0 Bug Fix |
+| 2026-04-13 | P1 | 修复地区探索状态覆盖问题：将单一枚举 `exploration_state` 改为三个独立布尔标志位 `is_explored`、`is_completed`、`is_cleared`，避免 CLEARED 状态覆盖 COMPLETED 状态的问题 | P1 Bug Fix |

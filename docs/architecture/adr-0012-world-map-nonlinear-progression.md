@@ -7,7 +7,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-10 (v14 — 修复：threat_level 概念澄清（删除对不存在定义的引用）、AreaClearedEvent 版本号更新为 v1.2.3、VC-13 wait_time_elapsed 概率分布精确说明)
+2026-04-15 (v15 — 修复：区域ID命名规范统一为SceneName_AreaName格式、补充WeatherForceChangeEvent与区域状态机协调、补充时段切换与地区加载时序、地区光照恢复粒度明确为区域级别)
 
 ## Changelog
 
@@ -206,6 +206,74 @@ ARRESTED 状态由 CheckpointSystem 负责处理恢复。玩家被制服后：
 >
 > **可选同步方案**（如需严格同步）：在玩家进入地区时，NPC AI 系统先检测当前敌人数量，如为 0 则立即发送 AreaClearedEvent。此方案需在 NPC AI 系统（ADR-0004）中实现，不影响 World Map 系统设计。
 
+### 区域 ID 命名规范
+
+地区/区域 ID 采用 `SceneName_AreaName` 格式，确保跨系统一致性：
+
+| 区域 ID 示例 | 说明 |
+|-------------|------|
+| `Basement_StorageRoom` | 地下室_储藏室 |
+| `RustHarbor_OldDock` | 锈港_旧码头 |
+| `AshBridge_CentralMarket` | 灰桥_中央市场 |
+
+> **规范说明**：区域 ID 用于 World Map 系统、Weather System、Lighting System 等多个系统间的区域级别状态同步。采用 SceneName_AreaName 格式可避免 ID 冲突并提供清晰的从属关系。
+
+### WeatherForceChangeEvent 与区域状态机的协调
+
+`WeatherForceChangeEvent`（ADR-0021 定义）可打断当前 `WeatherTransition` 但**不中断 WorldMap 状态机**。协调规则如下：
+
+| 行为 | 说明 |
+|------|------|
+| WorldMap 状态机 | 不受 `WeatherForceChangeEvent` 影响，保持当前状态（如 `EXPLORING`） |
+| Weather 过渡 | `WeatherForceChangeEvent` 立即中断当前过渡动画，开始新的强制天气切换 |
+| 区域危险等级 | 强制天气切换时，区域危险等级（`threat_level`）保持不变 |
+| 地区完成度 | 强制天气切换不影响地区完成度状态（`UNEXPLORED/EXPLORED/COMPLETED/CLEARED`） |
+
+> **设计理由**：天气变化是环境层面的暂时性状态变化，不应影响地区级别的叙事/游戏进度状态。World Map 状态机管理的是玩家与地区的交互关系（探索/撤离/死亡），与天气系统管理的环境参数是两个独立的维度。
+
+### 时段切换与地区加载时序
+
+地区加载完成后，系统按以下顺序恢复状态：
+
+| 顺序 | 步骤 | 说明 |
+|------|------|------|
+| 1 | 地区加载 | 场景资源加载完成，玩家进入新地区 |
+| 2 | LightingState 恢复 | 恢复该地区的光照状态（区域级别），使用 `AreaLightingTable` 查询配置 |
+| 3 | WeatherState 应用 | 应用当前天气状态（如有必要，叠加区域强制天气） |
+| 4 | GameHourChangedEvent 发布 | 发布游戏时间变化事件，通知下游系统（如 NPC AI、Sanity/Rage） |
+
+> **地区光照恢复粒度**：光照恢复以**区域级别**（`SceneName_AreaName`）进行，而非城市级别。每个区域有独立的光照配置（见 ADR-0022 的 `AreaLightingTable`），加载地区时自动恢复该区域的光照状态。
+
+**时序详细说明**：
+```
+玩家选择进入地区
+    │
+    ▼
+LoadingScreenSystem 显示加载画面
+    │
+    ▼
+场景资源加载（Addressables）
+    │
+    ▼
+LightingState 恢复 ───→ 查询 AreaLightingTable，获取该区域的 LightingState
+    │                   发布 AreaLightingChangedEvent
+    │
+    ▼
+WeatherState 应用 ───→ 应用当前天气（可能受区域触发器覆盖）
+    │                   如有强制天气，执行 WeatherForceChangeEvent 时序
+    │
+    ▼
+GameHourChangedEvent 发布 ───→ 下游系统（NPC AI、Sanity/Rage）接收时间变化
+    │
+    ▼
+LoadCompletedEvent 发布
+    │
+    ▼
+进入 EXPLORING 状态
+```
+
+> **区域触发器优先级**：如果地区内有 `AreaWeatherTrigger`（如洞穴强制 Clear），则在 LightingState 恢复后立即应用天气覆盖，可能导致 WeatherForceChangeEvent 被触发。
+
 **与状态机的区别**：
 - **状态机状态**（LOCKED/AVAILABLE/EXPLORING等）是**会话内交互阶段**，描述玩家当前与地区的交互关系，**不持久化**
 - **完成度状态**（UNEXPLORED/EXPLORED/COMPLETED/CLEARED）是**进度数据**，描述地区被探索/完成的程度，**持久化存储**
@@ -217,7 +285,8 @@ ARRESTED 状态由 CheckpointSystem 负责处理恢复。玩家被制服后：
 
 **崩溃恢复逻辑**：
 1. 玩家选择进入某地区 → 状态机进入 EXPLORING，`current_location` 保持为所属城市 ID
-2. 玩家稳定在某城市/地区时（MAP_MODE 或 AVAILABLE）→ `current_location` 更新为当前城市 ID
+2. 玩家稳定在某城市时（MAP_MODE）→ `current_location` 更新为当前城市 ID
+   - **注意**：AVAILABLE 状态**不**更新 `current_location`（AVAILABLE 仅表示地区可进入，玩家尚未真正"稳定"在该地区）
 3. 崩溃后恢复 → 统一恢复到 `current_location`（城市级别），玩家需重新通过地图 UI 选择地区
 
 > **设计决策（关键）**：不恢复到具体地区的原因是 EXPLORING 是瞬时状态且不持久化，崩溃后无法知道玩家当时在哪个地区内。恢复到城市级别确保玩家可以从熟悉的地图界面重新开始，而非面对空白场景。
@@ -318,7 +387,7 @@ GameSave/
               播放揭示动画（2.5秒，阻塞地图 UI 操作）
                    │
                    ▼
-         UI系统发送 DiscoveryAnimationComplete 事件
+         UI系统发送 DiscoveryAnimationCompleteEvent 事件
                    │
                    ▼
          世界地图系统解除输入阻塞(input_blocked=false)
@@ -349,7 +418,7 @@ GameSave/
 | `DiscoveryAnimationCompleteEvent` | UI系统 | 世界地图系统 | location_id | 动画播放完毕 |
 | `AreaUnlockEvent` | 剧情系统 | 世界地图系统 | area_id | 解锁锁定地区，触发 LOCKED → AVAILABLE 转换 |
 | `AreaEnteredEvent` | 世界地图系统 | NPC AI系统 | area_id | 触发敌人生成 |
-| `AreaClearedEvent` | NPC AI系统 | 世界地图系统 | area_id, enemy_count, is_full_clear | 敌人全灭（字段定义见 Event Bus ICD v1.2.3 §11.6） |
+| `AreaClearedEvent` | NPC AI系统 | 世界地图系统 | area_id, enemy_count, is_full_clear | 敌人全灭（字段定义见 ADR-0018 Event Bus ICD） |
 | `ThreatDissipatedEvent` | NPC AI系统 | 世界地图系统、UI系统 | area_id, reason, wait_time_elapsed | 危险区域威胁消散（DissipateReason: PROBABILITY_TRIGGER / MAX_WAIT_TIMEOUT） |
 | `MapWaitingStartedEvent` | 世界地图系统 | UI系统 | area_id, max_wait_time | 开始等待，显示倒计时 UI |
 | `MapWaitingCancelledEvent` | 世界地图系统 | UI系统 | area_id, reason | 取消等待（reason: CancelReason枚举，PLAYER_MOVED / PLAYER_ATTACKED / THREAT_ESCALATED） |
@@ -370,7 +439,30 @@ GameSave/
 | - `revealed_locations: List<string>` | 已揭示地点列表 | | | |
 | `AreaInfoRequestEvent` | 世界地图系统 | UI系统 | area_id, include_enemy_info | 请求显示地区详情 |
 
-### 危险区域等待协议
+### 资源加载优先级策略
+
+地区切换时的资源加载必须遵循以下优先级策略，确保关键资源优先加载：
+
+| 优先级 | 资源类型 | 加载时机 | 说明 |
+|--------|----------|---------|------|
+| P0（最高） | 玩家控制器 | 场景加载前 | 必须已实例化，处理输入 |
+| P1 | NPC AI 数据 | 场景加载初期 | 预加载感知范围和行为配置 |
+| P2 | 环境物件 | 场景加载中期 | 按区域分批加载 |
+| P3 | 视觉效果 | 场景加载后期 | 场景可见后再加载 |
+| P4 | 音频资源 | 按需加载 | 延迟到玩家首次进入区域 |
+
+**加载顺序实现**：
+```
+1. SceneManagerWrapper.RequestSceneTransition(targetArea)
+2. → 发布 LoadingScreenRequestEvent
+3. → ResourceManager.LoadPlayerController() [P0]
+4. → ResourceManager.PreloadNPCData() [P1]
+5. → ResourceManager.LoadAreaChunks() [P2]
+6. → LoadCompletedEvent 发布
+7. → ResourceManager.LoadVFX() [P3]（按需）
+```
+
+> **注意**：场景资源加载应通过 ResourceManager 的引用计数系统管理（见 ADR-0019），而非直接使用 SceneManager.LoadSceneAsync。
 
 **危险区域（Threat Zone）概念说明**：
 
@@ -381,28 +473,14 @@ GameSave/
 >
 > **注意**：`threat_level` 并非 ADR-0004 中定义的独立概念，而是通过 NPC AI 系统的 Alert State（UNDETECTED/SUSPECT/SEARCH/ALERT/ESCAPE/COMBAT）间接反映。World Map 系统仅订阅来自 NPC AI 系统的 `ThreatDissipatedEvent` 事件，不参与威胁等级的内部计算逻辑。当 NPC 处于 ALERT 或 COMBAT 状态时，可认为该地区威胁等级较高。
 
-**DissipateReason 枚举定义**（与 Event Bus ICD v1.2.2 保持一致）：
+**DissipateReason 枚举定义**（统一引用 shared-types.md §10.3）：
 
-```csharp
-public enum DissipateReason
-{
-    PROBABILITY_TRIGGER,  // 概率触发消散（每次检测有 30% 概率消散）
-    MAX_WAIT_TIMEOUT     // 最大等待时间（30秒）超时后强制消散
-}
-```
+> **注意**：DissipateReason 和 CancelReason 统一定义在 shared-types.md §10.3，本文档仅引用其定义，不重复定义。
+>
+> - `DissipateReason` 定义见 shared-types.md §10.3
+> - `CancelReason` 定义见 shared-types.md §10.3（MapWaitingCancelledEvent 的 reason 字段类型）
 
-> **说明**：玩家主动取消等待（移动/攻击）或威胁升级导致的等待取消使用 `CancelReason` 枚举（定义见 MapWaitingCancelledEvent），不属于 DissipateReason。
-
-**CancelReason 枚举定义**（与 Event Bus ICD 保持一致）：
-
-```csharp
-public enum CancelReason
-{
-    PLAYER_MOVED,      // 玩家主动移动
-    PLAYER_ATTACKED,   // 玩家被攻击
-    THREAT_ESCALATED   // 威胁升级
-}
-```
+> **说明**：玩家主动取消等待（移动/攻击）或威胁升级导致的等待取消使用 `CancelReason` 枚举，不属于 DissipateReason。
 
 **场景**：玩家在危险区域选择"等待"
 
@@ -576,7 +654,7 @@ MVP场景（8城市 × 32地区 + 20隐藏地点）：
 ### Phase 3: 事件集成
 - [ ] 实现 LocationRevealedEvent 订阅和处理
 - [ ] 实现 AreaEnteredEvent / AreaClearedEvent 发布
-- [ ] 实现 DiscoveryAnimationComplete 回调
+- [ ] 实现 DiscoveryAnimationCompleteEvent 回调
 
 ### Phase 3.5: NPC AI 依赖验证（无实现工作量）
 

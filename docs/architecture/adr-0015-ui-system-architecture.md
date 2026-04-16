@@ -7,7 +7,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-11 (v6: 确认 shared-types §12.2/12.3 引用路径正确性；补充 UI 系统分辨率自适应实现方式说明)
+2026-04-15 (v8: ADR 评审修复：统一 PauseMenuOpened/Closed 事件命名，添加 Event 后缀)
 
 ## Context
 
@@ -39,6 +39,21 @@ UI 系统是游戏所有用户界面元素的中心管理系统，包括 HUD、�
 ---
 
 ## Decision
+
+### 技术选型：UI Toolkit (UITK)
+
+> **P0 修复（ADR评审 2026-04-15）**：明确 UI 系统采用 **Unity UI Toolkit (UITK)** 作为底层技术方案。
+>
+> **选择理由**：
+> 1. ADR-0028 UI 设计规范已使用 UXML/USS 术语，与 UITK 一致
+> 2. UITK 性能优于 UGUI（复杂 UI 场景下）
+> 3. Unity 官方推荐新项目使用 UITK
+> 4. 更好地与 Unity 6.3 LDS (Local Data Layer) 集成
+>
+> **五层架构到 UITK 的映射**：
+> - 每层对应一个 `UIDocument`（或单个 UIDocument 内的 VisualElement 分层）
+> - 使用 `style.pseudoState` 和 `USS` 类选择器实现状态机
+> - `Input Blocking` 通过 `perspective` 或 `pickingMode` 实现
 
 ### 架构决策
 
@@ -96,26 +111,49 @@ UI 系统是游戏所有用户界面元素的中心管理系统，包括 HUD、�
 | Layer | 优先级 | 说明 |
 |-------|--------|------|
 | Game HUD Layer | 0 | 游戏进行时恒显示，最低优先级 |
-| Alert Layer | 1 | 警告/提示信息，覆盖 HUD |
-| Overlay Layer | 2 | 揭示动画/过场，覆盖 Alert |
-| Menu Layer | 3 | 菜单系统，覆盖所有游戏 UI |
-| Input Blocking Layer | 4 | **始终置顶**，屏蔽所有输入 |
+| Alert Layer | 10-19 | 警告/提示信息，覆盖 HUD |
+| Overlay Layer | 20-29 | 揭示动画/过场，覆盖 Alert |
+| Menu Layer | 30-39 | 菜单系统，覆盖所有游戏 UI |
+| Input Blocking Layer | 40-100 | **始终置顶**，屏蔽所有输入 |
 
-> **注**：Input Blocking Layer 优先级最高，确保特殊序列（揭示动画、过场）期间所有输入被正确屏蔽。
+> **注**：
+> - Input Blocking Layer 优先级范围 40-100，确保覆盖所有其他层级
+> - ScreenEffect 优先级同样使用 0-100 范围（见 ADR-0023），Input Blocking 与 ScreenEffect 共用同一优先级体系
+> - 高优先级请求可覆盖低优先级请求
 
 ### Sanity/Rage 系统集成
 
-UI 系统订阅以下事件以响应玩家心理状态变化（事件定义见 ADR-0017）：
+> **统一规范**：所有 UI 面板的事件订阅必须遵循 shared-types.md §13.x UI系统事件订阅规范。UI 系统作为数据消费者，订阅来自其他系统的状态变化事件。
+
+UI 系统订阅以下事件以响应玩家心理状态变化：
 
 | 事件 | 来源系统 | UI 响应 |
 |------|---------|---------|
 | `PsychologicalStateEvent{state}` | Sanity/Rage 系统 | 根据心理状态调整 HUD 色调（FRENZIED 时脉冲红色，SOUL_SPLIT 时双重效果）。**事件定义见 shared-types.md §12.2** |
-| `VignetteRequest{intensity}` | Sanity/Rage 系统 | 低理智时 HUD 边缘暗角增强。**事件定义见 shared-types.md §12.3** |
-| `BlurRequest{intensity}` | Sanity/Rage 系统 | 低理智时 HUD 模糊效果增强。**事件定义见 shared-types.md §12.3** |
-| `HUDOverlayOpacityRequest{opacity}` | Sanity/Rage 系统 | Sanity=0 时 HUD 半透明叠加层显示（确保信息可读）。**事件定义见 shared-types.md §12.3** |
-| `ShakeRequest{intensity}` | Sanity/Rage 系统 | 高愤怒时 HUD 准星抖动。**事件定义见 shared-types.md §12.3** |
+| `ScreenEffectRequestEvent` (effectType=Vignette) | Sanity/Rage 系统 | 低理智时 HUD 边缘暗角增强。**事件定义见 ADR-0023 §ScreenEffectRequestEvent** |
+| `ScreenEffectRequestEvent` (effectType=Blur) | Sanity/Rage 系统 | 低理智时 HUD 模糊效果增强（Sanity < 50 时触发）。**事件定义见 ADR-0023 §ScreenEffectRequestEvent** |
+| `HUDOverlayOpacityRequest{opacity}` | Sanity/Rage 系统 | Sanity=0 时 HUD 半透明叠加层显示（确保信息可读）。**事件定义见 shared-types.md §12.3.1** |
+| `ScreenEffectRequestEvent` (effectType=UI_Jitter) | Sanity/Rage 系统 | 高愤怒时 HUD 准星抖动。**事件定义见 ADR-0023 §ScreenEffectRequestEvent** |
 
-> **事件来源说明**：`PsychologicalState` / `VignetteRequest` / `BlurRequest` / `HUDOverlayOpacityRequest` / `ShakeRequest` 事件由 ADR-0017 (Sanity/Rage 系统) 发布，UI 系统作为消费者订阅这些事件。
+> **事件来源说明**：
+> - `PsychologicalStateEvent` 由 ADR-0017 (Sanity/Rage 系统) 发布，UI 系统订阅 `PsychologicalStateEvent` 后自行计算 UI 层特效（色调、暗角等）
+> - `ScreenEffectRequestEvent` 由 ScreenEffectsManager (ADR-0023) 集中处理，通过优先级仲裁后应用到后处理管线
+> - `HUDOverlayOpacityRequest` 是 UI 层特效，不通过 ScreenEffectsManager，直接由 UI 系统消费
+
+> **废弃事件说明**：`VignetteRequest` / `BlurRequest` / `ShakeRequest` 已废弃，统一通过 `ScreenEffectRequestEvent` 发送。
+
+### HUDOverlayOpacityRequest 消费逻辑
+
+UI 系统订阅 `HUDOverlayOpacityRequest` 事件，控制 HUD 半透明叠加层的透明度：
+
+```
+当收到 HUDOverlayOpacityRequest{opacity} 事件时：
+  1. 解析 opacity 值（范围 0.0~1.0）
+  2. 将 HUD 半透明叠加层的 Alpha 设置为 opacity
+  3. 叠加层覆盖所有 HUD 元素，但低于 Alert Layer 和 Menu Layer
+```
+
+**使用场景**：Sanity=0 时，游戏画面被极端视觉效果（倒置/噪点/暗角/褪色）完全覆盖，但 HUD 半透明叠加层仍可显示，确保玩家能获取关键游戏信息（体力槽、理智槽、愤怒槽）。
 
 **色调调整公式**：
 > **参数说明**：Sanity 值范围为 0-100（详见 ADR-0017 §双轨计量系统）
@@ -123,17 +161,19 @@ UI 系统订阅以下事件以响应玩家心理状态变化（事件定义见 A
 ```
 HUDTintColor = Lerp(NormalColor, AlertColor, 1.0 - Sanity/100)
 // 说明：Sanity=100 时返回 NormalColor（正常），Sanity=0 时返回 AlertColor（警报）
-// 此公式与 ADR-0017 的 VignetteRequest 风格保持一致（都是 Lerp(min, max, ratio)）
-HUDBlurIntensity = Clamp((50 - Sanity) / 50, 0, 0.5)
-// 对应 BlurRequest{Intensity}，由 Sanity/Rage 系统计算并发布
+// 此公式与 ScreenEffectRequestEvent 的 Vignette 效果参数保持一致
+HUDBlurIntensity = Sanity < 50 ? Clamp((50 - Sanity) / 50, 0, 0.5) : 0.0
+// 对应 ScreenEffectRequestEvent{effectType=Blur, intensity}，由 Sanity/Rage 系统计算并发布
+// 仅当 Sanity < 50 时触发（与 ADR-0017 公式保持一致）
 ```
 
 **颜色参数定义**：
+> **颜色来源说明**：`NormalColor` 和 `AlertColor` 的定义引用 [ADR-0028 UI 设计规范](./adr-0028-ui-design-spec.md#颜色规范)
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `NormalColor` | Color | `#FFFFFF` (纯白) | HUD 正常状态色调 |
-| `AlertColor` | Color | `#FF3333` (警戒红) | HUD 警报状态色调（低理智时渗入） |
+| `NormalColor` | Color | `#E0E0E0` (Light Gray) | HUD 正常状态色调，引用 ADR-0028 文字色 |
+| `AlertColor` | Color | `#FF2200` (Alert Red) | HUD 警报状态色调（低理智时渗入），引用 ADR-0028 警戒色 |
 
 > **策划配置说明**：`NormalColor` 和 `AlertColor` 作为可调参数存储在 `UISanityTuningSO` 中，策划可根据美术风格调整具体数值。
 
@@ -145,7 +185,7 @@ HUDBlurIntensity = Clamp((50 - Sanity) / 50, 0, 0.5)
 3. UI 系统设置 Input Blocking Layer 为 active
 4. 玩家输入被屏蔽（地图拖拽/缩放/选择/菜单/快速存档）
 5. 动画完成（正常完成或被玩家中断）
-6. UI 系统发送 DiscoveryAnimationComplete 事件
+6. UI 系统发送 DiscoveryAnimationCompleteEvent 事件
 7. World Map 系统收到事件后解除输入阻塞
 ```
 
@@ -215,9 +255,11 @@ InputMask 定义（按位掩码）：
 | 7 | 地图拖拽/缩放 | 鼠标拖拽 | 右摇杆 |
 
 优先级仲裁规则：
-1. 高优先级请求可覆盖低优先级请求
+1. 高优先级请求可覆盖低优先级请求（优先级范围 0-100）
 2. 同优先级请求不能相互覆盖，需 Source 自己处理
 3. UI 确认键（确认/取消）在任何情况下都应被识别，除非被同优先级或更高优先级明确屏蔽
+
+> **优先级范围说明**：Input Blocking 优先级范围为 0-100，与 ScreenEffect 优先级范围（ADR-0023）保持一致，便于统一管理和调试。
 ```
 
 > **注**：Input Blocking Layer 的"屏蔽所有输入"指的是屏蔽游戏操作（移动/攻击/交互），UI 导航和确认键由各层自行处理，确保特殊序列中玩家仍能完成必要的 UI 操作。
@@ -250,12 +292,12 @@ InputMask 定义（按位掩码）：
 
 | # | 场景 | 处理方式 |
 |---|------|---------|
-| EC-1 | 菜单打开时游戏暂停 | **GameTimeSystem 负责暂停**（订阅 Menu Layer 的 `PauseMenuOpened` 事件并设置 `time_scale = 0`）；**AudioSystem 负责音乐淡出**（订阅同一事件执行 `MusicFadeOut(0.3s)`）。**事件定义见 shared-types.md §13.4**。<br><br>**时序说明（ASCII 图）**：事件触发时，AudioSystem 与 GameTimeSystem **并行处理**（非串行）：<br><br>**打开菜单时序**：<br>```<br>时间轴  ─────────────────────────────────────────────────────▶<br><br>事件    PauseMenuOpened 发布<br>    │<br>    ├──────────────────────────────────────────────────┐<br>    │                    ▼                                │<br>    │  ┌────────────────────┐   ┌────────────────────┐   │<br>    │  │   AudioSystem      │   │  GameTimeSystem    │   │<br>    │  │   (并行处理)       │   │   (并行处理)       │   │<br>    │  └─────────┬──────────┘   └─────────┬──────────┘   │<br>    │            │                         │               │<br>    │            ▼                         ▼               │<br>    │     MusicFadeOut(0.3s)      time_scale = 0         │<br>    │            │                         │               │<br>    │            │                         │               │<br>    │            ◀──────── 0.3s ────────▶               │<br>    │            │                                          │<br>    └──────────────────────────────────────────────────┘<br>    │<br>    │ (0.3s 后音乐淡出完成，游戏逻辑已暂停)<br>```<br><br>**关闭菜单时序**：<br>```<br>时间轴  ─────────────────────────────────────────────────────▶<br><br>事件    PauseMenuClosed 发布<br>    │<br>    ├──────────────────────────────────────────────────┐<br>    │                    ▼                                │<br>    │  ┌────────────────────┐   ┌────────────────────┐   │<br>    │  │   AudioSystem      │   │  GameTimeSystem    │   │<br>    │  │   (并行处理)       │   │   (并行处理)       │   │<br>    │  └─────────┬──────────┘   └─────────┬──────────┘   │<br>    │            │                         │               │<br>    │            ▼                         ▼               │<br>    │     MusicFadeIn(0.3s)       time_scale = 1         │<br>    │            │                         │               │<br>    │            ◀──────── 0.3s ────────▶               │<br>    │            │                                          │<br>    └──────────────────────────────────────────────────┘<br>    │<br>    │ (0.3s 后音乐淡入完成，游戏逻辑已恢复)<br>```<br><br>**幂等性说明**：`PauseMenuOpened` 事件具有幂等性。如果游戏已经处于暂停状态，再次打开菜单不会重复发布 `PauseMenuOpened` 事件（UI 系统内部维护 `is_menu_open` 标志位，重复请求时直接忽略）。 |
+| EC-1 | 菜单打开时游戏暂停 | **GameTimeSystem 负责暂停**（订阅 Menu Layer 的 `PauseMenuOpenedEvent` 事件并设置 `time_scale = 0`）；**AudioSystem 负责音乐淡出**（订阅同一事件执行 `MusicFadeOut(0.3s)`）。**事件定义见 shared-types.md §13.4**。<br><br>**时序说明（ASCII 图）**：事件触发时，AudioSystem 与 GameTimeSystem **并行处理**（非串行）：<br><br>**打开菜单时序**：<br>```<br>时间轴  ─────────────────────────────────────────────────────▶<br><br>事件    PauseMenuOpenedEvent 发布<br>    │<br>    ├──────────────────────────────────────────────────┐<br>    │                    ▼                                │<br>    │  ┌────────────────────┐   ┌────────────────────┐   │<br>    │  │   AudioSystem      │   │  GameTimeSystem    │   │<br>    │  │   (并行处理)       │   │   (并行处理)       │   │<br>    │  └─────────┬──────────┘   └─────────┬──────────┘   │<br>    │            │                         │               │<br>    │            ▼                         ▼               │<br>    │     MusicFadeOut(0.3s)      time_scale = 0         │<br>    │            │                         │               │<br>    │            │                         │               │<br>    │            ◀──────── 0.3s ────────▶               │<br>    │            │                                          │<br>    └──────────────────────────────────────────────────┘<br>    │<br>    │ (0.3s 后音乐淡出完成，游戏逻辑已暂停)<br>```<br><br>**关闭菜单时序**：<br>```<br>时间轴  ─────────────────────────────────────────────────────▶<br><br>事件    PauseMenuClosedEvent 发布<br>    │<br>    ├──────────────────────────────────────────────────┐<br>    │                    ▼                                │<br>    │  ┌────────────────────┐   ┌────────────────────┐   │<br>    │  │   AudioSystem      │   │  GameTimeSystem    │   │<br>    │  │   (并行处理)       │   │   (并行处理)       │   │<br>    │  └─────────┬──────────┘   └─────────┬──────────┘   │<br>    │            │                         │               │<br>    │            ▼                         ▼               │<br>    │     MusicFadeIn(0.3s)       time_scale = 1         │<br>    │            │                         │               │<br>    │            ◀──────── 0.3s ────────▶               │<br>    │            │                                          │<br>    └──────────────────────────────────────────────────┘<br>    │<br>    │ (0.3s 后音乐淡入完成，游戏逻辑已恢复)<br>```<br><br>**幂等性说明**：`PauseMenuOpenedEvent` 事件具有幂等性。如果游戏已经处于暂停状态，再次打开菜单不会重复发布 `PauseMenuOpenedEvent` 事件（UI 系统内部维护 `is_menu_open` 标志位，重复请求时直接忽略）。 |
 | EC-2 | 多个面板同时请求显示 | Alert Layer 队列管理，同类型合并，不同类型堆叠，超过3个时最早的消失 |
 | EC-3 | 揭示动画期间快速操作 | 第一次确认键完成动画，后续忽略，动画完成后才响应新输入 |
 | EC-4 | HUD 与游戏元素重叠 | HUD 使用透明度背景，关键区域保留为空，提供位置调整选项 |
 | EC-5 | 同优先级 Input Blocking 请求冲突 | 同优先级请求支持队列化（最大队列长度 2），超出时最早的请求被替换。不同优先级间高优先级覆盖低优先级 |
-| EC-6 | 揭示动画卡死（超时） | 动画超时时间 5.0s，超时后强制完成动画并发送 `DiscoveryAnimationComplete`，防止 UI 永久挂起 |
+| EC-6 | 揭示动画卡死（超时） | 动画超时时间 5.0s，超时后强制完成动画并发送 `DiscoveryAnimationCompleteEvent`，防止 UI 永久挂起 |
 
 ---
 

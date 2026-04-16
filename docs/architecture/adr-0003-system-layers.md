@@ -7,7 +7,7 @@
 2026-04-09
 
 ## Last Updated
-2026-04-09
+2026-04-15 (ADR 评审修复：WorldMap System 从 World Layer 移至 Foundation Layer；World Layer 新增感知查询规则说明；ScreenEffectsManager 明确归属 Infrastructure Layer；Migration Plan 中 Weather/Lighting System 目录修正) [已修复]
 
 ## Context
 
@@ -79,7 +79,7 @@
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │  Foundation Layer (基础层)                                  │   │
 │  │  职责: 玩家输入、伤害计算、世界导航                         │   │
-│  │  系统: Player Controller, Health & Lethality, World Map      │   │
+│  │  系统: Player Controller, Health & Lethality, WorldMap       │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 ├─────────────────────────────────────────────────────────────────────┤
@@ -87,17 +87,17 @@
 │  Infrastructure Layer: Event Bus, Save System, Addressables,        │
 │                       Screen Effects, Network System                │
 ├─────────────────────────────────────────────────────────────────────┤
-│  World Layer（影响多个层的环境系统，独立调用）                       │
-│  World Layer: Weather System, Lighting System                       │
+│  W. World Layer（影响多个层的环境系统，独立调用）                      │
+│  World Layer: Weather System, Lighting System                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### World Layer 说明
 
-World Layer 包含影响多个层的环境系统。这些系统的特点：
+World Layer（编号 W）是横向环境系统，独立于分层体系之外。这些系统的特点：
 - **独立于分层调用链**：不调用其他游戏系统，也不被调用
 - **通过 Event Bus 影响其他系统**：如天气变化触发 NPC 感知折扣、视觉滤镜调整等
-- **实现位置**：代码放在 Core Layer 的 Environment 子目录，但逻辑上属于 World Layer
+- **实现位置**：代码放在 `Assets/Game/World/` 目录，逻辑上属于 World Layer
 
 ### 层次详细定义
 
@@ -109,7 +109,9 @@ World Layer 包含影响多个层的环境系统。这些系统的特点：
 | **依赖** | 无（独立于分层体系外） |
 | **被依赖** | 所有层都依赖它（但它不调用任何层） |
 | **不属于调用链** | 它是被动服务，不主动调用任何系统 |
-| **系统** | Event Bus, Save System, Addressables, Screen Effects, Network System |
+| **系统** | Event Bus, Save System, Addressables, **Screen Effects Manager**, Network System |
+
+> **ScreenEffectsManager 说明**：ScreenEffectsManager 属于 Infrastructure Layer，由多个系统（SanityRage、Weather、Lighting、Dialogue 等）通过 `ScreenEffectRequestEvent` / `ScreenEffectRevokeEvent` 请求服务，不参与分层调用链。[已修复]
 
 #### 1. Foundation Layer（基础层）
 
@@ -118,7 +120,7 @@ World Layer 包含影响多个层的环境系统。这些系统的特点：
 | **职责** | 游戏底层规则，所有其他系统依赖的基石 |
 | **依赖** | Infrastructure Layer |
 | **调用** | 可被 Core/Feature/Meta/Presentation 层调用 |
-| **系统** | Player Controller, Health & Lethality, World Map & Progression |
+| **系统** | Player Controller, Health & Lethality, **WorldMap System** |
 
 #### 2. Core Layer（核心层）
 
@@ -129,19 +131,20 @@ World Layer 包含影响多个层的环境系统。这些系统的特点：
 | **调用** | 可被 Feature/Meta/Presentation 层调用 |
 | **系统** | NPC AI System, LOS & Eavesdropping, Environment Interaction |
 
-#### 2.5. World Layer（世界层）
+#### W. World Layer（世界层）
 
 | 特性 | 说明 |
 |------|------|
-| **职责** | 影响多个层的环境系统，通过 Event Bus 被动影响 |
-| **依赖** | Infrastructure Layer；影响 Core/Feature/Meta/Presentation 层 |
-| **调用** | 不主动调用其他系统；通过 Event Bus 广播环境变化事件 |
+| **职责** | 影响多个层的环境系统，通过 Event Bus 被动影响其他系统 |
+| **依赖** | Infrastructure Layer |
+| **调用** | **不主动调用其他系统**，仅通过 Event Bus 广播环境变化事件 |
+| **被调用** | 可被 Feature/Meta/Presentation 层订阅（通过 EventBus） |
 | **系统** | Weather System, Lighting System |
-| **实现位置** | 代码放在 Core/Environment 子目录，但逻辑上属于 World Layer |
-| **职责** | 游戏核心能力（AI、感知、环境） |
-| **依赖** | Foundation Layer |
-| **调用** | 可被 Feature/Meta/Presentation 层调用 |
-| **系统** | NPC AI System, LOS & Eavesdropping, Environment Interaction |
+| **实现位置** | 代码放在 `Assets/Game/World/` 目录，逻辑上属于 World Layer |
+
+> **设计说明**：World Layer 与 Infrastructure Layer 类似，都是横向系统。但 Infrastructure Layer 提供通用能力（EventBus, SaveSystem），而 World Layer 提供环境模拟能力（天气、光照）。两者都不参与分层调用链，仅通过 Event Bus 与其他系统交互。[已修复]
+
+> **感知查询规则**：World Layer 系统（如 Weather、Lighting）**禁止直接查询**。外部系统（如 NPC AI）需要订阅 `WeatherStateChangedEvent` 或 `LightingStateChangedEvent`，在事件回调中缓存最新的感知系数。所有状态必须通过事件订阅获取，不得持有 World Layer 系统引用进行直接查询。[已修复]
 
 #### 3. Feature Layer（功能层）
 
@@ -194,7 +197,7 @@ Assets/
 │   │   ├── SanityRage/
 │   │   └── ClueJournal/
 │   │
-│   ├── World/                  # World Layer (代码放在此，实际逻辑归属 World Layer)
+│   ├── World/                  # W. World Layer (环境系统)
 │   │   ├── Weather/
 │   │   └── Lighting/
 │   │
@@ -216,7 +219,7 @@ Assets/
 └── Resources/                   # Unity 资源
 ```
 
-> **注意**：Weather System 作为 World 层系统，影响 Core/Meta/Presentation 多层，其实现代码应放在 Core 层（Environment 子目录），但通过 Event Bus 与其他层通信。
+> **注意**：Weather System 作为 World 层系统，影响 Core/Meta/Presentation 多层，其实现代码放在 `Assets/Game/World/Weather/` 目录，通过 Event Bus 与其他层通信。
 
 ### 依赖规则（必须遵守）
 
@@ -339,7 +342,8 @@ Assets/
 ### Phase 1: 建立文件夹结构
 - [ ] 在 `Assets/Game/` 下建立 6 层文件夹结构（Foundation/Core/Features/Meta/Presentation）
 - [ ] 在 `Assets/Infrastructure/` 下建立横向基础设施文件夹
-- [ ] 将 Weather System 实现代码放入 Core/Environment 目录
+- [ ] 将 Weather System 实现代码放入 `Assets/Game/World/Weather/` 目录（World Layer）
+- [ ] 将 Lighting System 实现代码放入 `Assets/Game/World/Lighting/` 目录（World Layer）
 
 ### Phase 2: 依赖规则文档化
 - [ ] 在 `systems-index.md` 中明确定义 6 层和依赖关系

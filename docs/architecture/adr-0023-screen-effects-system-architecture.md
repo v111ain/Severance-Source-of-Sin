@@ -1,10 +1,13 @@
 # ADR-0023: 屏幕特效系统 (Screen Effects System) 架构决策
 
 ## Status
-**Proposed**
+**Accepted**
 
 ## Date
 2026-04-11
+
+## Last Updated
+2026-04-15 (v2: ScreenEffectType.Jitter→UI_Jitter 重命名；CameraShakeRequestEvent 专用于物理震动；明确优先级范围 0-100)
 
 ## Context
 
@@ -26,7 +29,7 @@
 
 ### Requirements
 
-- **必须**：定义所有屏幕特效类型（Vignette / Noise / Saturation / Hue / Blur / Shake / ChromaticAberration / FilmGrain）
+- **必须**：定义所有屏幕特效类型（Vignette / Noise / Saturation / Hue / Blur / Jitter / ChromaticAberration / FilmGrain）
 - **必须**：定义效果请求结构（ScreenEffectRequestEvent）和效果撤销机制
 - **必须**：定义效果叠加规则（多系统同时请求时的仲裁逻辑）
 - **必须**：定义平滑插值机制（效果渐变时长和曲线）
@@ -51,7 +54,7 @@
 │                                                                              │
 │  ┌──────────────────┐    VignetteRequest / NoiseRequest                     │
 │  │  Sanity/Rage     │ ──────────────────────────────────────────────────┐  │
-│  └──────────────────┘    SaturationRequest / ShakeRequest                   │  │
+│  └──────────────────┘    SaturationRequest / JitterRequest                   │  │
 │                                                                            │  │
 │  ┌──────────────────┐    DamageVignetteRequest                            │  │
 │  │  Health System   │ ──────────────────────────────────────────────────┘  │
@@ -82,7 +85,7 @@
 │  │                    后处理管线 (Post-Processing Pipeline)                    │   │
 │  │                                                                       │   │
 │  │  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐  │   │
-│  │  │ Vignette│ → │ Noise   │ → │Saturation│ → │  Blur   │ → │  Shake  │  │   │
+│  │  │ Vignette│ → │ Noise   │ → │Saturation│ → │  Blur   │ → │ Jitter  │  │   │
 │  │  └─────────┘   └─────────┘   └─────────┘   └─────────┘   └─────────┘  │   │
 │  │                                                                       │   │
 │  │  ┌─────────────┐   ┌─────────────┐   ┌─────────────────┐             │   │
@@ -141,11 +144,12 @@ public enum ScreenEffectType
     Saturation = 1 << 2,       // 饱和度
     Hue = 1 << 3,              // 色调偏移
     Blur = 1 << 4,             // 模糊
-    Shake = 1 << 5,            // 震动（准星/画面）
+    UI_Jitter = 1 << 5,         // 准星抖动（专负责准星/HUD Transform 抖动，与 CameraShakeManager 的物理震动解耦）
     ChromaticAberration = 1 << 6, // 色差
     FilmGrain = 1 << 7,        // 胶片颗粒
     DamageFlash = 1 << 8,       // 受伤闪红
-    ExtractionPulse = 1 << 9     // 撤离脉冲
+    ExtractionPulse = 1 << 9,    // 撤离脉冲
+    Fade = 1 << 10              // 淡入淡出（用于场景切换）
 }
 ```
 
@@ -597,7 +601,7 @@ public class ScreenEffectsManager : MonoBehaviour
             blurRadius = Mathf.Lerp(baseParams.blurRadius, overlayParams.blurRadius, intensity),
             blurQuality = Mathf.Max(baseParams.blurQuality, overlayParams.blurQuality), // MaxQuality 模式，取最高质量
 
-            // Shake: PriorityDominant 混合
+            // Jitter: PriorityDominant 混合
             // 高优先级层主导：方向和频率直接覆盖（baseParams 被忽略），
             // 强度按 intensity 在两层之间 Lerp 插值
             // 设计理由：震动方向应与高优先级效果一致（如受伤时的震动方向应主导）
@@ -643,10 +647,11 @@ public class ScreenEffectsManager : MonoBehaviour
             blurRadius = Mathf.Min(1.0f, baseParams.blurRadius + overlayParams.blurRadius * intensity),
             blurQuality = baseParams.blurQuality, // 不被 overlay 影响
 
-            // Shake: Additive 混合（低优先级层贡献）
+            // Jitter: Additive 混合（低优先级层贡献）
             // 低优先级层不覆盖方向和频率（由 BlendParams 中的高优先级层决定），
             // 仅累加强度（有上限）
-            // 设计理由：震动方向应由最高优先级层决定，低优先级层仅增加震动强度
+            // 设计理由：抖动方向应由最高优先级层决定，低优先级层仅增加抖动强度
+            // 注意：字段命名统一为 shake*（与 ScreenEffectParams 结构体保持一致）
             shakeDirection = baseParams.shakeDirection, // 保持高优先级层的主导方向
             shakeIntensity = Mathf.Min(_maxShakeIntensity, baseParams.shakeIntensity + overlayParams.shakeIntensity * intensity),
             shakeFrequency = baseParams.shakeFrequency, // 保持高优先级层的主导频率
@@ -684,7 +689,7 @@ public class ScreenEffectsManager : MonoBehaviour
 | WeatherSystem | Noise, Blur |
 | LightingSystem | Vignette |
 | DialogueSystem | Blur |
-| CombatSystem | Shake, ChromaticAberration |
+| CombatSystem | Jitter, ChromaticAberration |
 | Generic | 用于未分类的临时效果（如调试期间的效果请求） |
 
 **Generic 特殊说明**：
@@ -751,7 +756,9 @@ public class ScreenEffectsManager : MonoBehaviour
 - 对话时轻微模糊背景
 - Sanity = 0 时模糊增强
 
-### 6. Shake（震动）
+### 6. UI_Jitter（准星抖动）
+
+> **命名说明**：`ScreenEffectType.Jitter` 已重命名为 `ScreenEffectType.UI_Jitter`，明确其职责范围。
 
 | 参数 | 类型 | 说明 | 默认值 |
 |------|------|------|--------|
@@ -760,8 +767,10 @@ public class ScreenEffectsManager : MonoBehaviour
 | `frequency` | float | 震动频率 | 15.0 |
 
 **使用场景**：
-- Rage >= 50 时准星抖动
-- 爆炸时画面震动
+- Rage >= 50 时准星抖动（UI 层准星，非相机位移）
+- 极端心理状态视觉反馈
+
+> **ScreenEffect.UI_Jitter 职责边界说明**：ScreenEffect.UI_Jitter 专负责**准星/UI 抖动**（影响 HUD 准星 Transform），例如愤怒值高时准星不受控制地晃动。**物理震动**（爆炸冲击导致画面晃动）由 CameraShakeManager 处理（见 ADR-0026 §6 CameraShakeRequestEvent）。
 
 ### 7. Chromatic Aberration（色差）
 
@@ -810,7 +819,7 @@ public class ScreenEffectsManager : MonoBehaviour
 | Noise | Additive | 所有层叠加（但有上限 1.0） |
 | Saturation | LerpBlend | 高优先级层按 intensity 插值覆盖 |
 | Blur | MaxQuality | 取最高模糊质量（高质量优先） |
-| Shake | PriorityDominant | 高优先级层的方向和频率直接覆盖；强度按 intensity 插值；低优先级层仅通过 Additive 叠加强度 |
+| UI_Jitter | PriorityDominant | 高优先级层的方向和频率直接覆盖；强度按 intensity 插值；低优先级层仅通过 Additive 叠加强度 |
 | ChromaticAberration | Additive | 所有层叠加（但有上限 1.0） |
 | FilmGrain | Additive | 所有层叠加（无上限，密度可叠加） |
 | Hue | AdditiveWrap | 色调偏移叠加，超出 0~360 范围时回绕 |
@@ -1114,7 +1123,7 @@ Main Camera
 | Saturation | LiftGammaGain (饱和度通过 saturationMultiplier 控制) | - |
 | Hue | ColorAdjustments | hueShift |
 | Blur | DepthOfField (模糊模式) | focusDistance, aperture |
-| Shake | 自定义 Shader + Camera offset | - |
+| UI_Jitter | 自定义 Shader + Camera offset | - |
 | ChromaticAberration | ChromaticAberration | intensity |
 | FilmGrain | FilmGrain | intensity |
 | DamageFlash | Vignette (color=red) | color, intensity |
@@ -1138,7 +1147,7 @@ Main Camera
 | `DefaultFadeOutDuration` | 0.3s | 0.1~0.5s | 默认淡出时长 |
 | `MaxVignetteIntensity` | 1.0 | 0.8~1.0 | 暗角强度上限 |
 | `MaxNoiseIntensity` | 1.0 | 0.8~1.0 | 噪点强度上限 |
-| `MaxShakeIntensity` | 8.0 | 4.0~12.0 | 震动强度上限 |
+| `MaxUI_JitterIntensity` | 8.0 | 4.0~12.0 | 准星抖动强度上限（原 MaxShakeIntensity，已重命名） |
 | `EffectTimeoutDefault` | 10.0s | 5.0~30.0s | 默认效果超时时间 |
 | `AdditiveLayerDecay` | 0.5 | 0.3~0.7 | 低优先级效果层叠加衰减系数。<br/>设计意图：0.5 可确保高优先级效果主导视觉体验的同时，低优先级效果仍有可感知的贡献（如天气噪点隐约可见）。**待 UX 测试验证后确认默认值。** |
 | `DebugOverlayEnabled` | false | - | 是否启用 Debug 界面 |
@@ -1156,6 +1165,8 @@ Main Camera
 | 30 | Lighting | 极暗区域 | 区域光照 |
 | 20 | Dialogue | 对话模糊 | UI 交互 |
 | 10 | Generic | 默认 | 最低优先级 |
+
+> **优先级范围说明**：ScreenEffect 优先级范围为 **0-100**，与 Input Blocking 优先级范围（ADR-0015 §UI 层级优先级）保持一致，便于统一管理和调试。
 
 **Vignette 优先级仲裁规则**：
 

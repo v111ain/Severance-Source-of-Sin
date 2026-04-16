@@ -1,13 +1,13 @@
 # ADR-0017: 理智/愤怒系统 (Sanity/Rage Meter) 架构决策
 
 ## Status
-**Proposed** (v5: 更新视觉效果请求接口，改用 ADR-0023 的统一 ScreenEffectRequestEvent)
+**Proposed** (v6: 统一 Blur 强度公式；明确 UI_Jitter 与 CameraShake 职责边界；补充计量条视觉规范；澄清 DialogueEmotion 与 PsychologicalState 关联)
 
 ## Date
 2026-04-10
 
 ## Last Updated
-2026-04-12 (v5: 更新视觉效果请求接口，改用 ADR-0023 的统一 ScreenEffectRequestEvent；shared-types.md §12.3 中的独立事件已标记为废弃)
+2026-04-15 (v7: ADR 评审修复：补充事件发布表格（RageChangedEvent/SanityChangedEvent）；ShakeIntensity 公式增加状态判断，只在 FRENZIED/SOUL_SPLIT 状态时计算)
 
 ## Context
 
@@ -30,7 +30,9 @@
   > - 持续高强度噪点（NoiseIntensity = 1.0）
   > - 极端暗角（VignetteIntensity = 1.0，视野几乎全黑）
   > - 色彩完全褪去（SaturationMultiplier = 0.0）
-  > - **无准星抖动**（因为 FRENZIED 不激活，ShakeIntensity = 0）
+  > - **准星抖动**：取决于当前心理状态
+  >   - Sanity=0 且 Rage <= 70（BROKEN 状态）：ShakeIntensity = 0（无抖动）
+  >   - Sanity=0 且 Rage > 70（SOUL_SPLIT 状态）：ShakeIntensity 按 FRENZIED 规则计算（Rage 高时增加）
   > - 玩家仍可移动和行动，但视觉几乎完全依赖记忆
   >
   > **Sanity = 0 与 Health 系统并行兼容性**：
@@ -74,8 +76,10 @@
 │  │   Clue&Journal   │      clue_category, discovery_stage,                │  │
 │  └──────────────────┘      narrative_significance}                         │  │
 │                                                                            │  │
-│  ┌──────────────────┐    PlayerDamaged{damage_type, is_lethal}            │  │
-│  │ Health&Lethality │ ──────────────────────────────────────────────────┘  │
+│  ┌──────────────────┐    PlayerDamagedEvent{                              │  │
+│  │ Health&Lethality │      player_id, damage_type, damage_amount,         │  │
+│  └──────────────────┘      hit_location, source_entity_id}                 │  │
+│                           （事件定义见 shared-types.md §7.6）              │
 │  └──────────────────┘                                                        │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
@@ -95,7 +99,7 @@
 │  │  │  ◆ VignetteIntensity = Lerp(0.0, 0.8, 1.0 - Sanity/100)        │ │   │
 │  │  │  ◆ NoiseIntensity = Lerp(0.0, 0.5, 1.0 - Sanity/50)           │ │   │
 │  │  │  ◆ SaturationMultiplier = Lerp(0.3, 1.0, Sanity/100)          │ │   │
-│  │  │  ◆ ShakeIntensity = Lerp(0.0, 8.0, Rage/100)                  │ │   │
+│  │  │  ◆ ShakeIntensity = (State == FRENZIED || State == SOUL_SPLIT) ? Lerp(0.0, 8.0, Rage/100) : 0.0  │ │   │
 │  │  └─────────────────────────────────────────────────────────────────┘ │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                    │                                          │
@@ -191,16 +195,99 @@ SOUL_SPLIT 是极端双轨状态，**同时叠加 FRENZIED 和 BROKEN 的所有�
 >
 > **设计意图确认**：如果 playtest 反馈表明这个机制体验不佳，可通过 Tuning Knob `SOUL_SPLIT_SpeedBonus` 调整（安全范围 0%~+15%），或完全禁用（设为 0%）。
 
+### Sanity/Rage 计量条视觉规范
+
+> **视觉规范来源**：Sanity/Rage 计量条的视觉参数（颜色、尺寸、动画）定义于 [ADR-0028 UI 设计规范](./adr-0028-ui-design-spec.md#hud-布局锚点)。本节仅补充与 ADR-0028 的关联说明。
+
+**计量条布局**：
+- 位置：屏幕左侧垂直排列（锚点 [1,7] 和 [1,5]，见 ADR-0028 HUD 锚点系统）
+- 尺寸：宽度 20px，高度根据状态动态变化（正常 120px，FRENZIED/SOUL_SPLIT 时脉冲动画扩展至 140px）
+- 间距：两个计量条间距 8px
+
+**颜色渐变定义**：
+
+| 计量条 | 状态 | 颜色 | 说明 |
+|--------|------|------|------|
+| Sanity | CALM (70-100) | `#1A4D8F` (Sanity Blue) | 正常理智 |
+| Sanity | UNEASY (40-69) | `#3A6D9F` | 轻微不安 |
+| Sanity | AGITATED (20-39) | `#8B6914` | 中度焦虑 |
+| Sanity | BROKEN (0-19) | `#8B0000` (Blood Red) | 理智崩溃 |
+| Rage | CALM (0-30) | `#FF6600` (Rage Orange) | 正常愤怒 |
+| Rage | AGITATED (31-70) | `#FF4400` | 愤怒上升 |
+| Rage | FRENZIED (71-100) | `#FF0000` (纯红) | 狂暴状态 |
+
+**动画参数**：
+
+| 动画类型 | 参数 | 值 | 说明 |
+|----------|------|------|------|
+| 数值变化 | 填充动画时长 | 0.2s | 计量条填充/消耗动画 |
+| 状态切换 | 脉冲动画 | 0.5s ease-in-out | FRENZIED/SOUL_SPLIT 状态计量条脉冲 |
+| 颜色过渡 | 渐变动画 | 0.5s ease-in-out | 状态切换时颜色平滑过渡 |
+| SOUL_SPLIT | 双重脉冲 | 1.5s ease-in-out | 双轨同时脉冲，视觉双重效果 |
+
+> **动画时长来源**：动画时长统一定义于 [ADR-0028 §动画规范](./adr-0028-ui-design-spec.md#动画规范)，与 ADR-0015 §Tuning Knobs 保持一致。
+
+### DialogueEmotion 与 PsychologicalState 的关联
+
+> **关联说明**：`DialogueEmotion`（对话情绪）和 `PsychologicalState`（心理状态）是两个关联但独立的概念：
+
+| 概念 | 作用域 | 用途 | 定义位置 |
+|------|--------|------|----------|
+| `PsychologicalState` | 玩家全局状态 | 影响 HUD 色调、暗角、噪点等全局视觉效果 | shared-types.md §12.1 / ADR-0017 |
+| `DialogueEmotion` | NPC 对话气泡 | 仅影响对话 UI 的气泡样式和动画 | shared-types.md §13.1 / ADR-0014 |
+
+**关联规则**：
+- `PsychologicalState` 变化**不直接驱动** `DialogueEmotion`
+- NPC 在对话场景中的 `DialogueEmotion` 由 **DialogueTree 配置**决定（策划预设）
+- 特殊场景（如 FRENZIED 状态下的对峙）可设计为自动切换 NPC 情绪表达
+- `PsychologicalState` 的 `UNEASY` 状态与 `DialogueEmotion.UNEASY` 是**不同的概念**：前者是玩家心理状态，后者是 NPC 对话气泡的附加情绪样式（见 ADR-0014 §DialogueEmotion）
+
 **MovementSpeedBonus 计算公式**：
 ```
+// 目标速度根据状态计算
+float targetBonus = 0f;
 if (State == PsychologicalState.SOUL_SPLIT || State == PsychologicalState.FRENZIED)
-    MovementSpeedBonus = +10%
+    targetBonus = +0.10f;  // +10%
 else if (State == PsychologicalState.BROKEN)
-    MovementSpeedBonus = -5%
-else
-    MovementSpeedBonus = 0%
+    targetBonus = -0.05f;  // -5%
+
+// 使用 Lerp 缓动过渡，避免 SOUL_SPLIT→BROKEN 时 +10%→-5% 的突变
+// 过渡时长：0.5s（相邻极端状态切换时间，见上方过渡动画定义）
+MovementSpeedBonus = Lerp(MovementSpeedBonus, targetBonus, ExpDecay(TimeSinceStateChange, HalfLife: 0.15f));
 ```
 > **优先级说明**：SOUL_SPLIT 和 FRENZIED 均使用 +10%，不执行 BROKEN 的 -5% 惩罚。三个状态互斥（按优先级判定只会是其中之一）。
+> **SOUL_SPLIT→BROKEN 平滑过渡说明**：使用 ExpDecay 缓动（HalfLife=0.15s，约 0.5s 过渡到目标值），确保速度变化平缓，无跳变。
+
+**MovementSpeedBonus 状态机实现说明**：
+> `TimeSinceStateChange` 是自上次心理状态切换后经过的时间，在状态机中维护。以下是状态转移时 `TimeSinceStateChange` 的更新逻辑：
+
+```csharp
+private PsychologicalState _currentState;
+private float _timeSinceStateChange = 0f;
+
+public void OnStateChanged(PsychologicalState newState)
+{
+    // 记录状态切换时刻
+    _lastStateChangeTime = Time.time;
+    _timeSinceStateChange = 0f;
+    _currentState = newState;
+}
+
+void Update()
+{
+    // 每帧更新 TimeSinceStateChange
+    _timeSinceStateChange = Time.time - _lastStateChangeTime;
+
+    // 计算 MovementSpeedBonus（使用缓动过渡）
+    float targetBonus = /* 根据状态计算目标值 */;
+    MovementSpeedBonus = Lerp(MovementSpeedBonus, targetBonus, ExpDecay(_timeSinceStateChange, HalfLife: 0.15f));
+}
+```
+
+> **状态转移触发时机**：
+> 1. `Sanity` 值变化跨越阈值（70/40/20）
+> 2. `Rage` 值变化跨越阈值（30/50/70）
+> 3. 同时满足 SOUL_SPLIT 条件时（Sanity < 20 AND Rage > 70）
 
 ### 愤怒消散与锁定机制
 
@@ -285,18 +372,18 @@ void Update()
 SanityDelta = BaseValue[discovery_stage] * NarrativeSignificanceMultiplier
 ```
 
-| 事件类型 | BaseValue | 说明 |
-|---------|-----------|------|
-| 击杀恶徒 (ENEMY) | -5 | 道德上可接受，但仍造成心理负担 |
-| 击杀帮凶 (ACCOMPLICE) | -8 | 知道他们是受害者但仍下手 |
-| 击杀无辜者 (VICTIM) | -15 | 严重的道德错误 |
-| 目睹 NPC 死亡 | -5 | 非亲手，但仍受影响 |
-| 发现悲剧线索（第一次） | -5 | 首次接触悲剧，情感冲击 |
-| 发现悲剧线索（后续） | -3 | 递减惩罚，避免过度惩罚探索 |
-| 发现悲剧线索（后续深度揭示） | -2 | 多次接触同一悲剧的边际递减 |
-| 发现身份/位置线索 | +5 | 真相带来满足感 |
-| 捆绑 NPC（不杀）(TieUp) | +3 | 仁慈选择 |
-| 成功转化线人 | +5 | 正向干预 |
+| 事件类型 | BaseValue | 触发机制 |
+|---------|-----------|---------|
+| 击杀恶徒 (ENEMY) | -5 | KillTagEvent 已包含 |
+| 击杀帮凶 (ACCOMPLICE) | -8 | KillTagEvent 已包含 |
+| 击杀无辜者 (VICTIM) | -15 | KillTagEvent 已包含 |
+| 目睹 NPC 死亡 | -5 | **触发机制**：Sanity 系统订阅 NPCStateChangedEvent，当 new_world_state=DEAD 时，通过 LOS System 判定玩家是否在目击范围内 |
+| 发现悲剧线索（DiscoveryStage.FIRST_REVEAL） | -5 | ClueDiscoveredEvent 已包含 |
+| 发现悲剧线索（DiscoveryStage.FOLLOWUP） | -3 | ClueDiscoveredEvent 已包含 |
+| 发现悲剧线索（DiscoveryStage.DEEP_REVEAL） | -2 | ClueDiscoveredEvent 已包含 |
+| 发现身份/位置线索 | +5 | ClueDiscoveredEvent 已包含 |
+| 捆绑 NPC（不杀）(TieUp) | +3 | InteractionEvent 已包含 |
+| 成功转化线人 | +5 | InteractionEvent 已包含 |
 
 | NarrativeSignificanceMultiplier | 值 |
 |-------------------------------|-----|
@@ -341,12 +428,59 @@ RageDelta = BaseValue[EventType] * MomentumMultiplier
 
 #### 视觉效果插值公式
 
+> **Blur 强度公式（统一版本）**：Blur 效果仅当 Sanity < 50 时触发，与 VisualEffectCalculator 保持一致。
+
 ```
 VignetteIntensity = Lerp(0.0, 0.8, 1.0 - Sanity/100)
 NoiseIntensity = Sanity < 50 ? Lerp(0.0, 0.5, 1.0 - Sanity/50) : 0.0  // 仅当 Sanity < 50 时生效
 SaturationMultiplier = Lerp(0.3, 1.0, Sanity/100)
-ShakeIntensity = Lerp(0.0, 8.0, Rage/100)
+BlurIntensity = Sanity < 50 ? Clamp((50 - Sanity) / 50, 0, 0.5) : 0.0    // 仅当 Sanity < 50 时触发
+UI_JitterIntensity = Lerp(0.0, 8.0, Rage/100)                            // UI 准星抖动（非物理相机震动）
 MovementSpeedBonus = Lerp(0.0, 0.1, Rage/100)  // 最高 +10%
+```
+
+> **UI_Jitter 与 CameraShake 职责边界说明**：
+> - `UI_JitterIntensity`（ScreenEffectType.UI_Jitter）：专负责**准星/UI Transform 抖动**（影响 HUD 准星 Transform），例如愤怒值高时准星不受控制地晃动
+> - **物理震动**（爆炸冲击导致画面晃动）由 CameraShakeManager 处理（见 ADR-0026 §6 CameraShakeRequestEvent）
+> - 两者完全解耦，ScreenEffectsManager 不处理物理震动
+
+#### 心理状态切换动画
+
+> **时长与 ADR-0028 统一**：心理状态切换时，UI 动画与屏幕后处理效果（DPP）同步过渡。时长引用 [ADR-0028 §心理状态切换动画](./adr-0028-ui-design-spec.md#心理状态切换动画)：
+> - `NormalTransitionDuration = 0.5s`：相邻状态间的过渡（AGITATED↔BROKEN 等）
+> - `ExtremeTransitionDuration = 1.5s`：极端状态切换（CALM↔FRENZIED、正常↔SOUL_SPLIT）
+
+所有心理状态（CALM / AGITATED / BROKEN / FRENZIED / SOUL_SPLIT）之间的切换都应使用统一的过渡动画：
+
+| 切换类型 | 时长 | 缓动曲线 |
+|----------|------|----------|
+| 相邻状态切换（AGITATED↔BROKEN 等） | 0.5s | ease-in-out |
+| 极端状态切换（CALM↔FRENZIED、正常↔SOUL_SPLIT） | 1.5s | ease-in-out |
+| SOUL_SPLIT 进入 | 1.5s | ease-in-out |
+
+**动画实现**：
+- 动画作用于 HUD 元素（计量条颜色、图标状态）
+- 屏幕视觉效果（暗角、噪点、饱和度）本身已有平滑 Lerp 插值（见上方公式），**无需额外动画**
+- 计量条 UI 元素使用 Unity Animator 或 Tween 插件驱动
+
+**动画伪代码**：
+```csharp
+// 心理状态切换时的 UI 动画
+void OnPsychologicalStateChanged(PsychologicalState oldState, PsychologicalState newState)
+{
+    // 计算过渡时长（相邻 vs 极端）
+    float duration = IsExtremeTransition(oldState, newState) ? 1.5f : 0.5f;
+
+    // 旧状态计量条淡出缩小
+    _oldStateBar.AnimateFadeOut(duration, Ease.InOut);
+    _oldStateIcon.AnimateScaleDown(duration, Ease.InOut);
+
+    // 新状态计量条淡入放大
+    _newStateBar.AnimateFadeIn(0.3f, Ease.InOut);
+    _newStateIcon.AnimateScaleUp(0.3f, Ease.InOut);
+
+    // 屏幕视觉效果通过上方的 Lerp 插值公式自动平滑过渡，无需额外处理
+}
 ```
 
 ### 关键接口定义
@@ -357,17 +491,17 @@ MovementSpeedBonus = Lerp(0.0, 0.1, Rage/100)  // 最高 +10%
 |------|------|----------|
 | `KillTagEvent{kill_tag: NPCIdentityType}` | GrittyTakedowns | 根据击杀目标身份计算理智/愤怒变化 |
 | `ClueDiscoveredEvent{clue_id, clue_category, discovery_stage, narrative_significance}` | Clue&Journal | 根据线索类别和发现阶段计算理智变化。**事件定义见 shared-types.md §11.4** |
-| `PlayerDamagedEvent{damage_type, is_lethal}` | Health&Lethality | 根据受伤程度计算理智/愤怒变化 |
+| `PlayerDamagedEvent{player_id, damage_type, damage_amount, hit_location, source_entity_id}` | Health&Lethality | 根据受伤程度计算理智/愤怒变化。**事件定义见 shared-types.md §7.6** |
 | `CombatStateChangedEvent{is_in_combat}` | NPC AI 系统 | 订阅此事件判断是否退出战斗状态 |
 
 > **类型定义说明**：`ClueDiscoveredEvent` 及其相关的 `ClueCategory`（§11.1）、`DiscoveryStage`（§11.2）、`NarrativeSignificance`（§11.3）已统一定义于 shared-types.md，实现时应从 shared-types 引用。
 
 #### CombatStateChangedEvent 接口定义
 
-> **权威来源说明**：`CombatStateChangedEvent` 的权威定义位于 ADR-0004（NPC AI 行为架构）§7 事件订阅与发布关系部分。ADR-0017 仅作为消费者引用此事件，不重复定义。
+> **权威来源说明**：`CombatStateChangedEvent` 的权威定义位于 shared-types.md §5.10。ADR-0017 仅作为消费者引用此事件，不重复定义。ADR-0004 是此事件的发布者。
 
 ```csharp
-// 引用位置：ADR-0004 §7（权威定义）
+// 引用位置：shared-types.md §5.10（权威定义）
 // 消费者：SanityRageMeter (ADR-0017)
 
 public struct CombatStateChangedEvent
@@ -378,11 +512,6 @@ public struct CombatStateChangedEvent
     /// false = 所有 NPC 都处于 UNDETECTED/SUSPECT/SEARCH 状态
     /// </summary>
     public bool IsInCombat;
-
-    /// <summary>
-    /// 触发战斗状态变更的原因（可选，用于调试）
-    /// </summary>
-    public string Reason;
 }
 ```
 
@@ -397,6 +526,8 @@ public struct CombatStateChangedEvent
 
 | 事件 | 目标 | 数据内容 | 接口类型 |
 |------|------|----------|----------|
+| `RageChangedEvent` | UI System | OldValue, NewValue, Delta。**事件定义见 shared-types.md §12.2.1** | 事件发布 |
+| `SanityChangedEvent` | UI System | OldValue, NewValue, Delta。**事件定义见 shared-types.md §12.2.2** | 事件发布 |
 | `ScreenEffectRequestEvent` | ScreenEffectsManager | 屏幕后处理效果请求（暗角/噪点/饱和度/抖动/模糊）。**事件定义见 ADR-0023** | 事件发布 |
 | `HUDOverlayOpacityRequest{opacity}` | UI System | Sanity=0 时 HUD 半透明叠加层透明度。**事件定义见 shared-types.md §12.3.1** | 事件发布 |
 | `MovementSpeedMultiplier{multiplier}` | PlayerController | 愤怒高时轻微增加移动速度 | 事件发布 |
@@ -479,7 +610,7 @@ public struct CombatStateChangedEvent
 | 依赖系统 | 依赖关系 | 说明 | 最小接口集 |
 |----------|----------|------|------------|
 | [ADR-0001: 事件驱动架构](./adr-0001-event-driven-architecture.md) | 必须 | 所有事件订阅/发布基于 EventBus | - |
-| [ADR-0004: NPC AI 行为架构](./adr-0004-npc-ai-behavior-architecture.md) | 必须 | CombatStateChangedEvent 来源；AlertState 枚举定义 | `NPCManager.IsAnyNPCInCombat(): bool`<br>`NPCManager.GetAlertState(npcId): AlertState`<br>注：以 ADR-0004 实际签名为准 |
+| [ADR-0004: NPC AI 行为架构](./adr-0004-npc-ai-behavior-architecture.md) | 必须 | CombatStateChangedEvent 来源（已在 ADR-0018 §3.2 Core Layer 事件表中明确索引）；AlertState 枚举定义 | `NPCManager.IsAnyNPCInCombat(): bool`<br>`NPCManager.GetAlertState(npcId): AlertState`<br>注：以 ADR-0004 实际签名为准 |
 | [ADR-0008: 脆弱度与伤害系统](./adr-0008-health-lethality-architecture.md) | 必须 | PlayerDamagedEvent 定义 | - |
 | [ADR-0011: 沉重处决系统](./adr-0011-gritty-takedowns-architecture.md) | 必须 | KillTagEvent 定义 | - |
 | [ADR-0016: 线索与日志系统](./adr-0016-clue-journal-architecture.md) | 必须 | ClueDiscoveredEvent 来源（上游依赖）。注：此为接口声明式依赖，非实现依赖；两系统通过 EventBus 解耦，无循环引用问题 | - |
@@ -520,6 +651,7 @@ public struct CombatStateChangedEvent
 | VC-13 | Rage 单次变化不超过 15 | **单元测试（正向）**：创建测试用例，模拟 `RageDelta = BaseValue * MomentumMultiplier = 20 * 1.5 = 30`，验证实际 RageDelta 被 Clamp 为 15。<br>**单元测试（负向）**：模拟 `RageDelta = BaseValue * MomentumMultiplier = -20 * 1.5 = -30`，验证实际 RageDelta 被 Clamp 为 -15。<br>**集成测试**：快速连续击杀两个 VICTIM（BaseValue=-15，×1.3 Momentum），验证第二次击杀的 RageDelta 不超过 15。 |
 | VC-14 | CombatStateChangedEvent 触发战斗状态判断 | 模拟 NPC 进入 ALERT，验证 IsInCombat = true |
 | VC-15 | SOUL_SPLIT 状态下移动速度 +10% 符合设计意图 | **[Future Validation]** Playtest 验证玩家在 SOUL_SPLIT 状态反馈是否为"肾上腺素"体验（速度提升有感但视觉 debuff 明显），如不符合则调整 MovementSpeedBonus 数值。此验证项需要在完整可玩的 milestone 版本中进行，当前阶段仅做代码逻辑验证。 |
+| VC-16 | SOUL_SPLIT→BROKEN 速度突变测试 | **[Edge Case Validation]** 测试从 SOUL_SPLIT 恢复到 BROKEN 时的速度变化是否平缓。设计意图：+10%→-5% 突变可能产生不好的体验。建议增加过渡动画或缓动，使速度变化更平滑。如验证发现问题，考虑添加临时状态 SLOW_RECOVERY 阶段。 |
 
 ---
 

@@ -7,7 +7,7 @@
 2026-04-09
 
 ## Last Updated
-2026-04-09
+2026-04-15 (ADR 评审修复：BroadcastHealthEvent 补充 has_witness 和 witness_distance 字段，与 shared-types.md §5.2 定义一致)
 
 ## Context
 
@@ -401,14 +401,23 @@ public class DamageHandler
     {
         if (target is NPCEntity)
         {
-            // NPC 状态变化由 NPC AI 系统广播
+            // NPC 状态变化由 Health System 广播（通过 NPCStateManager 协调）
+            // HealthState 和 WorldState 是两个独立的状态机：
+            // - HealthState: HEALTHY → STAGGERED → DOWNED → DEAD
+            // - WorldState: FREE → UNCONSCIOUS → TIED → DEAD
+            // NPCStateManager 监听 HealthState 变化，同步更新 WorldState
+            // 完整字段定义见 shared-types.md §5.2
             EventBus.Instance.Publish(new NPCStateChangedEvent
             {
                 npc_id = target.EntityId,
                 entity_type = EntityType.NPC,
-                old_state = oldState,
-                new_state = newState,
-                damage_type = request.damage_type
+                old_world_state = NPCStateManager.Instance.GetWorldState(target.EntityId),  // 广播前查询当前 WorldState
+                new_world_state = NPCStateManager.Instance.GetWorldState(target.EntityId), // HealthState → WorldState 映射由 NPCStateManager 处理
+                old_health_state = oldState,       // HealthState 变化
+                new_health_state = newState,       // HealthState 变化
+                damage_type = request.damage_type,
+                has_witness = HasWitness(target),  // 目击判定
+                witness_distance = GetWitnessDistance(target)  // 目击距离
             });
         }
         else if (target is PlayerEntity)
@@ -418,8 +427,10 @@ public class DamageHandler
             {
                 player_id = target.EntityId,
                 damage_type = request.damage_type,
+                damage_amount = request.damage_amount,    // 实际伤害值（已含远程衰减）
                 hit_location = request.hit_location,
-                source_entity_id = request.source_entity_id
+                source_entity_id = request.source_entity_id,
+                new_state = target.CurrentHealthState       // 受伤后的健康状态
             });
         }
     }
@@ -428,21 +439,52 @@ public class DamageHandler
 
 ### 4. 爆炸伤害处理
 
+> **v1.5.0 更新**：将 `stagger_multiplier` 配置化，并引入 `ArmorPenetrationLevel` 枚举替代 `int.MaxValue` 魔法值。
+
+```csharp
+// HealthConfigSO.cs
+[CreateAssetMenu(menuName = "Game/Health/Tuning")]
+public class HealthConfigSO : ScriptableObject
+{
+    [Header("爆炸伤害参数")]
+    [Tooltip("爆炸物 Blunt 分支的硬直倍率（默认 1.5）")]
+    public float explosionStaggerMultiplier = 1.5f;
+}
+
+/// <summary>
+/// 护甲穿透等级枚举
+/// </summary>
+public enum ArmorPenetrationLevel
+{
+    /// <summary>
+    /// 普通穿透：需要与护甲等级比较
+    /// </summary>
+    Normal = 0,
+
+    /// <summary>
+    /// 完全穿透：无视护甲，直接致死
+    /// </summary>
+    Infinite = int.MaxValue
+}
+```
+
 ```csharp
 // ExplosionHandler.cs
 public class ExplosionHandler
 {
-    // 爆炸伤害穿透值：int.MaxValue 确保爆炸必定穿透护甲
-    // 注意：穿透值 >= ArmorLevel 时穿透成功，int.MaxValue 绕过所有护甲
-    public const int ARMOR_IGNORE_PENETRATION = int.MaxValue;
+    // 爆炸伤害穿透值：ArmorPenetrationLevel.Infinite 确保爆炸必定穿透护甲
+    // 注意：穿透值 >= ArmorLevel 时穿透成功，Infinite 绕过所有护甲
+    public const int ARMOR_IGNORE_PENETRATION = (int)ArmorPenetrationLevel.Infinite;
 
     private SpatialDamageCalculator _spatialCalculator;
     private DamageHandler _damageHandler;
+    private float _staggerMultiplier;  // 从配置读取
 
-    public void Initialize(DamageHandler damageHandler)
+    public void Initialize(DamageHandler damageHandler, HealthConfigSO config)
     {
         _damageHandler = damageHandler;
         _spatialCalculator = new SpatialDamageCalculator();
+        _staggerMultiplier = config?.explosionStaggerMultiplier ?? 1.5f;
     }
 
     public void ProcessExplosion(ExplosionEvent explosion)
@@ -457,7 +499,7 @@ public class ExplosionHandler
             float distance = Vector3.Distance(explosion.position, entity.Position);
 
             // lethal_ratio 半径内：Lethal 伤害（全额 base_damage）
-            // 超出 lethal_ratio 但在爆炸半径内：Blunt 伤害（按距离衰减 + stagger_multiplier）
+            // 超出 lethal_ratio 但在爆炸半径内：Blunt 伤害（按距离衰减 * stagger_multiplier）
             DamageType damageType;
             float finalDamage;
             if (distance <= explosion.radius * explosion.lethal_ratio)
@@ -468,17 +510,16 @@ public class ExplosionHandler
             else
             {
                 damageType = DamageType.BLUNT;
-                float stagger_multiplier = 1.5f;
-                finalDamage = explosion.base_damage * (1 - distance / explosion.radius) * stagger_multiplier;
+                finalDamage = explosion.base_damage * (1 - distance / explosion.radius) * _staggerMultiplier;
             }
 
-            // 爆炸伤害绕过护甲（穿透值设为 int.MaxValue）
+            // 爆炸伤害绕过护甲（穿透值设为 Infinite）
             var request = new DamageRequest
             {
                 target_id = entity.EntityId,
                 damage_type = damageType,
                 damage_amount = finalDamage,
-                penetration = ARMOR_IGNORE_PENETRATION,  // int.MaxValue = 无视护甲
+                penetration = ARMOR_IGNORE_PENETRATION,  // Infinite = 无视护甲
                 source = "Explosion"
             };
 
@@ -516,11 +557,19 @@ public class ExplosionHandler
 
 ### 5. 倒地恢复机制（仅 NPC）
 
+> **v1.5.0 更新**：新增计时器重置规则说明。
+
 ```csharp
 // DownedRecoverySystem.cs
 /// <summary>
 /// 倒地恢复系统 - 负责管理 NPC 从 Downed 状态到 Staggered 状态的恢复计时
 /// 使用 MonoBehaviour 单例模式（统一规范）
+///
+/// **计时器重置规则**：
+/// - NPC 被 LETHAL 伤害直接致死（→ DEAD）：移除计时器
+/// - NPC 再次被 BLUNT 伤害进入 DOWNED（已在 DOWNED 状态再次被击倒）：重置计时器为 0
+/// - NPC 被玩家捆绑（→ TIED）：移除计时器（捆绑期间暂停恢复）
+/// - NPC 自然恢复至 STAGGERED：移除计时器，启动 StaggerRecoverySystem
 /// </summary>
 public class DownedRecoverySystem : MonoBehaviour
 {
@@ -538,9 +587,25 @@ public class DownedRecoverySystem : MonoBehaviour
         Instance = this;
     }
 
+    /// <summary>
+    /// 注册 NPC 进入 DOWNED 状态
+    /// **调用时机**：HealthSystem 处理伤害后，NPC 状态转为 DOWNED 时调用
+    /// **幂等性**：同一 NPC 再次被击倒时，RegisterDowned 会重置计时器
+    /// </summary>
     public void RegisterDowned(int npcId)
     {
         _downedTimers[npcId] = 0f;
+    }
+
+    /// <summary>
+    /// 移除 NPC 的 DOWNED 计时器
+    /// **调用时机**：
+    /// - NPC 被处决致死（→ DEAD）时由 HealthSystem 自动调用
+    /// - NPC 被捆绑（→ TIED）时由 GrittyTakedowns 调用
+    /// </summary>
+    public void RemoveDowned(int npcId)
+    {
+        _downedTimers.Remove(npcId);
     }
 
     private void Update()
@@ -580,10 +645,177 @@ public class DownedRecoverySystem : MonoBehaviour
 }
 ```
 
-### 6. Entity 基类扩展
+### 5.1 StaggerRecoverySystem 计时器重置规则
 
 ```csharp
-// Entity.cs（扩展）
+/// <summary>
+/// 硬直恢复系统 - 负责管理 NPC 从 Staggered 状态到 Healthy 状态的恢复计时
+///
+/// **计时器重置规则**：
+/// - NPC 在 STAGGERED 状态下再次受到 BLUNT 伤害：重置计时器（连续硬直判定）
+/// - NPC 恢复至 HEALTHY：移除计时器
+/// - NPC 再次被击倒进入 DOWNED：移除 Stagger 计时器（由 DownedRecoverySystem 处理）
+/// - NPC 被 LETHAL 伤害致死（→ DEAD）：移除计时器
+/// - NPC 被玩家捆绑（→ TIED）：移除计时器
+/// </summary>
+public class StaggerRecoverySystem : MonoBehaviour
+{
+    public static StaggerRecoverySystem Instance { get; private set; }
+
+    private Dictionary<int, float> _staggerTimers = new();
+    // 每个实体的硬直持续时长（允许按实体定制，而非使用全局常量）
+    private Dictionary<int, float> _staggerDurations = new();
+
+    private void Awake()
+    {
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+        Instance = this;
+    }
+
+    /// <summary>
+    /// 注册 NPC 进入 STAGGERED 状态
+    /// **调用时机**：HealthSystem 处理伤害后，NPC 状态转为 STAGGERED 时调用
+    /// **幂等性**：同一 NPC 再次被击倒进入 STAGGERED 时，RegisterStaggerRecovery 会重置计时器
+    /// </summary>
+    public void RegisterStaggerRecovery(int entityId, float duration)
+    {
+        _staggerTimers[entityId] = 0f;
+        _staggerDurations[entityId] = duration;
+    }
+
+    /// <summary>
+    /// 清除 NPC 的硬直恢复计时器
+    /// **调用时机**：
+    /// - NPC 恢复至 HEALTHY 时自动调用
+    /// - NPC 再次被击倒进入 DOWNED 时由 HealthSystem 调用（防止 STAGGERED → DOWNED 时序问题）
+    /// - NPC 被处决致死（→ DEAD）时由 HealthSystem 自动调用
+    /// - NPC 被玩家捆绑（→ TIED）时由 GrittyTakedowns 调用
+    /// </summary>
+    public void ClearStaggerRecovery(int entityId)
+    {
+        _staggerTimers.Remove(entityId);
+        _staggerDurations.Remove(entityId);
+    }
+
+    private void Update()
+    {
+        UpdateStaggerRecovery(Time.deltaTime);
+    }
+
+    private void UpdateStaggerRecovery(float deltaTime)
+    {
+        foreach (var kvp in _staggerTimers.ToList())
+        {
+            var entityId = kvp.Key;
+            var elapsed = kvp.Value + deltaTime;
+
+            var entity = EntityManager.Instance.GetEntity(entityId);
+            if (entity == null || entity.HealthState != HealthState.STAGGERED)
+            {
+                _staggerTimers.Remove(entityId);
+                _staggerDurations.Remove(entityId);
+                continue;
+            }
+
+            float staggerDuration = _staggerDurations.TryGetValue(entityId, out var d)
+                ? d
+                : HealthStateTransitions.STAGGER_DURATION;
+
+            if (elapsed >= staggerDuration)
+            {
+                entity.SetHealthState(HealthState.HEALTHY);
+                _staggerTimers.Remove(entityId);
+                _staggerDurations.Remove(entityId);
+            }
+            else
+            {
+                _staggerTimers[entityId] = elapsed;
+            }
+        }
+}
+}
+```
+
+### 5.2 WorldState ↔ HealthState 同步协议
+
+> **v1.5.0 新增**：明确 NPCController 在 HealthState 变化时同步更新 WorldState 的规则。
+
+**背景说明**：
+NPC 状态涉及两套独立的状态机：
+- **WorldState**（NPC AI System 管理）：FREE / UNCONSCIOUS / TIED / DEAD
+- **HealthState**（Health System 管理）：HEALTHY / STAGGERED / DOWNED / DEAD
+
+两系统间同步由 **NPCController** 协调，通过订阅 Health System 的 `NPCStateChangedEvent` 实现。
+
+**同步规则表**：
+
+| Health System 事件 | WorldState 变化 | HealthState 变化 | 说明 |
+|-------------------|-----------------|------------------|------|
+| 受到 BLUNT 伤害且 HEALTHY | 保持 FREE | STAGGERED | 第一次倒地硬直 |
+| 再次受到 BLUNT 伤害（STAGGERED 状态下） | → UNCONSCIOUS | DOWNED | 倒地可捆绑 |
+| 受到 LETHAL 伤害（HEALTHY/STAGGERED） | → DEAD | DEAD | 立即死亡 |
+| DOWNED 状态下受到 LETHAL 伤害 | → DEAD | DEAD | 处决终结 |
+| 审问/捆绑完成 | → TIED | DOWNED（保持）| 捆绑状态 |
+| TieUpRelease（解绑）| → FREE | DOWNED → HEALTHY（苏醒动画后）| 解绑恢复 |
+| WakeUp（自然唤醒）| → FREE | DOWNED → HEALTHY | 醒来 |
+
+**关键约束**：
+- WorldState.UNCONSCIOUS 仅在 HealthState.DOWNED 时可由 Gritty Takedowns 捆绑
+- NPCController 订阅 HealthSystem 发布的 `NPCStateChangedEvent`，根据事件中的 HealthState 变化驱动 WorldState 更新
+
+**NPCController 同步实现要点**：
+```csharp
+// NPCController.cs - 同步逻辑伪代码
+private void OnNPCStateChangedEvent(NPCStateChangedEvent evt)
+{
+    // 仅处理 NPC 的 HealthState 变化
+    if (evt.entity_type != EntityType.NPC) return;
+
+    var newHealthState = evt.new_health_state;
+
+    // HealthState → WorldState 映射
+    switch (newHealthState)
+    {
+        case HealthState.HEALTHY:
+            // WakeUp 或 TieUpRelease 后恢复 FREE
+            if (_worldState == WorldState.UNCONSCIOUS || _worldState == WorldState.TIED)
+                SetWorldState(WorldState.FREE);
+            break;
+
+        case HealthState.STAGGERED:
+            // STAGGERED 时 WorldState 保持 FREE（可被处决但未倒地）
+            // BLUNT 攻击进入 STAGGERED 时 WorldState 保持 FREE
+            // 这是设计意图：NPC 被 BLUNT 击倒但未完全失去意识
+            SetWorldState(WorldState.FREE);
+            break;
+
+        case HealthState.DOWNED:
+            // DOWNED 时 WorldState 必须设为 UNCONSCIOUS
+            // 这样 CanTieUp 才能正确判定（需要 WorldState.UNCONSCIOUS + HealthState.DOWNED）
+            SetWorldState(WorldState.UNCONSCIOUS);
+            break;
+
+        case HealthState.DEAD:
+            SetWorldState(WorldState.DEAD);
+            break;
+    }
+}
+```
+
+**⚠️ 重要澄清（ADR-0011 评审修复）**：
+- NPC 被 BLUNT 攻击进入 STAGGERED 时，WorldState **保持 FREE**（不是 UNCONSCIOUS）
+- 这是因为 STAGGERED 只是硬直状态，NPC 尚未完全失去意识（仍可被处决）
+- UNCONSCIOUS 状态仅在 HealthState.DOWNED 时设置（表示 NPC 完全倒地）
+
+**事件订阅关系**：
+- NPCController 订阅 `HealthSystem` 发布的 `NPCStateChangedEvent`（包含完整的 old/new world_state 和 old/new health_state）
+- 订阅后 NPCController 根据 HealthState 变化自动同步 WorldState
+
+### 6. Entity 基类扩展
 // 包含 Health System 相关接口
 // 注意：HealthState 直接存储在 Entity 基类中，而非独立的 HealthStateMachine 组件
 // HealthStateMachine.cs 组件用于需要独立状态的非 Entity 对象（如环境物件）
@@ -619,6 +851,8 @@ public class StaggerRecoverySystem : MonoBehaviour
     public static StaggerRecoverySystem Instance { get; private set; }
 
     private Dictionary<int, float> _staggerTimers = new();
+    // 每个实体的硬直持续时长（允许按实体定制，而非使用全局常量）
+    private Dictionary<int, float> _staggerDurations = new();
 
     private void Awake()
     {
@@ -633,12 +867,14 @@ public class StaggerRecoverySystem : MonoBehaviour
     public void RegisterStaggerRecovery(int entityId, float duration)
     {
         _staggerTimers[entityId] = 0f;
+        _staggerDurations[entityId] = duration;  // 修复：存储实际 duration，而非忽略参数
     }
 
     // 供外部调用：当 NPC 离开 STAGGERED 状态时清理计时器
     public void ClearStaggerRecovery(int entityId)
     {
         _staggerTimers.Remove(entityId);
+        _staggerDurations.Remove(entityId);
     }
 
     private void Update()
@@ -657,13 +893,20 @@ public class StaggerRecoverySystem : MonoBehaviour
             if (entity == null || entity.HealthState != HealthState.STAGGERED)
             {
                 _staggerTimers.Remove(entityId);
+                _staggerDurations.Remove(entityId);
                 continue;
             }
 
-            if (elapsed >= HealthStateTransitions.STAGGER_DURATION)
+            // 修复：使用注册时传入的 duration，而非硬编码 STAGGER_DURATION 常量
+            float staggerDuration = _staggerDurations.TryGetValue(entityId, out var d)
+                ? d
+                : HealthStateTransitions.STAGGER_DURATION;
+
+            if (elapsed >= staggerDuration)
             {
                 entity.SetHealthState(HealthState.HEALTHY);
                 _staggerTimers.Remove(entityId);
+                _staggerDurations.Remove(entityId);
             }
             else
             {
@@ -674,10 +917,14 @@ public class StaggerRecoverySystem : MonoBehaviour
 }
 ```
 
-### 7. SpatialDamageCalculator 实现
+### 7. SpatialGrid 共享组件
+
+> **跨 ADR 共享组件 [已修复]**
+>
+> 空间分区计算已统一为 `SpatialGrid` 共享组件，详见 [ADR-0030](./adr-0030-spatial-grid-shared-component.md)。
 
 ```csharp
-// SpatialDamageCalculator.cs
+// SpatialDamageCalculator.cs（已废弃，使用 SpatialGrid）
 /// <summary>
 /// 空间分区伤害计算器 - 用于爆炸等范围伤害的空间查询优化
 /// 使用与 LOS System 相同的格子分区策略（10m 格子）
@@ -765,37 +1012,34 @@ Assets/Game/
 
 ### 9. 事件接口定义
 
+> **类型统一定义说明**：以下事件类型的权威定义位于 `shared-types.md`，本文档仅作引用说明，不重复定义。
+> - `EntityType` 枚举：shared-types.md §8.1
+> - `NPCStateChangedEvent` 事件：shared-types.md §5.2（6字段完整版）
+> - `PlayerDamagedEvent` 事件：shared-types.md §7.6
+> - `ExplosionAlertEvent` 事件：shared-types.md §6.4
+> - `ArmorDestroyedEvent` 事件：shared-types.md §6.3
+
 ```csharp
 // Health System 发出的事件
 
-// 实体类型枚举（【重要】此枚举定义在共享的 EventTypes.cs 中，各 ADR 不得重复定义）
-// 本文档中的引用仅作说明用途，实际类型应从 EventTypes.cs 导入
-// public enum EntityType
-// {
-//     NPC,
-//     Player
-// }
-
-// NPCStateChangedEvent（由 Health System 直接广播）
-public struct NPCStateChangedEvent
-{
-    public int npc_id;
-    public EntityType entity_type;  // NPC（固定值）
-    public HealthState old_state;
-    public HealthState new_state;
-    public DamageType damage_type;  // LETHAL / BLUNT / NONE
-}
+// NPCStateChangedEvent（【已废弃本地定义，权威定义见 shared-types.md §5.2】）
+// 完整 6 字段版本：npc_id, entity_type, old_world_state, new_world_state, old_health_state, new_health_state
+// ADR-0008 原 4 字段版本已废弃
 
 // PlayerDamagedEvent（由 Health System 广播）
+// 注意：此定义应与 shared-types.md §7.6 保持一致
 public struct PlayerDamagedEvent
 {
     public int player_id;
     public DamageType damage_type;
+    public float damage_amount;      // 实际伤害值（用于 SanityRage 计算精神影响）
     public HitLocation hit_location;
     public int source_entity_id;
-    // 注意：is_lethal 字段已移除
-    // 接收方可通 damage_type == DamageType.LETHAL 判断是否为致命伤害
-    // 或通过 HealthState == HealthState.DEAD 判断是否已死亡
+
+    /// <summary>
+    /// 受伤后的健康状态（用于订阅者判断是否需要打断交互等）
+    /// </summary>
+    public HealthState new_state;
 }
 
 // ExplosionAlertEvent（爆炸造成 NPC 死亡时广播）
@@ -940,6 +1184,11 @@ public struct FriendlyFireExplosionEvent
 6. **爆炸混合伤害**：lethal_ratio 半径内 Lethal，外围 Blunt
 7. **事件广播**：状态变化正确广播 NPCStateChangedEvent/PlayerDamagedEvent
 8. **玩家无 Downed**：玩家不受 Downed 状态影响
+9. **WorldState ↔ HealthState 同步验证**：
+   - BLUNT 击倒 → STAGGERED 时 WorldState 保持 FREE ✅
+   - 再次 BLUNT → DOWNED 时 WorldState 变为 UNCONSCIOUS ✅
+   - LETHAL 伤害 → DEAD 时 WorldState 同步为 DEAD ✅
+   - 捆绑完成 → TIED 时 WorldState 变为 TIED ✅
 
 ---
 

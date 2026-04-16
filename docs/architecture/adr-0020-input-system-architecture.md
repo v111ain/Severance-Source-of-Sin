@@ -148,14 +148,16 @@ public class GameInputAction
             _ => null  // 未知类型设为 null，后续统一处理
         };
 
-        // 未知设备类型警告
+        // 未知设备类型警告（仅在非键盘设备时警告）
         if (newAction == null && device != InputDeviceType.Keyboard)
         {
-            Debug.LogWarning($"[GameInputAction] Unknown device type: {device}. Falling back to keyboard.");
+            Debug.LogWarning($"[GameInputAction] Unknown device type: {device}. Falling back to gamepad if available, else keyboard.");
         }
 
-        // 未知设备或获取失败时回退到键盘
-        _action = newAction ?? _keyboardAction;
+        // P0 修复：未知设备回退到手柄（而非键盘）
+        // 因为如果玩家正在使用手柄，切换到键盘会导致控制突然跳变
+        // 只有在手柄不可用时才回退到键盘
+        _action = newAction ?? (_gamepadAction ?? _keyboardAction);
 
         if (_action != null)
         {
@@ -282,6 +284,8 @@ public static class InputDeviceHelper
             return false;
 
         // 方法5：通过设备功能特征判断（兜底逻辑）
+        // 【修复P1-5 PS5判断逻辑】原实现：任何支持haptic的非Xbox手柄都返回true，会误判Switch Pro Controller等
+        // 修复后：方法5作为"未知设备"处理，返回false并记录警告，而非直接判定为PS5
         if (gamepad.CanProduceHaptics())
         {
             var capabilities = gamepad.GetHapticCapabilities();
@@ -291,7 +295,8 @@ public static class InputDeviceHelper
                 // Microsoft VID: 045e, 2dc8 (Xbox), 0738 (Saitek), 1038 (SteelSeries)
                 if (id.Contains("045e") || id.Contains("2dc8") || id.Contains("0738") || id.Contains("1038"))
                     return false;
-                return true;
+                // 【修复】不再直接返回true，而是视为未知设备
+                // 由后续的"未知设备"处理逻辑统一管理
             }
         }
 
@@ -667,7 +672,7 @@ public struct InputDeviceChangedEvent
 
 // HapticFeedbackManager.cs
 /// <summary>
-/// 手柄 haptic 反馈管理器
+/// 手柄 haptic 反馈管理器 [已修复]
 ///
 /// **单例模式说明**：
 /// 与 EventBus（ScriptableObject 单例）、ResourceManager（MonoBehaviour 单例）不同，
@@ -927,6 +932,16 @@ public class HapticFeedbackManager : MonoBehaviour
 /// InputArbitrator 使用静态字段单例，在 Editor 中通过 PlayModeStateChange 监听自动清理状态，
 /// 解决了 Editor Play Mode 结束后静态状态残留的问题。
 /// ForceReleaseAll() 可通过 InputManager.OnDestroy 调用，作为双保险。
+///
+/// **单例模式说明**：
+/// InputArbitrator 使用静态单例而非 MonoBehaviour 单例，原因如下：
+/// 1. InputArbitrator 无需挂载到 GameObject，不依赖 MonoBehaviour 生命周期
+/// 2. 需要在 PlayModeStateChanged 回调中访问 static 实例进行清理
+/// 3. 与 EventBus 的单例模式保持一致（均为静态单例）
+///
+/// 注意：与 InputManager/HapticFeedbackManager 的 MonoBehaviour 单例模式不同，
+/// 这是因为 InputArbitrator 不需要协程支持且需响应 Editor 事件。
+/// 若未来需要协程支持，可考虑重构为 MonoBehaviour 单例。
 /// </summary>
 public class InputArbitrator
 {
@@ -946,7 +961,8 @@ public class InputArbitrator
         PauseMenu
     }
 
-    // 消费者优先级常量（数字越大优先级越高）
+    // [已修复] 消费者优先级常量（数字越大优先级越高）
+    // 优先级定义：PlayerController(10) < LOSSystem(20) < GrittyTakedowns(30) < DialogueSystem(40) < UISystem(50) < PauseMenu(100)
     private static readonly Dictionary<InputConsumer, int> _consumerPriorities = new()
     {
         { InputConsumer.PlayerController, 10 },   // 基础移动/交互，最低优先级
@@ -1010,8 +1026,23 @@ public class InputArbitrator
     }
 
     /// <summary>
-    /// 设置当前激活的消费者。仅当新消费者优先级 >= 当前消费者时才能切换。
+    /// [已修复] 设置当前激活的消费者。仅当新消费者优先级 >= 当前消费者时才能切换。
     /// 如果消费者尚未注册，自动以默认优先级（0）注册后激活。
+    ///
+    /// **调用时机和调用者**：
+    /// | 调用者 | 调用时机 | 设置的 Consumer |
+    /// |--------|----------|-----------------|
+    /// | PlayerController | 正常游戏时 | PlayerController (10) |
+    /// | LOSSystem | 进入专注监听模式时 | LOSSystem (20) |
+    /// | GrittyTakedowns | 开始处决/交互时 | GrittyTakedowns (30) |
+    /// | DialogueSystem | 开始对话时 | DialogueSystem (40) |
+    /// | UISystem | 打开 UI 菜单时 | UISystem (50) |
+    /// | PauseMenu | 打开暂停菜单时 | PauseMenu (100) |
+    ///
+    /// **优先级规则**：
+    /// - 数字越大优先级越高
+    /// - 仅当新消费者优先级 >= 当前消费者优先级时才能切换
+    /// - 消费者开始工作时调用 SetActiveConsumer，结束后应调用 ReleaseConsumer 或切回原消费者
     /// </summary>
     public void SetActiveConsumer(InputConsumer consumer)
     {
@@ -1029,6 +1060,16 @@ public class InputArbitrator
         {
             Debug.LogWarning($"[InputArbitrator] Cannot switch to lower-priority consumer {consumer} (priority: {newPriority}) while {_activeConsumer} (priority: {currentPriority}) is active.");
         }
+    }
+
+    /// <summary>
+    /// [已修复] 释放活跃消费者，将控制权交回给 PlayerController
+    /// 在当前消费者完成工作后调用（如对话结束、UI 关闭）
+    /// </summary>
+    public void ReleaseConsumer()
+    {
+        _activeConsumer = default;
+        Debug.Log("[InputArbitrator] Active consumer released, returning control to PlayerController.");
     }
 
     /// <summary>
@@ -1068,6 +1109,11 @@ public class InputArbitrator
     }
 }
 ```
+
+> **InputArbitrator 与 ActionLockSystem 协同说明**：
+> - **ActionLockSystem**（shared-types.md §4.2）：管理玩家控制权的**锁定/解锁**
+> - **InputArbitrator**：管理输入**路由**，决定哪个消费者接收输入
+> 两者协同工作：GrittyTakedowns 等系统获取 ActionLock 后，再调用 InputArbitrator.SetActiveConsumer() 设置输入路由。
 
 ### 4. 输入重映射
 

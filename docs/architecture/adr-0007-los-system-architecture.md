@@ -9,7 +9,7 @@
 2026-04-09
 
 ## Last Updated
-2026-04-09
+2026-04-15 (ADR 评审修复：SoundSource 类补充 IsOnScreen 属性；补充 LOS System 对 Lighting/WeatherStateChangedEvent 的订阅说明)
 
 ## Context
 
@@ -17,10 +17,10 @@
 
 LOS System（Line of Sight & Eavesdropping）是《断绝：罪恶之源》"线索驱动的动态潜行"核心支柱的实现载体。它负责计算玩家在 NPC 视野中的暴露程度，以及专注监听模式下的关键词捕获机制。该系统需要与多个系统交互：
 
-1. **NPC AI System**：暴露值满时发送 `PlayerSpottedEvent` 触发战斗
+1. **NPC AI System**：暴露值变化时发送 `ExposureValueChangedEvent` 更新感知，暴露值满时发送 `PlayerSpottedEvent` 触发战斗
 2. **Lighting System**：查询玩家是否处于阴影中计算隐蔽加成
-3. **Clue System**：发送 `KeywordCapturedEvent` 转化关键词为线索
-4. **Player Controller**：读取玩家移动状态和位置
+3. **Clue System**：发送 `KeywordCapturedEvent` 转化关键词为线索；发送 `NPCIdentityConfirmedEvent` 触发线索发现
+4. **Player Controller**：读取玩家移动状态和位置；订阅 `NoiseMadeEvent` 进行噪声检测
 
 ### Constraints
 
@@ -101,10 +101,15 @@ public class LOSConfigSO : ScriptableObject
     // ========== 暴露值计算 ==========
     [Header("暴露值计算")]
     public float BaseExposureRate = 20f;      // 基础暴露速率（行走时 20%/秒）
-    public float DecayRate = 30f;             // 暴露值衰减速率（30%/秒）
+    public float DecayRate = 30f;             // 暴露值衰减速率（30%/秒），玩家离开视野后生效
     public float MaxVisionRange = 15f;        // NPC 最大感知范围（米）
     public float VisionConeAngle = 120f;      // NPC 视野锥角度（度）
     public float ProximityThreshold = 1.5f;   // 贴脸判定距离（米）
+
+    // ========== 噪声检测 ==========
+    [Header("噪声检测")]
+    public float MaxAudioRange = 20f;         // NPC 最大听觉范围（米）
+    public float NoiseExposureBase = 10f;     // 噪声基础暴露速率（%/秒）
 
     // ========== 专注监听模式 ==========
     [Header("专注监听")]
@@ -173,15 +178,30 @@ public class ExposureTracker
 
 > **事件来源说明**：
 > - `PlayerMovementStateChangedEvent` 定义于 [事件总线 ICD](../../engine-reference/event-bus-icd.md)，由 PlayerController 发布
-> - `LightingStealthBonusChangedEvent` 定义于 [事件总线 ICD](../../engine-reference/event-bus-icd.md)，由 LightingSystem 发布
+> - `LightingStateChangedEvent` 定义于 [ADR-0022](../../engine-reference/event-bus-icd.md)，由 LightingSystem 发布
 > - `PlayerSpottedEvent` 定义于 [事件总线 ICD](../../engine-reference/event-bus-icd.md)
 
 ```csharp
 // ExposureTracker.cs
 public class ExposureTracker
 {
+    // ========== 暴露值定义（统一为 0-100 浮点值）==========
+    // CurrentExposure：当前暴露值（0-100），100 表示完全暴露
+    // VisualScore：供 NPC AI 查询的暴露值（0-100），与 CurrentExposure 相同
+    // 转换规则：VisualScore = CurrentExposure（直接映射，无转换）
+    //
+    // 暴露值 → AlertState 映射（供 NPC AI 使用）：
+    // | 暴露值 | AlertState  | NPC 行为描述 |
+    // |--------|-------------|-------------|
+    // | 0-29   | UNDETECTED  | 正常巡逻，无警觉 |
+    // | 30-59  | SUSPECT    | 感到可疑，暂停观察 |
+    // | 60-79  | SEARCH     | 确认异常，开始搜索 |
+    // | 80-99  | ALERT      | 确认威胁，准备战斗 |
+    // | ESCAPE | ESCAPE     | 逃离现场（需要医疗/紧急情况触发）|
+    // | 100    | COMBAT     | 投入战斗 |
+
     public float CurrentExposure { get; private set; }  // 0-100%
-    public float VisualScore => CurrentExposure / 100f;  // 供 NPC AI 查询
+    public float VisualScore => CurrentExposure;  // 供 NPC AI 查询（0-100）
 
     private LOSConfigSO _config;  // 配置数据
 
@@ -189,49 +209,88 @@ public class ExposureTracker
     private float _npcVisionRange;
     private float _npcVisionAngle;
 
+    // 玩家最后暴露值（用于 MemoryScore 衰减计算）
+    private float _lastExposureValue;
+
     // 订阅来自 Player Controller 的移动状态事件
     private void SubscribeToEvents()
     {
         EventBus.Instance.Subscribe<PlayerMovementStateChangedEvent>(OnPlayerMovementStateChanged);
-    }
-
-    // 订阅来自 Lighting System 的阴影状态事件（World Layer → Core Layer 正确通信方式）
-    private void SubscribeToLightingEvents()
-    {
-        EventBus.Instance.Subscribe<LightingStealthBonusChangedEvent>(OnStealthBonusChanged);
+        EventBus.Instance.Subscribe<LightingStateChangedEvent>(OnStealthBonusChanged);
+        EventBus.Instance.Subscribe<NoiseMadeEvent>(OnNoiseMade);  // 噪声检测
     }
 
     private PlayerMovementState _currentPlayerState = PlayerMovementState.IDLE;
     private float _exposureMultiplier = 1.0f;  // 1.0 = 正常暴露，0.77 = 阴影中降低 23% 暴露速度
+    private float _noiseMultiplier = 1.0f;     // 噪声乘数（NoiseMadeEvent 影响）
 
     private void OnPlayerMovementStateChanged(PlayerMovementStateChangedEvent e)
     {
         _currentPlayerState = e.new_state;
     }
 
-    private void OnStealthBonusChanged(LightingStealthBonusChangedEvent e)
+    private void OnStealthBonusChanged(LightingStateChangedEvent e)
     {
         // exposureMultiplier: 1.0 = 无加成（光照良好）, 0.77 = 阴影中（降低 23% 暴露速度）
-        _exposureMultiplier = e.exposure_multiplier;
+        // shadowStealthBonus 范围是 0.0~1.0+，值越高表示阴影中的潜行效果越好（NPC越难检测到玩家）
+        // 我们需要将其转换为 exposureMultiplier：shadowStealthBonus = 1.0 时 exposureMultiplier = 1.0
+        // shadowStealthBonus = 1.5 时 exposureMultiplier = 0.77（降低 23% 暴露速度）
+        _exposureMultiplier = 1.0f / e.perceptionModifier.shadowStealthBonus;
+        _exposureMultiplier = Mathf.Clamp(_exposureMultiplier, 0.5f, 1.0f);  // 限制范围
+    }
+
+    /// <summary>
+    /// 玩家噪声检测：订阅 NoiseMadeEvent，通过 exposureMultiplier 影响暴露速度
+    /// 噪声暴露增量 = 基础暴露速率 × 噪声强度 × 距离因子 × exposureMultiplier
+    /// </summary>
+    private void OnNoiseMade(NoiseMadeEvent e)
+    {
+        if (_npcId == 0) return;  // 未注册
+
+        float distance = Vector3.Distance(_trackedNpcPosition, e.position);
+        if (distance > _config.MaxAudioRange) return;  // 超出听觉范围
+
+        // 噪声强度（0-100）转换为暴露乘数
+        // 强度越高，暴露速度越快
+        float noiseFactor = e.intensity / 100f;
+        _noiseMultiplier = 1.0f + noiseFactor * 2.0f;  // 噪声时暴露速度可增加至 3x
     }
 
     // 暴露值更新（每帧调用）
     public void Update(Transform player, Transform npc, float deltaTime)
     {
-        if (!IsPlayerInVisionCone(player, npc))
+        _trackedNpcPosition = npc.position;
+        bool wasInVision = IsPlayerInVisionCone(player, npc);
+
+        if (!wasInVision)
         {
-            // 玩家不在视野内，暴露值衰减
+            // ========== 玩家离开视野：暴露值衰减规则 ==========
+            // 玩家离开视野后，暴露值按 DecayRate=30%/秒 衰减
+            // 衰减公式：CurrentExposure = max(0, CurrentExposure - DecayRate * deltaTime)
+            // _lastExposureValue 保存衰减前的暴露值，供 NPC AI 的 MemoryScore 使用
+            _lastExposureValue = CurrentExposure;
             CurrentExposure = Mathf.Max(0, CurrentExposure - _config.DecayRate * deltaTime);
+
+            // 发布 ExposureValueChangedEvent（供 NPC AI 更新 MemoryScore）
+            PublishExposureChangedEvent(npc);
+
+            // 重置噪声乘数
+            _noiseMultiplier = 1.0f;
             return;
         }
 
+        // ========== 玩家在视野内：暴露值累积 ==========
         // 计算新增暴露值
         float distance = Vector3.Distance(player.position, npc.position);
         float distanceFactor = Mathf.Clamp(1.0f - (distance / _npcVisionRange), 0f, 1f);
         float movementMultiplier = GetMovementMultiplier(_currentPlayerState);
 
-        float deltaExposure = _config.BaseExposureRate * movementMultiplier * distanceFactor * _exposureMultiplier;
+        // 暴露增量 = 基础暴露速率 × 移动乘数 × 距离因子 × 阴影乘数 × 噪声乘数
+        float deltaExposure = _config.BaseExposureRate * movementMultiplier * distanceFactor * _exposureMultiplier * _noiseMultiplier;
         CurrentExposure = Mathf.Clamp(CurrentExposure + deltaExposure * deltaTime, 0f, 100f);
+
+        // 发布 ExposureValueChangedEvent（暴露值变化时实时同步）
+        PublishExposureChangedEvent(npc);
 
         // 暴露值满，触发发现事件
         if (CurrentExposure >= 100f)
@@ -243,6 +302,20 @@ public class ExposureTracker
                 spot_time = Time.time
             });
         }
+    }
+
+    /// <summary>
+    /// 发布 ExposureValueChangedEvent，通知 NPC AI 感知系统
+    /// NPC AI 订阅此事件更新 MemoryScore（而非直接同步）
+    /// </summary>
+    private void PublishExposureChangedEvent(Transform npc)
+    {
+        EventBus.Instance.Publish(new ExposureValueChangedEvent
+        {
+            npc_id = npc.GetComponent<NPCController>().NpcId,
+            exposure_value = CurrentExposure,
+            last_exposure_value = _lastExposureValue  // 衰减前的值，供 MemoryScore 使用
+        });
     }
 
     // 移动状态乘数映射（从配置读取）
@@ -293,11 +366,30 @@ public class ExposureTracker
         // 通过所有检测，玩家在 NPC 视野范围内
         return true;
     }
+
+    private int _npcId;
+    private Vector3 _trackedNpcPosition;
+}
+
+// ========== 新增事件定义 ==========
+
+/// <summary>
+/// 暴露值变化事件（由 ExposureTracker 发布，NPC AI 订阅）
+/// 用于 NPC AI 更新 MemoryScore，而非直接同步 VisualScore
+/// </summary>
+public struct ExposureValueChangedEvent
+{
+    public int npc_id;              // NPC ID
+    public float exposure_value;    // 当前暴露值（0-100）
+    public float last_exposure_value;  // 衰减前的暴露值（供 MemoryScore 使用）
 }
 
 // 注意：
-// - LightingStealthBonusChangedEvent 定义于 [事件总线 ICD](../../engine-reference/event-bus-icd.md)
+// - LightingStateChangedEvent 定义于 [ADR-0022](../../architecture/adr-0022-lighting-system-architecture.md)
 // - PlayerMovementStateChangedEvent 定义于 [事件总线 ICD](../../engine-reference/event-bus-icd.md)
+// - AreaLightingChangedEvent 定义于 [ADR-0022](../../architecture/adr-0022-lighting-system-architecture.md)
+// - NoiseMadeEvent 定义于 [事件总线 ICD](../../engine-reference/event-bus-icd.md)
+// - NPCIdentityConfirmedEvent 定义于 [shared-types.md](./shared-types.md)
 ```
 
 ### 2. 专注监听模式（Focus Mode）
@@ -317,6 +409,7 @@ public class FocusListener
         public int NpcId;
         public Vector3 WorldPosition;
         public Vector2 ScreenPosition;  // 投影到屏幕的像素坐标
+        public bool IsOnScreen;  // 是否在屏幕内可见
     }
 
     private List<SoundSource> _activeSoundSources = new();
@@ -327,6 +420,42 @@ public class FocusListener
     {
         _config = config;
         _mainCamera = Camera.main;
+        // 订阅 NPCSpeakingChangedEvent，持续维护 _activeSoundSources 列表
+        EventBus.Instance.Subscribe<NPCSpeakingChangedEvent>(OnNPCSpeakingChanged);
+    }
+
+    public void Dispose()
+    {
+        EventBus.Instance.Unsubscribe<NPCSpeakingChangedEvent>(OnNPCSpeakingChanged);
+    }
+
+    /// <summary>
+    /// 响应 NPC 发声状态变化，维护活跃声源列表
+    /// </summary>
+    private void OnNPCSpeakingChanged(NPCSpeakingChangedEvent evt)
+    {
+        if (evt.is_speaking)
+        {
+            // 避免重复添加
+            if (_activeSoundSources.All(s => s.NpcId != evt.npc_id))
+            {
+                _activeSoundSources.Add(new SoundSource
+                {
+                    NpcId = evt.npc_id,
+                    WorldPosition = evt.position
+                });
+            }
+            else
+            {
+                // 更新位置（NPC 可能移动）
+                var source = _activeSoundSources.Find(s => s.NpcId == evt.npc_id);
+                if (source != null) source.WorldPosition = evt.position;
+            }
+        }
+        else
+        {
+            _activeSoundSources.RemoveAll(s => s.NpcId == evt.npc_id);
+        }
     }
 
     /// <summary>
@@ -342,8 +471,7 @@ public class FocusListener
     public void EnterFocusMode()
     {
         IsActive = true;
-        // 进入专注模式时，获取所有当前发声的 NPC
-        _activeSoundSources = NPCManager.Instance.GetActiveSoundSources();
+        // _activeSoundSources 通过 NPCSpeakingChangedEvent 订阅持续维护，无需手动刷新
     }
 
     public void ExitFocusMode()
@@ -367,7 +495,16 @@ public class FocusListener
 
         foreach (var source in _activeSoundSources)
         {
-            source.ScreenPosition = GetMainCamera().WorldToScreenPoint(source.WorldPosition);
+            Vector3 screenPos = GetMainCamera().WorldToScreenPoint(source.WorldPosition);
+            // 相机裁剪检查：z < 0 表示目标在相机后方，屏幕坐标无效
+            if (screenPos.z < 0)
+            {
+                source.ScreenPosition = new Vector3(float.NaN, float.NaN, 0);
+                source.IsOnScreen = false;
+                continue;
+            }
+            source.ScreenPosition = screenPos;
+            source.IsOnScreen = true;
             float dist = Vector2.Distance(crosshairPosition, source.ScreenPosition);
 
             if (dist < nearestDistance)
@@ -422,7 +559,7 @@ public class FocusListener
             keyword = keyword,
             npc_id = source.NpcId,
             location_id = LocationManager.Instance.GetCurrentLocationId(),
-            category = KeywordCategory.IDENTITY,
+            category = ClueCategory.IDENTITY,
             capture_timestamp = Time.time
         });
 
@@ -520,7 +657,14 @@ public struct NPCIdentity
     public List<string> CapturedKeywords;  // 已捕获的关键词
 }
 
-// NPCIdentityConfirmedEvent（置信度达到 1.0 时广播，触发 NPC 行为变化）
+/// <summary>
+/// NPCIdentityConfirmedEvent
+/// 当 NPC 身份被确认时由 NPCIdentityManager 发布
+///
+/// 订阅者：
+/// - NPCAI：收到此事件后应升级为 Enemy 状态（见 ADR-0004 §3）
+/// - ClueJournal：收到此事件后触发线索发现
+/// </summary>
 public struct NPCIdentityConfirmedEvent
 {
     public int npc_id;
@@ -590,9 +734,10 @@ public class SpatialPartition
 }
 ```
 
-> **跨 ADR 共享组件**：本文档中的 `SpatialPartition` 与 ADR-0008 中的 `SpatialDamageCalculator` 功能相同，
-> 未来应提取为共享组件 `SpatialGrid`，统一定义在 `Assets/Game/Foundation/Shared/Spatial/` 目录下。
-> 详见 [ADR-0008](./adr-0008-health-lethality-architecture.md) 的 SpatialDamageCalculator 说明。
+> **⚠️ 跨 ADR 共享组件 [已修复]**
+>
+> `SpatialPartition` 已替换为共享组件 `SpatialGrid`（见 [ADR-0030](./adr-0030-spatial-grid-shared-component.md)）。
+> 两个 ADR 共用 `Assets/Game/Foundation/Shared/Spatial/SpatialGrid.cs` 实现。
 
 ### 5. LOSSystem 主控制器
 
@@ -701,12 +846,24 @@ public partial class ExposureTracker
     public void SubscribeToEvents()
     {
         EventBus.Instance.Subscribe<PlayerMovementStateChangedEvent>(OnPlayerMovementStateChanged);
+        EventBus.Instance.Subscribe<LightingStateChangedEvent>(OnLightingStateChanged);
+        // 订阅光照潜行加成变化事件（用于更细粒度的感知系数更新）
         EventBus.Instance.Subscribe<LightingStealthBonusChangedEvent>(OnStealthBonusChanged);
+    }
+
+    private void OnLightingStateChanged(LightingStateChangedEvent e)
+    {
+        // exposureMultiplier = 1.0 / shadowStealthBonus（shadowStealthBonus 越高，exposureMultiplier 越低）
+        _exposureMultiplier = 1.0f / e.perceptionModifier.shadowStealthBonus;
+        _exposureMultiplier = Mathf.Clamp(_exposureMultiplier, 0.5f, 1.0f);
     }
 
     private void OnStealthBonusChanged(LightingStealthBonusChangedEvent e)
     {
+        // 使用更细粒度的光照潜行加成事件更新暴露乘数
+        // exposure_multiplier 越高 = NPC 越容易检测到玩家（阴影加成低）
         _exposureMultiplier = e.exposure_multiplier;
+        _exposureMultiplier = Mathf.Clamp(_exposureMultiplier, 0.5f, 1.0f);
     }
 }
 ```
@@ -789,6 +946,10 @@ Assets/Game/
 | **Memory** | < 20MB | ExposureTracker 按需分配 |
 | **GPU** | 无直接影响 | 专注模式 UI 由 UGUI 渲染 |
 
+> **性能预算说明**：LOS System (< 1ms) 是 NPC AI 感知更新 (< 2ms) 的子集。
+> NPC AI 的 < 2ms 预算包含：LOS System 感知计算 (< 1ms) + 行为树决策 + 派系网络通信。
+> 空间分区优化确保 100 NPC 场景下 LOS System 可稳定运行在 1ms 以内。
+
 ---
 
 ## Migration Plan
@@ -802,7 +963,7 @@ Assets/Game/
 - [ ] 实现暴露值累积公式
 - [ ] 实现视野锥检测
 - [ ] 订阅 PlayerController 的 PlayerMovementStateChangedEvent
-- [ ] 订阅 LightingSystem 的 LightingStealthBonusChangedEvent（通过 Event Bus）
+- [ ] 订阅 LightingSystem 的 LightingStateChangedEvent（通过 Event Bus）
 
 ### Phase 3: 专注监听
 - [ ] 实现 FocusListener
@@ -828,8 +989,12 @@ Assets/Game/
 4. **专注模式 UI**：由 Presentation Layer 的 UI System 实现，LOS System 仅负责提供 FocusListener.Active 状态
 5. **关键词捕获**：准星对准声源（AimAccuracy ≥ MinAimAccuracy）持续 3 秒（100% / TagRate）后正确触发身份翻转
 6. **隔墙监听**：隔着普通墙体可成功窃听（射线检测不遮挡声音）
-7. **性能达标**：100 NPC 同时感知时 < 2ms/帧
+7. **性能达标**：100 NPC 同时感知时 LOS System < 1ms/帧（NPC AI 总预算 < 2ms/帧）
 8. **配置一致性**：所有感知相关参数均从 LOSConfigSO 读取，无硬编码 Magic Numbers
+9. **暴露值衰减**：玩家离开视野后暴露值按 DecayRate=30%/秒 衰减，正确发布 ExposureValueChangedEvent
+10. **噪声检测**：NoiseMadeEvent 通过 exposureMultiplier 影响暴露速度，正确累加 AudioScore
+11. **身份确认事件**：NPCIdentityManager 确认身份后正确发布 NPCIdentityConfirmedEvent，ClueJournal 正确订阅触发线索发现
+12. **VisualScore 统一**：VisualScore = CurrentExposure（0-100 浮点值），NPC AI 无需转换
 
 ---
 
@@ -841,5 +1006,5 @@ Assets/Game/
 - [ADR-0009: 玩家控制器架构](./adr-0009-player-controller-architecture.md) — Player Controller 发布 PlayerMovementStateChangedEvent
 - [事件总线 ICD](../../engine-reference/event-bus-icd.md) — PlayerMovementStateChangedEvent 的权威定义
 - [LOS & Eavesdropping GDD](../../design/gdd/los-eavesdropping.md) — 本 ADR 的设计依据
-- [事件总线 ICD](../../engine-reference/event-bus-icd.md) — 事件定义的权威文档（PlayerMovementStateChangedEvent、LightingStealthBonusChangedEvent 等）
+- [事件总线 ICD](../../engine-reference/event-bus-icd.md) — 事件定义的权威文档（PlayerMovementStateChangedEvent、LightingStateChangedEvent 等）
 - [共享常量定义](./shared-constants.md) — GRID_SIZE 等跨 ADR 常量

@@ -3,7 +3,7 @@
 | Field | Value |
 |-------|-------|
 | **Engine Version** | Unity 6.3 LTS (6000.3) |
-| **Project Pinned** | 2026-04-07 |
+| **Project Pinned** | 2026-04-15 |
 | **LLM Knowledge Cutoff** | May 2025 |
 | **Risk Level** | HIGH — version released March 2026 is beyond LLM training data |
 
@@ -13,6 +13,15 @@ Unity 6.3 LTS was released in March 2026, which is **beyond the LLM's knowledge 
 
 **All agents MUST verify Unity 6.3 APIs via WebSearch before suggesting code.**
 Do NOT rely solely on LLM knowledge for this engine version.
+
+## Reference Documents
+
+| Document | Status | Last Updated |
+|----------|--------|--------------|
+| [VERSION.md](./VERSION.md) | Current | 2026-04-15 |
+| [breaking-changes.md](./breaking-changes.md) | **Needs Population** | — |
+| [deprecated-apis.md](./deprecated-apis.md) | **Needs Population** | — |
+| [current-best-practices.md](./current-best-practices.md) | **Needs Population** | — |
 
 ## Known Unity 6 Family Changes (Based on Unity 6 / 6.0 - 6.2)
 
@@ -56,9 +65,19 @@ The following changes are documented for the Unity 6 family leading up to 6.3:
 - Unity 6.2: Late 2025 (verify)
 - Unity 6.3: March 2026
 
+## Project-Specific Notes
+
+本项目使用以下 Unity 特性（基于 ADR 定义）：
+- **Input System** (ADR-0020): Unity Input System Package
+- **Networking** (ADR-0006): Unity Netcode for GameObjects
+- **Asset Management**: Unity Addressables
+- **Rendering**: URP (Universal Render Pipeline)
+
 ## Last Verified
 
-This reference document was created on 2026-04-07. **All information should be verified via official Unity documentation.**
+This reference document was last updated on 2026-04-15.
+
+**Note**: 由于 WebSearch API 不可用，部分专项文档（breaking-changes.md, deprecated-apis.md, current-best-practices.md）已创建但内容待填充。需要在网络恢复后运行 `/setup-engine refresh` 填充完整内容。
 
 ---
 

@@ -1,10 +1,10 @@
 # 共享类型定义 (Shared Types)
 
-> **版本**: 2.1.0
+> **版本**: 2.6.0
 > **创建日期**: 2026-04-10
 > **状态**: APPROVED
 > **维护者**: 架构师
-> **更新日期**: 2026-04-12 (v2.1.0 — 修复 InputDeviceType 枚举值；修复 ADR-0018/0019/0020 跨 ADR 一致性问题)
+> **更新日期**: 2026-04-15 (v2.6.0 — ADR评审修复：新增Exposure值到AlertState阈值映射表 §19.1.3；验证SaveCompletedEvent/SaveCorruptedEvent定义于§10.1；验证PlayerDamagedEvent字段；验证DialogueEmotion定义于§13.1)
 
 ---
 
@@ -70,11 +70,17 @@ public struct DamageRequest
 {
     public int target_id;           // 目标实体 ID
     public DamageType damage_type;  // 伤害类型（LETHAL/BLUNT）
-    public float damage_amount;     // 实际伤害值（环境物件=1.0，热武器来自武器配置）
+    public float damage_amount;     // 已应用远程衰减的实际伤害值（环境物件=1.0，热武器=base_damage×RangeMultiplier）
     public int penetration;        // 武器穿透等级（穿透判定：penetration >= armorLevel 时穿透）
     public HitLocation hit_location; // 命中部位（HEAD/TORSO/LIMBS）
     public int source_entity_id;    // 伤害来源实体 ID（用于死亡追踪）
     public string source;           // 伤害来源标识（weapon_id 或 "bare_hands"）
+
+    /// <summary>
+    /// 射击距离（米），用于远程伤害衰减计算
+    /// 由 Weapon System 在发送 DamageRequest 前计算并填充
+    /// </summary>
+    public float distance;
 }
 ```
 
@@ -82,6 +88,11 @@ public struct DamageRequest
 
 **发布者**：Weapon System、Gritty Takedowns
 **订阅者**：Health System
+
+**远程伤害衰减处理**：
+- `WeaponSystem` 在发送 `DamageRequest` 前，调用 `RangeMultiplier(distance)` 计算远程衰减系数
+- `HealthSystem` 收到 `DamageRequest` 时，`damage_amount` **已包含远程衰减**
+- 衰减公式定义见 ADR-0010 §8.1：`RangeMultiplier(distance)` 返回 0.7~1.0 之间的值
 
 **穿透判定规则**：
 - `penetration >= armorLevel`：穿透成功，无视护甲直接致死
@@ -298,12 +309,41 @@ public struct ObjectStateChangedEvent
 
 ---
 
-### 3.6 WeaponAwareness
+### 3.6 WeaponAwarenessEvent
 
 NPC 感知到武器的事件：
 
 ```csharp
+/// <summary>
+/// NPC 感知到武器事件（已于 2026-04-12 从 WeaponAwareness 更名为 WeaponAwarenessEvent）
+/// </summary>
+[Obsolete("Use WeaponAwarenessEvent instead. Removed after v1.0.")]
 public struct WeaponAwareness
+{
+    public string weapon_id;
+    public Vector3 position;
+    public WeaponCategory weapon_type;
+
+    /// <summary>
+    /// 隐式转换为 WeaponAwarenessEvent
+    /// </summary>
+    public static implicit operator WeaponAwarenessEvent(WeaponAwareness old)
+    {
+        return new WeaponAwarenessEvent
+        {
+            weapon_id = old.weapon_id,
+            position = old.position,
+            weapon_type = old.weapon_type
+        };
+    }
+}
+
+/// <summary>
+/// NPC 感知到武器事件
+/// 发布者：Weapon System
+/// 订阅者：NPC AI System
+/// </summary>
+public struct WeaponAwarenessEvent
 {
     public string weapon_id;
     public Vector3 position;
@@ -315,6 +355,8 @@ public struct WeaponAwareness
 
 **发布者**：Weapon System
 **订阅者**：NPC AI System
+
+> **命名说明**：已于 2026-04-12 从 `WeaponAwareness` 更名为 `WeaponAwarenessEvent`，遵循 ADR-0018 的 `Subject + Did + Context + Event` 命名规范。`WeaponAwareness` 作为别名保留用于过渡期兼容。
 
 ---
 
@@ -580,16 +622,34 @@ public struct NPCStateChangedEvent
 {
     public int npc_id;
     public EntityType entity_type;  // NPC（固定值）
-    public WorldState old_state;
-    public WorldState new_state;
+    public WorldState old_world_state;
+    public WorldState new_world_state;
+    public HealthState old_health_state;   // 用于同步验证
+    public HealthState new_health_state;   // 用于 GrittyTakedowns 判定
     public DamageType damage_type;  // LETHAL / BLUNT / NONE
+
+    /// <summary>
+    /// 【新增 v2.4】是否有目击者
+    /// 用于 Sanity 系统判断是否触发"目睹 NPC 死亡"惩罚
+    /// </summary>
+    public bool has_witness;
+
+    /// <summary>
+    /// 【新增 v2.4】目击者距离（如果 has_witness=true）
+    /// 用于 Sanity 系统计算惩罚衰减
+    /// </summary>
+    public float witness_distance;
 }
 ```
 
 **定义位置**：`Assets/Game/Foundation/Shared/Events/NPCStateChangedEvent.cs`
 
-**发布者**：Health System
-**订阅者**：NPC AI System、Gritty Takedowns
+**发布者**：Health System（通过 NPCStateManager 协调）
+**订阅者**：NPC AI System、Gritty Takedowns、**Sanity/Rage System**
+
+> **同步说明**：根据 §6.1.1 协议，NPCStateManager 在 HealthState 变化时同步更新 WorldState，并通过此事件广播完整的双状态快照。
+>
+> **目击判定补充（v2.4）**：Sanity 系统订阅此事件，当 `new_world_state=DEAD` 时通过 `has_witness` 和 `witness_distance` 字段判断玩家是否目击了死亡事件，从而决定是否触发"目睹 NPC 死亡"的理智惩罚。
 
 ---
 
@@ -660,9 +720,9 @@ NPC体型分类，用于 Gritty Takedowns 系统的捆绑时间计算：
 ```csharp
 public enum NPCSizeCategory
 {
-    Small,   // 体型小，乘数 0.0f，range=[3,4]
-    Medium,  // 体型中等，乘数 0.25f，range=[3,5]
-    Large    // 体型大，乘数 1.0f，range=[3,6]
+    Small,   // 体型小，offset=0.0f → 乘数 1.0f
+    Medium,  // 体型中等，offset=0.25f → 乘数 1.25f
+    Large    // 体型大，offset=1.0f → 乘数 2.0f
 }
 ```
 
@@ -670,14 +730,14 @@ public enum NPCSizeCategory
 
 **计算公式**（见 ADR-0011 §TieUpCalculator）：
 ```
-duration = baseTime * (1.0 + npcSizeMultiplier - playerSkillBonus)
+duration = baseTime * (1.0f + npcSizeOffset - playerSkillBonus)
 duration = Clamp(duration, minDuration=3s, maxDuration=6s)
 ```
 
 **说明**：
 - 此类型由 NPC AI System 定义（Core Layer），Gritty Takedowns 通过 NPCController.QuerySizeCategory() 获取
-- **⚠️ 注意**：之前的版本将此值描述为"直接加成时间"，这是错误的。实际是乘数，用于参与公式计算
-- 体型乘数与 ADR-0011 §TieUpCalculator 和 §TieUpDurationProvider 保持一致
+- ADR-0011 §TieUpCalculator 中 npcSizeMultiplier 实为 offset，最终乘数 = (1.0f + offset)
+- **统一声明**：本定义（Small×1.0, Medium×1.25, Large×2.0）为权威版本，与 ADR-0011 §TieUpCalculator 实际产生效果一致
 
 **使用系统**：Gritty Takedowns（捆绑时间计算）、NPC AI（动画选择）
 
@@ -765,6 +825,153 @@ public enum AlertTrigger
 
 ---
 
+### 5.10 CombatStateChangedEvent
+
+NPC 战斗状态变化事件（由 ADR-0004 NPC AI 系统发布）：
+
+```csharp
+/// <summary>
+/// NPC 战斗状态变化事件
+/// 发布者：NPC AI System
+/// 订阅者：Sanity/Rage System（战斗状态影响心理）
+/// </summary>
+public struct CombatStateChangedEvent
+{
+    /// <summary>
+    /// 是否有任意 NPC 处于战斗状态
+    /// </summary>
+    public bool IsInCombat;
+}
+```
+
+**定义位置**：`Assets/Game/Core/NPCAI/Events/CombatStateChangedEvent.cs`
+
+**发布者**：NPC AI System（当任意 NPC 进入/离开 COMBAT AlertState 时发布）
+**订阅者**：Sanity/Rage System
+
+---
+
+### 5.11 KeywordCapturedEvent
+
+LOS窃听关键词捕获事件（由 LOS System 发布，Clue Journal 订阅）：
+
+```csharp
+/// <summary>
+/// LOS窃听系统捕获到 NPC 对话关键词时发布
+/// 订阅者：Clue & Journal System（触发线索发现）
+/// </summary>
+public struct KeywordCapturedEvent
+{
+    /// <summary>
+    /// 捕获到的关键词
+    /// </summary>
+    public string keyword;
+
+    /// <summary>
+    /// 发出对话的 NPC ID
+    /// </summary>
+    public int npc_id;
+
+    /// <summary>
+    /// 位置区域 ID
+    /// </summary>
+    public string location_id;
+
+    /// <summary>
+    /// 关键词类别（用于 ClueJournal 匹配）
+    /// </summary>
+    public ClueCategory category;
+
+    /// <summary>
+    /// 捕获时间戳
+    /// </summary>
+    public float capture_timestamp;
+}
+```
+
+**定义位置**：`Assets/Game/Core/LOS/Events/KeywordCapturedEvent.cs`
+
+**发布者**：LOS System
+**订阅者**：Clue & Journal System
+
+---
+
+### 5.11.1 NPCIdentityConfirmedEvent
+
+NPC 身份确认事件（由 LOS System 发布，Clue Journal 订阅）：
+
+```csharp
+/// <summary>
+/// NPC 身份确认事件
+/// 当 LOS System 的 NPCIdentityManager 置信度达到 1.0 时发布
+/// 订阅者：Clue & Journal System（触发线索发现）
+/// </summary>
+public struct NPCIdentityConfirmedEvent
+{
+    /// <summary>
+    /// NPC ID
+    /// </summary>
+    public int npc_id;
+
+    /// <summary>
+    /// 确认的身份类型
+    /// </summary>
+    public NPCIdentityType confirmed_identity;
+
+    /// <summary>
+    /// 确认时间戳
+    /// </summary>
+    public float timestamp;
+}
+```
+
+**定义位置**：`Assets/Game/Core/LOS/Events/NPCIdentityConfirmedEvent.cs`
+
+**发布者**：LOS System（NPCIdentityManager）
+**订阅者**：Clue & Journal System
+
+---
+
+### 5.12 NPCSpeakingChangedEvent
+
+NPC 发声状态变化事件（由 NPC AI System 发布，LOS System 订阅以维护声音源追踪）：
+
+```csharp
+/// <summary>
+/// NPC 发声状态变化事件
+/// 由 NPC AI System 发布，LOS System 订阅以更新 _activeSoundSources 列表
+/// FocusListener 依赖此事件判断 NPC 当前是否在说话
+/// </summary>
+public struct NPCSpeakingChangedEvent
+{
+    /// <summary>
+    /// NPC ID
+    /// </summary>
+    public int npc_id;
+
+    /// <summary>
+    /// 是否正在说话
+    /// </summary>
+    public bool is_speaking;
+
+    /// <summary>
+    /// 声音源位置（如果正在说话）
+    /// </summary>
+    public Vector3 position;
+}
+```
+
+**定义位置**：`Assets/Game/Core/NPCAI/Events/NPCSpeakingChangedEvent.cs`
+
+**发布者**：NPC AI System
+**订阅者**：LOS System（FocusListener）
+
+**使用场景**：LOS System 维护 _activeSoundSources 列表用于：
+1. 窃听优先级：NPC 说话时更容易被窃听
+2. 暴露判定：NPC 发声时玩家的暴露值增长速度下降（NPC 注意力被分散）
+
+---
+
 ## 6. Health System 类型
 
 ### 6.1 HealthState
@@ -795,6 +1002,11 @@ public enum HealthState
 >
 > NPCController 负责在两系统间协调同步，详见 ADR-0004 和 ADR-0011 §4。
 
+**同步机制**：
+- Health System 处理完伤害后，发布 `NPCStateChangedEvent`（携带完整双状态快照）
+- NPCController 订阅该事件，根据 HealthState 变化更新 WorldState
+- 详细同步逻辑见 [ADR-0008 §9](../architecture/adr-0008-health-lethality-architecture.md#9-npc状态变化广播) 和 [ADR-0004 NPCController](../architecture/adr-0004-npc-ai-behavior-architecture.md)。
+
 **同步规则**：
 
 | Health System 事件 | WorldState 变化 | HealthState 变化 | 说明 |
@@ -808,7 +1020,7 @@ public enum HealthState
 
 **关键约束**：
 - WorldState.UNCONSCIOUS 仅在 HealthState.DOWNED 时可由 Gritty Takedowns 捆绑
-- NPCController 负责在 HealthSystem 发送 HealthStateChangedEvent（ADR-0008 §6.5）后更新 WorldState
+- NPCController 订阅 HealthSystem 发布的 `NPCStateChangedEvent`，根据事件中的 HealthState 变化驱动 WorldState 更新
 
 ---
 
@@ -926,7 +1138,45 @@ public struct PlayerMovementStateChangedEvent
 
 ---
 
-### 7.4 NoiseType
+### 7.4 PlayerPositionUpdatedEvent
+
+玩家位置更新事件：
+
+```csharp
+/// <summary>
+/// 玩家位置更新事件
+/// 由 PlayerController 在玩家位置变化时发布，Camera System 等系统订阅
+/// 用于锁定相机时获取玩家当前位置
+///
+/// **发布频率注意**：
+/// PlayerController 应控制事件发布频率（建议每 0.05s 或每帧一次），
+/// 避免过于频繁的事件发布影响性能。LockOnCameraBehavior 依赖此事件
+/// 计算相机中点，位置精度要求不高（使用 Vector3.Lerp 已足够平滑）。
+/// </summary>
+public struct PlayerPositionUpdatedEvent
+{
+    public Vector3 position;
+
+    /// <summary>
+    /// 实体 ID（用于精确验证，防止误接收其他实体位置）
+    /// </summary>
+    public int entityId;
+
+    /// <summary>
+    /// 事件发布时间戳（用于防止使用过期位置数据）
+    /// </summary>
+    public float timestamp;
+}
+```
+
+**定义位置**：`Assets/Game/Foundation/PlayerController/Events/PlayerEvents.cs`
+
+**发布者**：Player Controller
+**订阅者**：Camera System（LockOnCameraBehavior）
+
+---
+
+### 7.5 NoiseType
 
 噪声类型枚举：
 
@@ -945,12 +1195,47 @@ public enum NoiseType
 
 ---
 
-### 7.5 NoiseEvent
+### 7.5 NoiseMadeEvent
 
 噪声广播事件：
 
 ```csharp
+/// <summary>
+/// 噪声广播事件（已于 2026-04-12 从 NoiseEvent 更名为 NoiseMadeEvent）
+/// </summary>
+[Obsolete("Use NoiseMadeEvent instead. Removed after v1.0.")]
 public struct NoiseEvent
+{
+    public Vector3 position;
+    public float radius;
+    public NoiseType noise_type;
+    public float duration;
+    public bool can_interrupt;
+    public int source_entity_id;
+
+    /// <summary>
+    /// 隐式转换为 NoiseMadeEvent
+    /// </summary>
+    public static implicit operator NoiseMadeEvent(NoiseEvent old)
+    {
+        return new NoiseMadeEvent
+        {
+            position = old.position,
+            radius = old.radius,
+            noise_type = old.noise_type,
+            duration = old.duration,
+            can_interrupt = old.can_interrupt,
+            source_entity_id = old.source_entity_id
+        };
+    }
+}
+
+/// <summary>
+/// 噪声广播事件
+/// 发布者：Player Controller
+/// 订阅者：NPC AI System（听觉感知）
+/// </summary>
+public struct NoiseMadeEvent
 {
     public Vector3 position;
     public float radius;
@@ -966,6 +1251,8 @@ public struct NoiseEvent
 **发布者**：Player Controller
 **订阅者**：NPC AI System（听觉感知）
 
+> **命名说明**：已于 2026-04-12 从 `NoiseEvent` 更名为 `NoiseMadeEvent`，遵循 ADR-0018 的 `Subject + Did + Context + Event` 命名规范。`NoiseEvent` 作为别名保留用于过渡期兼容。
+
 ---
 
 ### 7.6 PlayerDamagedEvent
@@ -980,6 +1267,11 @@ public struct PlayerDamagedEvent
     public float damage_amount;      // 实际伤害值（用于 SanityRage 计算精神影响）
     public HitLocation hit_location;
     public int source_entity_id;
+
+    /// <summary>
+    /// 受伤后的健康状态（用于订阅者判断是否需要打断交互等）
+    /// </summary>
+    public HealthState new_state;
 }
 ```
 
@@ -1107,7 +1399,26 @@ public enum PlayerInteractionState
 
 ---
 
-### 9.5 KillTagEvent
+### 9.6 TakedownAnimationCompleteEvent
+
+处决动画完成事件（由 AnimationEventBridge 发布，GrittyTakedowns 订阅）：
+
+```csharp
+public struct TakedownAnimationCompleteEvent
+{
+    public int EntityId;              // 目标实体 ID
+    public int AnimationHash;         // 动画哈希值（用于验证）
+    public InteractionType TakedownType;  // 处决类型
+}
+```
+
+**使用场景**：AnimationEventBridge 在收到 `OnStealthKillHit` 等动画事件后发布此事件，通知 GrittyTakedowns 动画已完成，由 GrittyTakedowns 发布最终的 InteractionEvent。
+
+**定义位置**：`Assets/Game/Features/Animation/Events/TakedownAnimationCompleteEvent.cs`
+
+---
+
+### 9.7 KillTagEvent
 
 击杀标签事件（发送到 Sanity 系统）：
 
@@ -1268,6 +1579,66 @@ public enum CancelReason
 
 ---
 
+## 10.1 Save/Load System 类型
+
+> **补充日期**：2026-04-14
+> **来源**：ADR-0005 评审修复
+
+### SaveCompletedEvent
+
+存档完成事件（定义于 ADR-0005）：
+
+```csharp
+/// <summary>
+/// 存档完成事件
+/// 由 SaveManager 发布，UI System 订阅以更新存档槽位显示
+/// </summary>
+public struct SaveCompletedEvent
+{
+    /// <summary>
+    /// 存档槽位 ID
+    /// </summary>
+    public string slot_id;
+
+    /// <summary>
+    /// 是否为自动存档（true=自动存档，false=手动存档）
+    /// </summary>
+    public bool is_auto_save;
+}
+```
+
+**定义位置**：`Assets/Game/Foundation/SaveSystem/Events/SaveCompletedEvent.cs`
+
+**发布者**：SaveManager
+**订阅者**：UI System
+
+---
+
+### SaveCorruptedEvent
+
+存档损坏事件（定义于 ADR-0005）：
+
+```csharp
+/// <summary>
+/// 存档损坏事件
+/// 由 SaveManager 发布，UI System 订阅以显示错误提示
+/// </summary>
+public struct SaveCorruptedEvent
+{
+    /// <summary>
+    /// 损坏的存档槽位 ID
+    /// </summary>
+    public string slot_id;
+}
+```
+
+**定义位置**：`Assets/Game/Foundation/SaveSystem/Events/SaveCorruptedEvent.cs`
+
+**发布者**：SaveManager
+**订阅者**：UI System
+
+---
+
 ## 11. Clue & Journal 类型
 
 ### 11.1 ClueCategory
@@ -1378,6 +1749,87 @@ public struct ClueDiscoveredEvent
 **发布者**：Clue & Journal System
 **订阅者**：Sanity/Rage System（ADR-0017）
 
+### 11.5 VulnerabilityUncoveredEvent
+
+线索发现触发 vulnerability 解锁事件（定义于 ADR-0016）：
+
+```csharp
+/// <summary>
+/// Vulnerability 解锁事件
+/// 由 Clue & Journal System 发布，Gritty Takedowns 系统订阅
+/// 用于当线索发现后解锁 NPC 的 vulnerability，使玩家可进行审问
+/// </summary>
+public struct VulnerabilityUncoveredEvent
+{
+    /// <summary>
+    /// NPC ID
+    /// </summary>
+    public int npc_id;
+
+    /// <summary>
+    /// 解锁来源：INTERROGATION / SEARCH / CLUE_DISCOVERY
+    /// </summary>
+    public VulnerabilitySource source;
+
+    /// <summary>
+    /// Vulnerability 数据（具体内容由 NPC AI 系统通过 QueryNPCVulnerabilityResponse 返回）
+    /// </summary>
+    public VulnerabilityData vulnerability;
+
+    /// <summary>
+    /// 触发该事件的线索 ID（如果 source == CLUE_DISCOVERY）
+    /// </summary>
+    public string clue_id;
+
+    /// <summary>
+    /// 事件时间戳
+    /// </summary>
+    public float timestamp;
+}
+
+/// <summary>
+/// Vulnerability 解锁来源
+/// </summary>
+public enum VulnerabilitySource
+{
+    INTERROGATION,    // 审问已捆绑 NPC
+    SEARCH,           // 搜身死亡 NPC
+    CLUE_DISCOVERY    // 线索发现触发
+}
+
+/// <summary>
+/// Vulnerability 数据结构（由 NPC AI 系统提供）
+/// </summary>
+public struct VulnerabilityData
+{
+    /// <summary>
+    /// Vulnerability 类型
+    /// </summary>
+    public VulnerabilityType type;
+
+    /// <summary>
+    /// 描述文本（用于 UI 显示）
+    /// </summary>
+    public string description;
+}
+
+/// <summary>
+/// Vulnerability 类型
+/// </summary>
+public enum VulnerabilityType
+{
+    WEAKNESS,     // 弱点
+    SECRET,       // 秘密
+    FEAR,         // 恐惧
+    LIE           // 谎言
+}
+```
+
+**定义位置**：`Assets/Game/Features/ClueJournal/Events/VulnerabilityEvents.cs`
+
+**发布者**：Clue & Journal System
+**订阅者**：Gritty Takedowns 系统（ADR-0011/ADR-0014）、UI 系统（ADR-0015，用于显示 vulnerability 发现提示）
+
 ---
 
 ## 12. Sanity/Rage 类型
@@ -1445,6 +1897,76 @@ public struct PsychologicalStateEvent
 
 ---
 
+### 12.2.1 RageChangedEvent
+
+愤怒值变化事件（用于验证标准）：
+
+```csharp
+/// <summary>
+/// 愤怒值变化事件
+/// 由 Sanity/Rage System 在愤怒值发生变化时发布
+/// </summary>
+public struct RageChangedEvent
+{
+    /// <summary>
+    /// 变化前的愤怒值
+    /// </summary>
+    public float OldValue;
+
+    /// <summary>
+    /// 变化后的愤怒值
+    /// </summary>
+    public float NewValue;
+
+    /// <summary>
+    /// 变化原因（用于调试）
+    /// </summary>
+    public string Reason;
+}
+```
+
+**定义位置**：`Assets/Game/Features/SanityRage/Events/SanityRageEvents.cs`
+
+**发布者**：Sanity/Rage System
+**订阅者**：UI System（显示愤怒条变化）
+
+---
+
+### 12.2.2 SanityChangedEvent
+
+理智值变化事件（用于验证标准）：
+
+```csharp
+/// <summary>
+/// 理智值变化事件
+/// 由 Sanity/Rage System 在理智值发生变化时发布
+/// </summary>
+public struct SanityChangedEvent
+{
+    /// <summary>
+    /// 变化前的理智值
+    /// </summary>
+    public float OldValue;
+
+    /// <summary>
+    /// 变化后的理智值
+    /// </summary>
+    public float NewValue;
+
+    /// <summary>
+    /// 变化原因（用于调试）
+    /// </summary>
+    public string Reason;
+}
+```
+
+**定义位置**：`Assets/Game/Features/SanityRage/Events/SanityRageEvents.cs`
+
+**发布者**：Sanity/Rage System
+**订阅者**：UI System（显示理智条变化）
+
+---
+
 ### 12.3 视觉效果请求事件（已废弃）
 
 > **⚠️ 已废弃 (DEPRECATED)**
@@ -1454,13 +1976,15 @@ public struct PsychologicalStateEvent
 > 废弃原因：各系统独立定义效果请求导致重复和不一致。
 > 统一后，所有屏幕后处理效果请求均通过 `ScreenEffectRequestEvent` 发送，由 ScreenEffectsManager 集中处理。
 >
+> **ScreenEffectType 枚举定义位置**：`ScreenEffectType` 枚举定义于 [ADR-0023 §ScreenEffectType](./adr-0023-screen-effects-system-architecture.md#screeneffecttype-枚举)，包含 Vignette、Noise、Saturation、Hue、Blur、**Jitter**、ChromaticAberration、FilmGrain 等值。本文档仅引用该枚举，不重复定义。
+>
 > **迁移指南**：将原有的独立事件替换为 ScreenEffectRequestEvent，例如：
 > - `VignetteRequest{Intensity=X}` → `ScreenEffectRequestEvent{effectType=Vignette, intensity=X, sourceSystem=..., requesterId=...}`
 > - `NoiseRequest{Intensity=X}` → `ScreenEffectRequestEvent{effectType=Noise, intensity=X, sourceSystem=..., requesterId=...}`
 >
 > **例外**：`HUDOverlayOpacityRequest` 属于 UI 层特效，不通过 ScreenEffectsManager 处理，保持不变。
 >
-> **相关决策**：[ADR-0023: 屏幕特效系统](./adr-0023-screen-effects-system-architecture.md) — 统一效果请求架构
+> **相关决策**：[ADR-0023: 屏幕特效系统](./adr-0023-screen-effects-system-architecture.md) — 统一效果请求架构，包括 ScreenEffectType 枚举定义
 
 ~~```csharp
 ~~/// <summary>
@@ -1541,6 +2065,41 @@ public struct HUDOverlayOpacityRequest
 ---
 
 ## 13. Dialog & UI 类型
+
+### 13.x UI 系统事件订阅规范
+
+所有 UI 系统必须遵循以下订阅原则：
+
+| 原则 | 说明 |
+|------|------|
+| **订阅时机** | 在 UI Panel 激活时（OnEnable）订阅，禁用时（OnDisable）取消订阅 |
+| **订阅管理** | 通过 UIManager 统一管理订阅，避免重复订阅 |
+| **事件类型限制** | 只能订阅 ViewModel 变更事件和全局状态事件（暂停、对话开始等） |
+
+**订阅示例**：
+```csharp
+public class ClueJournalPanel : MonoBehaviour
+{
+    private void OnEnable()
+    {
+        EventBus.Subscribe<ClueDiscoveredEvent>(OnClueUnlocked);
+        EventBus.Subscribe<GamePausedEvent>(OnGamePaused);
+    }
+
+    private void OnDisable()
+    {
+        EventBus.Unsubscribe<ClueDiscoveredEvent>(OnClueUnlocked);
+        EventBus.Unsubscribe<GamePausedEvent>(OnGamePaused);
+    }
+}
+```
+
+**必须订阅的事件**（UI 系统）：
+- `ClueDiscoveredEvent` — 线索发现时更新 HUD 计数
+- `NPCStateChangedEvent` — NPC 死亡时更新任务标记
+- `PsychologicalStateEvent` — 心理状态变化时更新 UI 特效
+
+> **约束**：UI 系统禁止订阅业务逻辑直接事件（如 DamageRequest），只应订阅业务结果的广播事件。
 
 ### 13.1 DialogueEmotion
 
@@ -1632,15 +2191,18 @@ public struct ConfrontationStartRequest
 
 ---
 
-### 13.4 PauseMenuOpened / PauseMenuClosed
+### 13.4 PauseMenuOpenedEvent / PauseMenuClosedEvent
 
 暂停菜单事件（定义于 ADR-0015）：
+
+> **命名规范 (2026-04-15 修复)**：事件名称必须包含 `Event` 后缀（见 ADR-0001 §3.14）。
+> 原 `PauseMenuOpened`/`PauseMenuClosed` 已废弃，应使用 `PauseMenuOpenedEvent`/`PauseMenuClosedEvent`。
 
 ```csharp
 /// <summary>
 /// 暂停菜单打开事件
 /// </summary>
-public struct PauseMenuOpened
+public struct PauseMenuOpenedEvent
 {
     /// <summary>
     /// 暂停原因
@@ -1651,7 +2213,7 @@ public struct PauseMenuOpened
 /// <summary>
 /// 暂停菜单关闭事件
 /// </summary>
-public struct PauseMenuClosed
+public struct PauseMenuClosedEvent
 {
     /// <summary>
     /// 关闭原因
@@ -1770,8 +2332,8 @@ public enum ClueSourceType
 |----|---------|
 | `LOS_EAVESDROP` | 通过 LOS 窃听系统获取（关键词触发） |
 | `ENVIRONMENT` | 通过环境物件交互获取 |
-| `NPC_DEATH_SOURCE` | NPC 死亡本身触发（如从尸体获取线索），NPC 存活则无法获取 |
-| `NPC_KNOWLEDGE_BONUS` | NPC 存活时：线索已存在于 Journal 中，状态为 NOT_DISCOVERED（可正常发现）；NPC 死亡时：NOT_DISCOVERED 状态的线索直接标记为 MISSING（无法再获取） |
+| `NPC_DEATH_SOURCE` | NPC 死亡后才可获取（从尸体搜身获取）。NPC 存活时该线索不存在于 Journal 中，死亡事件触发 Clue 实例创建 |
+| `NPC_KNOWLEDGE_BONUS` | NPC 存活期间可获取（对话/审问发现）。线索在 NPC 存活时就存在于 Journal（状态 NOT_DISCOVERED），需玩家主动发现；NPC 死亡后该线索标记为 MISSING |
 
 ---
 
@@ -2018,9 +2580,21 @@ public enum ResourceCategory
 
 ---
 
-## 19. Event Bus 查询类型（ADR-0018）
+## 19. Event Bus 查询类型（ADR-0018）[已废弃]
 
-### 19.1 QuerySoundSourceScreenPosition
+> **⚠️ DEPRECATED**: ADR-0018 宣布取消 QueryBus 同步查询模式，所有 Query 类型已标记为废弃。
+
+> **⚠️ 已废弃 (DEPRECATED)**
+>
+> ADR-0018 宣布取消 QueryBus 同步查询模式，改为纯事件驱动架构。
+> 以下 Query 类型已废弃，请使用事件订阅模式替代。
+>
+> **迁移指南**：
+> - `QuerySoundSourceScreenPosition` → 订阅 `NPCSpeakingChangedEvent` + `PlayerPositionUpdatedEvent`，在回调中计算屏幕位置
+> - `PerceptionQueryRequest` → 订阅 `WeatherStateChangedEvent` + `LightingStealthBonusChangedEvent`，在回调中缓存感知系数
+> - `PerceptionPermissionsQuery` → 使用 LOS System 提供的查询接口或事件
+
+### 19.1 QuerySoundSourceScreenPosition [已废弃]
 
 LOS 声音源屏幕位置查询（定义于 ADR-0018）：
 
@@ -2028,7 +2602,9 @@ LOS 声音源屏幕位置查询（定义于 ADR-0018）：
 /// <summary>
 /// 查询声音源的屏幕空间位置
 /// 类型：Query（同步查询，通过 QueryBus 返回）
+/// [已废弃] 请使用事件订阅模式替代
 /// </summary>
+[Obsolete("Use event subscription (NPCSpeakingChangedEvent + PlayerPositionUpdatedEvent) instead. Deprecated after ADR-0018.")]
 public struct QuerySoundSourceScreenPosition
 {
     /// <summary>
@@ -2039,17 +2615,209 @@ public struct QuerySoundSourceScreenPosition
 ```
 
 **Handler**：LOSSystem
-**Response**：`Vector3`（屏幕空间位置）
+**Response**：`QuerySoundSourceScreenPositionResponse`（屏幕空间位置和有效性）
+
+```csharp
+public struct QuerySoundSourceScreenPositionResponse
+{
+    public Vector3 ScreenPosition;  // 屏幕空间位置
+    public bool IsValid;             // NPC 是否可见
+}
+```
 
 **定义位置**：`Assets/Game/Core/LOS/Events/QuerySoundSourceScreenPosition.cs`
 
 **使用说明**：
 ```csharp
 // 调用方式（通过 QueryBus）
-var position = QueryBus.Instance.Query<QuerySoundSourceScreenPosition, Vector3>(
+var response = QueryBus.Instance.Query<QuerySoundSourceScreenPosition, QuerySoundSourceScreenPositionResponse>(
     new QuerySoundSourceScreenPosition { npc_id = npcId }
 );
+if (response.IsValid)
+{
+    Vector3 screenPos = response.ScreenPosition;
+}
 ```
+
+---
+
+### 19.1.1 PerceptionQueryRequest / PerceptionQueryResponse [已废弃]
+
+感知查询请求和响应（由 ADR-0003 World Layer 原则定义，用于替代直接方法调用）：
+
+```csharp
+/// <summary>
+/// 感知查询请求（Query 模式）
+/// 外部系统通过 QueryBus 查询 NPC 的感知范围
+/// [已废弃] 请使用事件订阅模式（WeatherStateChangedEvent + LightingStealthBonusChangedEvent）替代
+/// </summary>
+[Obsolete("Use event subscription (WeatherStateChangedEvent + LightingStealthBonusChangedEvent) instead. Deprecated after ADR-0018.")]
+public struct PerceptionQueryRequest
+{
+    /// <summary>
+    /// 查询发送者（用于验证和追踪）
+    /// </summary>
+    public EntityQuery Sender;
+
+    /// <summary>
+    /// 基础感知范围
+    /// </summary>
+    public float BaseRange;
+}
+```
+
+**Handler**：NPCAIComponent
+**Response**：`PerceptionQueryResponse`
+
+```csharp
+/// <summary>
+/// 感知查询响应
+/// </summary>
+public struct PerceptionQueryResponse
+{
+    /// <summary>
+    /// 查询发送者（应与请求中的 Sender 一致）
+    /// </summary>
+    public EntityQuery Sender;
+
+    /// <summary>
+    /// 有效感知范围（已应用 Weather/Lighting 系数）
+    /// </summary>
+    public float EffectiveRange;
+
+    /// <summary>
+    /// 查询是否成功
+    /// </summary>
+    public bool Success;
+}
+```
+
+**定义位置**：`Assets/Game/Core/NPCAI/Events/PerceptionQuery.cs`
+
+**使用说明**：
+```csharp
+// 调用方式（通过 QueryBus）
+var response = QueryBus.Instance.Query<PerceptionQueryRequest, PerceptionQueryResponse>(
+    new PerceptionQueryRequest
+    {
+        Sender = EntityQuery.FromComponent<PlayerController>(),
+        BaseRange = 10f
+    }
+);
+if (response.Success)
+{
+    float range = response.EffectiveRange;
+}
+```
+
+**设计背景**：ADR-0003 World Layer 原则规定"不主动调用其他系统，仅通过 Event Bus 广播"。原有的 `NPCAIComponent.QueryEffectivePerceptionRange()` 直接方法调用违反此原则，已改为通过 QueryBus 的事件化查询模式。
+
+---
+
+### 19.1.2 PerceptionPermissionsQuery / PerceptionPermissionsResponse [已废弃]
+
+感知权限查询（用于 GrittyTakedowns 验证玩家是否在 NPC 感知范围内）：
+
+```csharp
+/// <summary>
+/// 感知权限查询
+/// 由 GrittyTakedowns 系统发起，验证玩家是否在 NPC 感知范围内
+/// [已废弃] 请使用 LOS System 提供的查询接口或事件模式替代
+/// </summary>
+[Obsolete("Use LOS System query interface or event-based approach instead. Deprecated after ADR-0018.")]
+public struct PerceptionPermissionsQuery
+{
+    /// <summary>
+    /// 目标 NPC ID
+    /// </summary>
+    public int NPCId;
+
+    /// <summary>
+    /// 玩家位置
+    /// </summary>
+    public Vector3 PlayerPosition;
+}
+```
+
+**Handler**：LOSSystem
+**Response**：`PerceptionPermissionsResponse`
+
+```csharp
+/// <summary>
+/// 感知权限查询响应
+/// </summary>
+public struct PerceptionPermissionsResponse
+{
+    /// <summary>
+    /// 是否有感知权限
+    /// </summary>
+    public bool HasPermission;
+
+    /// <summary>
+    /// 权限检查失败原因（用于调试）
+    /// </summary>
+    public string FailureReason;
+}
+```
+
+**定义位置**：`Assets/Game/Core/LOS/Events/PerceptionPermissionsQuery.cs`
+
+---
+
+### 19.1.3 ExposureValueChangedEvent
+
+NPC 暴露值变化事件（由 LOS System 发布，NPC AI System 订阅以实现渐进式感知状态转换）：
+
+```csharp
+/// <summary>
+/// NPC 暴露值变化事件
+/// 由 LOS System 发布，NPC AI System 订阅以实现渐进式感知状态转换
+///
+/// 感知阈值（由 LOSConfigSO 配置）：
+/// - SUSPECT 阈值：通常 30-50（玩家暴露但未确认）
+/// - SEARCH 阈值：通常 60-80（NPC 开始搜索）
+/// - ALERT 阈值：通常 100（玩家被确认发现）
+/// </summary>
+public struct ExposureValueChangedEvent
+{
+    /// <summary>
+    /// NPC ID
+    /// </summary>
+    public int npc_id;
+
+    /// <summary>
+    /// 当前暴露值 [0-100]
+    /// </summary>
+    public float exposure_value;
+
+    /// <summary>
+    /// 暴露值变化量（正值=增加，负值=衰减）
+    /// </summary>
+    public float delta;
+
+    /// <summary>
+    /// 玩家位置
+    /// </summary>
+    public Vector3 player_position;
+}
+```
+
+**定义位置**：`Assets/Game/Core/LOS/Events/ExposureValueChangedEvent.cs`
+
+**发布者**：LOS System
+**订阅者**：NPC AI System（用于渐进式感知状态转换：UNDETECTED → SUSPECT → SEARCH）
+
+> **Exposure 值与 AlertState 阈值映射表** [已修复]：
+>
+> | AlertState | Exposure 值范围（0-100） | 阈值（归一化 0-1） | 说明 |
+> |------------|--------------------------|-------------------|------|
+> | `UNDETECTED` | 0 | < 0.3 | 玩家未暴露 |
+> | `SUSPECT` | 30-50 | 0.3-0.6 | 玩家暴露但未确认 |
+> | `SEARCH` | 60-80 | 0.6-0.8 | NPC 开始搜索 |
+> | `ALERT` | > 80 | > 0.8 | 玩家被确认发现 |
+> | `ESCAPE` / `COMBAT` | 100 | 1.0 | NPC 进入逃离/战斗状态 |
+>
+> **实现注意**：实际阈值由 `LOSConfigSO` 配置，上述数值为典型默认值。NPC AI 根据 `exposure_value` 与阈值的比较结果进行状态转换。
 
 ---
 
@@ -2257,30 +3025,49 @@ public struct ScreenEffectRevokeEvent
 **发布者**：任何发布过 ScreenEffectRequestEvent 的系统（DialogueSystem、WeatherSystem 等）
 **订阅者**：ScreenEffectsManager（唯一订阅者）
 
-### 22.4 感知系数叠加规则（Weather × Lighting）
+### 22.4 感知系数叠加规则（Weather × Lighting × LOS）
 
-> **来源**：从 ADR-0021 和 ADR-0022 提取，解决跨 ADR 系数组合的二义性。
-> 本节定义 Weather System 和 Lighting System 的感知系数如何组合作用于下游系统。
+> **来源**：从 ADR-0021、ADR-0022 和 ADR-0007 提取，解决跨 ADR 系数组合的二义性。
+> 本节定义 Weather System、Lighting System 和 LOS System 的感知系数如何组合。
 
 **问题背景**：
 - Weather System 的 `PerceptionModifier` 包含：`visionDistanceMultiplier`、`visionAngleMultiplier`、`hearingSensitivityMultiplier`、`soundPropagationMultiplier`
 - Lighting System 的 `AreaLightingCoefficients` 包含：`shadowStealthMultiplier`、`lightSensitivityMultiplier`、`finalIllumination`
-- ADR-0021/0022 描述两者"相乘"，但维度不同，无法直接相乘
+- LOS System 订阅 `LightingStealthBonusChangedEvent` 获取阴影加成（`exposure_multiplier`）
 
 **组合规则**：
 
+> **⚠️ 重要澄清**：表格中的"独立使用"指该系数单独影响结果（不受另一系统影响），而非"不使用"。所有感知系数都会参与最终计算。
+
 | 下游系统 | Weather PerceptionModifier | Lighting AreaLightingCoefficients | 组合方式 |
 |---------|---------------------------|----------------------------------|---------|
-| NPC AI 感知 | `visionDistanceMultiplier` | — | 直接使用 Weather 值 |
-| NPC AI 感知 | — | `shadowStealthMultiplier` | 直接使用 Lighting 值 |
-| NPC AI 感知 | `visionAngleMultiplier` | `lightSensitivityMultiplier` | **乘法组合**：`Weather × Lighting` |
-| LOS System | `visionDistanceMultiplier` | — | 直接使用 Weather 值 |
-| LOS System | `hearingSensitivityMultiplier` | — | 直接使用 Weather 值 |
-| LOS System | `soundPropagationMultiplier` | — | 直接使用 Weather 值 |
+| NPC AI 感知 | `visionDistanceMultiplier` | — | **独立**：直接作为感知范围乘数，不与 Lighting 组合 |
+| NPC AI 感知 | — | `shadowStealthMultiplier` | **独立**：直接作为潜行加成，不与 Weather 组合 |
+| NPC AI 感知 | `visionAngleMultiplier` | `lightSensitivityMultiplier` | **乘法组合**：`Weather.visionAngleMultiplier × Lighting.lightSensitivityMultiplier` |
+| LOS System | `visionDistanceMultiplier` | — | **独立**：直接作为视野距离乘数 |
+| LOS System | `hearingSensitivityMultiplier` | — | **独立**：直接作为听觉灵敏度乘数 |
+| LOS System | `soundPropagationMultiplier` | — | **独立**：直接作为声音传播乘数 |
+| LOS System | — | `LightingStealthBonusChangedEvent.exposure_multiplier` | **乘法组合**：`Weather.visionDistanceMultiplier × exposure_multiplier` |
+
+> **实现对应**：ADR-0004 NPCController.QueryEffectivePerceptionRange() 的实际计算为：
+> `effectiveRange = baseRange * weatherMod.visionDistanceMultiplier * lightMod.shadowStealthMultiplier`
+> 表格中的"乘法组合"对应代码中的 `*` 运算，"独立"对应直接赋值不参与乘法。
+
+**LOS System 暴露速度计算公式**：
+```
+deltaExposure = BaseExposureRate × movementMultiplier × distanceFactor × exposureMultiplier
+```
+
+其中：
+- `BaseExposureRate`：基础暴露速度（来自 LOS System 配置）
+- `movementMultiplier`：玩家移动状态加成（站立/蹲伏/奔跑）
+- `distanceFactor`：距离因子（距离越近越高）
+- `exposureMultiplier`：`Weather × Lighting.exposure_multiplier`（乘法组合）
 
 **组合公式**：
 ```
 最终感知系数 = Weather_PerceptionModifier × Lighting_AreaLightingCoefficients
+最终暴露乘数 = Weather_visionDistanceMultiplier × Lighting_exposure_multiplier
 ```
 
 **示例**：
@@ -2291,13 +3078,177 @@ float finalVisionAngle = weather.visionAngleMultiplier * lighting.lightSensitivi
 
 float finalStealthBonus = lighting.shadowStealthMultiplier;
 // = 2.0 (PitchBlack)，与 Weather 无关
+
+float finalExposureMultiplier = weather.visionDistanceMultiplier * lighting.exposureMultiplier;
+// = 0.4 (Storm强) × 0.77 (阴影) = 0.308
 ```
 
-**注意**：`shadowStealthMultiplier` 和 `lightSensitivityMultiplier` 是 Lighting System 独立维护的参数，Weather System 不提供对应的折扣系数。
+**注意**：
+- `shadowStealthMultiplier` 和 `lightSensitivityMultiplier` 是 Lighting System 独立维护的参数，Weather System 不提供对应的折扣系数
+- `exposure_multiplier`（阴影暴露乘数）由 Lighting System 发布，Weather System 通过 `visionDistanceMultiplier` 影响最终值
+- LOS System 同时订阅 `WeatherStateChangedEvent`（获取 Weather 感知系数）和 `LightingStealthBonusChangedEvent`（获取阴影加成）
 
 ---
 
-## 21. 修改日志
+## 20. Audio/Haptic 系统类型（ADR-0025）
+
+> **补充日期**：2026-04-14
+> **来源**：ADR-0025 评审修复
+
+### HapticType 枚举
+
+触觉反馈类型枚举（用于 PS5 DualSense 等设备的触觉反馈）：
+
+```csharp
+/// <summary>
+/// 触觉反馈类型枚举
+/// 用于 PS5 DualSense 手柄的触控板振动和自适应扳机震动
+/// 定义位置：Assets/Game/Features/Audio/Haptics/HapticType.cs
+/// </summary>
+public enum HapticType
+{
+    /// <summary>爆炸震动：强烈且短促</summary>
+    Explosion,
+
+    /// <summary>处决震动：最大阻力反馈</summary>
+    Execution,
+
+    /// <summary>战斗震动：中等强度</summary>
+    Combat
+}
+```
+
+**使用系统**：Audio System（ADR-0025）、HapticFeedbackManager
+
+### HapticRequest 事件
+
+触觉反馈请求事件：
+
+```csharp
+/// <summary>
+/// 触觉反馈请求事件
+/// 由 AudioManager 在适当时机发布，HapticFeedbackManager 处理平台差异
+/// </summary>
+public struct HapticRequest
+{
+    /// <summary>
+    /// 触觉反馈类型
+    /// </summary>
+    public HapticType type;
+
+    /// <summary>
+    /// 震动强度 [0.0 - 1.0]
+    /// </summary>
+    public float intensity;
+}
+```
+
+**发布者**：AudioManager
+**订阅者**：HapticFeedbackManager（平台特定实现）
+
+**事件发布时机**（见 ADR-0025 §TriggerScreenEffectSync）：
+
+| SFXCategory | HapticType | Intensity |
+|-------------|------------|-----------|
+| Explosion | Explosion | 1.0f |
+| ExplosionSmall | Explosion | 0.6f |
+| StealthKill | Execution | 1.0f |
+| EnvironmentKill | Execution | 1.0f |
+| Weapon | Combat | 0.7f |
+
+---
+
+## 21. 网络同步相关类型（ADR-0006）
+
+### 21.1 网络连接状态事件
+
+多人游戏中的连接状态变化事件：
+
+```csharp
+/// <summary>
+/// 玩家断开连接事件
+/// </summary>
+public struct PlayerDisconnectedEvent
+{
+    public int PlayerId;
+}
+
+/// <summary>
+/// 玩家重新连接事件
+/// </summary>
+public struct PlayerReconnectedEvent
+{
+    public int PlayerId;
+}
+
+/// <summary>
+/// 重新连接失败事件
+/// </summary>
+public struct ReconnectFailedEvent
+{
+    public int PlayerId;
+}
+
+/// <summary>
+/// 重新连接超时事件
+/// </summary>
+public struct ReconnectTimeoutEvent
+{
+    public int PlayerId;
+}
+
+/// <summary>
+/// 主机迁移开始事件
+/// </summary>
+public struct HostMigrationStartedEvent
+{
+    public int OldHostId;
+    public int NewHostId;
+}
+
+/// <summary>
+/// 【新增 v2.4】玩家作弊检测事件
+/// 当反作弊系统检测到玩家作弊行为时发布
+/// </summary>
+public struct PlayerCheatDetectedEvent
+{
+    /// <summary>
+    /// 玩家 ID
+    /// </summary>
+    public int PlayerId;
+
+    /// <summary>
+    /// 作弊类型
+    /// </summary>
+    public CheatType CheatType;
+
+    /// <summary>
+    /// 检测时间戳
+    /// </summary>
+    public float Timestamp;
+}
+
+/// <summary>
+/// 作弊类型枚举
+/// </summary>
+public enum CheatType
+{
+    HEALTH_TAMPERING,    // 生命值篡改
+    TELEPORT,            // 传送作弊
+    SPEED_HACK,          // 加速作弊
+    AIMBOT_SUSPECTED,    // 可疑自瞄
+    DAMAGE_AMPLIFICATION // 伤害放大
+}
+```
+
+**定义位置**：`Assets/Game/Infrastructure/Network/Events/NetworkEvents.cs`
+
+**发布者**：Network System（反作弊模块）
+**订阅者**：UI System（显示警告）、Game System（处理作弊响应）
+
+---
+
+## 22. 修改日志
 
 | 日期 | 版本 | 修改内容 | 作者 |
 |------|------|---------|------|
@@ -2315,3 +3266,5 @@ float finalStealthBonus = lighting.shadowStealthMultiplier;
 | 2026-04-12 | 1.9.0 | 新增 AssetReleaseEvent；PlayerDamagedEvent 新增 damage_amount 字段（修复 ADR-0018 评审问题） | 架构师 Agent |
 | 2026-04-12 | 2.0.0 | 新增 §22 游戏时间接口：IGameTimeProvider、GameHourChangedEvent（从 ADR-0021/0022 提取，消除重复定义）；新增 ScreenEffectRevokeEvent（ADR-0023 评审修复） | 架构师 Agent |
 | 2026-04-12 | 2.2.0 | 新增 §22.4 感知系数叠加规则（ADR-21/22/23 跨 ADR 评审修复）；修复 ADR-0021 gameHour 预留参数注释、WeatherForceChangeEvent 打断行为说明、WeatherTransitionTable 冗余字段；修复 ADR-0022 LookupCoefficients 硬编码系数（新增 AreaLightingCoefficientsTable）、AreaLightingDetector 缓存失效问题；修复 ADR-0023 ScreenEffectType Flags 语义歧义、Shake 混合注释、AdditiveLayerDecay UX 测试默认值标注 | 架构师 Agent |
+| 2026-04-14 | 2.3.0 | 新增 CombatStateChangedEvent（§5.10）、KeywordCapturedEvent（§5.11）、RageChangedEvent（§12.2.1）、SanityChangedEvent（§12.2.2）；统一 NoiseEvent→NoiseMadeEvent、WeaponAwareness→WeaponAwarenessEvent 命名（带别名兼容）；新增网络事件（§21：PlayerDisconnectedEvent 等）；修复 ADR-0017 PlayerDamagedEvent 结构描述错误；ADR-0018 状态更新为 Accepted | 架构师 Agent |
+| 2026-04-15 | 2.4.0 | ADR评审修复：新增 NPCIdentityConfirmedEvent（§5.11.1）、ExposureValueChangedEvent（§19.1.3）、PlayerCheatDetectedEvent（§21）；NPCStateChangedEvent 新增 has_witness/witness_distance 字段（§5.2）；更新 ADR-0005 BuildSaveData 为 QueryBus 模式；修复 ADR-0017 SOUL_SPLIT 抖动描述矛盾；更新 ADR-0015 引用章节（ScreenEffectRequestEvent 改引用 ADR-0023） | 架构师 Agent |

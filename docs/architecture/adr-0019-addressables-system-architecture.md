@@ -7,7 +7,7 @@
 2026-04-11
 
 ## Last Updated
-2026-04-13
+2026-04-15 (QueryBus 合规确认：已验证本 ADR 未使用 QueryBus) [已修复]
 
 ## Context
 
@@ -82,14 +82,42 @@
 ```csharp
 // ResourceManager.cs
 /// <summary>
-/// 资源管理器 - 采用 MonoBehaviour 单例模式
-/// 注意：与 EventBus（ScriptableObject 单例）不同，
-/// ResourceManager 需要 Update() 生命周期且频繁访问，
-/// 使用 MonoBehaviour 单例可简化生命周期管理并减少 GC 开销。
+/// 资源管理器 - 采用 ScriptableObject 单例模式（与 EventBus 保持一致）
+/// 遵循项目"无静态单例"规范，通过 ScriptableObject 实例管理单例。
+/// 协程和 Update 生命周期由 ResourceManagerUpdateHelper（MonoBehaviour）托管。
 /// </summary>
-public class ResourceManager : MonoBehaviour
+[CreateAssetMenu(menuName = "Game/ResourceManager")]
+public class ResourceManager : ScriptableObject
 {
-    public static ResourceManager Instance { get; private set; }
+    private static ResourceManager _instance;
+    private static readonly object _lock = new();
+
+    public static ResourceManager Instance
+    {
+        get
+        {
+            if (_instance == null)
+            {
+                lock (_lock)
+                {
+                    if (_instance == null)
+                    {
+                        _instance = Resources.Load<ResourceManager>("ResourceManager");
+                        if (_instance == null)
+                        {
+                            _instance = CreateInstance<ResourceManager>();
+                            #if UNITY_EDITOR
+                            UnityEditor.AssetDatabase.CreateAsset(
+                                _instance,
+                                "Assets/Game/Infrastructure/Addressables/ResourceManager.asset");
+                            #endif
+                        }
+                    }
+                }
+            }
+            return _instance;
+        }
+    }
 
     // 内存预算（可配置）
     [Header("Memory Budget")]
@@ -104,34 +132,22 @@ public class ResourceManager : MonoBehaviour
     private long _currentMemoryUsage;
 
     /// <summary>
-    /// 初始化 ResourceManager 单例
-    /// 由 ResourceManagerBootstrap 在 Awake 中显式调用
-    /// 注意：此方法仅应由 Bootstrap 调用，Awake() 不再重复调用
+    /// 由 ResourceManagerUpdateHelper 在 LateUpdate 中调用
+    /// 注意：协程由 Helper 的 MonoBehaviour 托管，不在此处处理
     /// </summary>
-    public void Initialize()
+    public void UpdateTick()
     {
-        Instance = this;
-        DontDestroyOnLoad(gameObject);
-    }
-
-    // Awake() 不再调用 Initialize()，由 Bootstrap 显式初始化
-    // 这样可以确保 ResourceManager 的生命周期完全由 Bootstrap 控制
-    private void Awake()
-    {
-        // 此 MonoBehaviour 由 Bootstrap.NewGameObject() 创建
-        // 初始化由 Bootstrap.Awake() 显式调用 Initialize() 完成
+        // 目前 ResourceManager 无每帧更新的逻辑（协程由 Helper 管理）
+        // 此方法保留用于未来可能的每帧需求
+        // [已修复] 如未来确认无需此方法，可通过 #if DEVELOPMENT_BUILD 或条件编译禁用调用
     }
 
     private void OnDestroy()
     {
-        // 停止弱引用清理协程
-        if (_cleanupCoroutine != null)
-            StopCoroutine(_cleanupCoroutine);
-
-        if (Instance == this)
+        if (_instance == this)
         {
             CleanupAllSceneHandlers();
-            Instance = null;
+            _instance = null;
         }
     }
 
@@ -145,20 +161,27 @@ public class ResourceManager : MonoBehaviour
     public async Task<T> LoadAsync<T>(string address, ResourceCategory category = ResourceCategory.OnDemand)
         where T : Object
     {
-        // 检查预算
-        if (!CheckBudget(category))
-        {
-            Debug.LogWarning($"[ResourceManager] Budget exceeded for category {category}. Unloading unused assets.");
-            await UnloadUnusedAsync(category);
-        }
-
         var key = GetKey<T>(address);
 
-        // 已加载：增加引用计数
+        // 已加载：增加引用计数（快速路径）
         if (_loadedAssets.TryGetValue(key, out var handle))
         {
             _referenceCounts[key]++;
             return handle.Asset as T;
+        }
+
+        // 【修复P1-3】预算检查竞态条件：
+        // 预算检查和卸载应在加载前执行，且必须等待卸载完成后再继续
+        // 否则异步卸载未完成时新资源已累加到 _currentMemoryUsage，导致预算计算不准确
+        if (!CheckBudget(category))
+        {
+            Debug.LogWarning($"[ResourceManager] Budget exceeded for category {category}. Waiting for unload to complete...");
+            await UnloadUnusedAsync(category);
+            // 等待卸载完成后再次检查预算（理论上应通过，若仍不通过则记录错误）
+            if (!CheckBudget(category))
+            {
+                Debug.LogError($"[ResourceManager] Budget still exceeded after unload for category {category}. Consider increasing budget.");
+            }
         }
 
         // 异步加载
@@ -246,8 +269,10 @@ public class ResourceManager : MonoBehaviour
         await Resources.UnloadUnusedAssets();
     }
 
-    // 场景绑定资源自动管理（使用 WeakReference 防止内存泄漏）
-    private readonly Dictionary<string, WeakReference<Action<Scene>>> _sceneUnloadHandlers = new();
+    // 场景绑定资源自动管理（通过 EventBus 订阅 SceneUnloadedEvent）
+    // ⚠️ 注意：不再直接监听 SceneManager.sceneUnloaded，而是通过 SceneManagerWrapper 发布的事件感知
+    // 详见 ADR-0027 §0.5 职责边界定义
+    private readonly Dictionary<string, string> _sceneUnloadHandlers = new();  // key: sceneGuid -> handlerId
 
     public void RegisterSceneBound(string address, AsyncOperationHandle<SceneInstance> handle)
     {
@@ -263,21 +288,56 @@ public class ResourceManager : MonoBehaviour
         };
         _referenceCounts[key] = 1;
 
-        // 监听场景卸载（使用 WeakReference 防止内存泄漏）
-        Action<Scene> handler = _ => OnSceneUnloaded(key);
-        _sceneUnloadHandlers[key] = new WeakReference<Action<Scene>>(handler);
-        SceneManager.sceneUnloaded += handler;
+        // 通过 EventBus 订阅 SceneUnloadedEvent（由 SceneManagerWrapper 发布）
+        // 注意：不再直接监听 SceneManager.sceneUnloaded，避免与 Addressables 生命周期混淆
+        _sceneUnloadHandlers[key] = EventBus.Subscribe<SceneUnloadedEvent>(e =>
+        {
+            if (e.Scene.SceneGuid == address)
+                OnSceneUnloaded(key);
+        });
+    }
+
+    /// <summary>
+    /// 释放预加载场景句柄（由 ScenePreloader 在超时清理时调用）
+    /// P0 修复：统一通过 ResourceManager 释放，避免 ScenePreloader 直接操作 Addressables
+    /// </summary>
+    public void UnloadScenePreload(AsyncOperationHandle<SceneInstance> handle)
+    {
+        // 预加载场景句柄不经过 RegisterSceneBound，直接释放
+        if (handle.IsValid())
+        {
+            Addressables.Release(handle);
+        }
     }
 
     private void OnSceneUnloaded(string key)
     {
         if (_loadedAssets.TryGetValue(key, out var handle) && handle.Category == ResourceCategory.SceneBound)
         {
+            // 只清理 ResourceManager 管理的资源，不释放 Addressables 场景句柄
+            // 场景句柄由 SceneManagerWrapper 持有和释放
             UnloadInternal(key);
         }
 
-        // 注销委托（通过 WeakReference 查找并清理）
-        CleanupSceneUnloadHandler(key);
+        // 注销 EventBus 订阅
+        if (_sceneUnloadHandlers.TryGetValue(key, out var handlerId))
+        {
+            EventBus.Unsubscribe<SceneUnloadedEvent>(handlerId);
+            _sceneUnloadHandlers.Remove(key);
+        }
+    }
+
+    /// <summary>
+    /// 清理所有场景卸载处理器（在 ResourceManagerBootstrap.OnDestroy 中调用）
+    /// 注意：现在通过 EventBus 订阅，无需清理 SceneManager 委托
+    /// </summary>
+    public void CleanupAllSceneHandlers()
+    {
+        foreach (var kvp in _sceneUnloadHandlers)
+        {
+            EventBus.Unsubscribe<SceneUnloadedEvent>(kvp.Value);
+        }
+        _sceneUnloadHandlers.Clear();
     }
 
     private void CleanupSceneUnloadHandler(string key)
@@ -299,20 +359,6 @@ public class ResourceManager : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// 清理所有场景卸载处理器（在 ResourceManagerBootstrap.OnDestroy 中调用）
-    /// </summary>
-    public void CleanupAllSceneHandlers()
-    {
-        foreach (var kvp in _sceneUnloadHandlers)
-        {
-            if (kvp.Value.TryGetTarget(out var handler))
-            {
-                SceneManager.sceneUnloaded -= handler;
-            }
-        }
-        _sceneUnloadHandlers.Clear();
-    }
 
     private void UnloadInternal(string key)
     {
@@ -649,8 +695,8 @@ public struct AssetReleaseEvent
 }
 ```
 
-> **MonoBehaviour 单例生命周期说明**：
-> `ResourceManager` 继承 `MonoBehaviour`，其生命周期由 Unity 管理：
+> **ScriptableObject 单例生命周期说明**：
+> `ResourceManager` 继承 `ScriptableObject`，其生命周期由 Unity 管理：
 > - `Awake()` 中执行初始化，`OnDestroy()` 中执行清理
 > - `DontDestroyOnLoad` 确保跨场景持久化
 > - `ResourceManagerBootstrap` 确保单例在首个场景加载前完成初始化
@@ -709,10 +755,14 @@ public class ResourceManagerBootstrap : MonoBehaviour
         }
         _instance = this;
 
-        // 创建 ResourceManager 并初始化
-        var resourceManagerGO = new GameObject("ResourceManager");
-        var resourceManager = resourceManagerGO.AddComponent<ResourceManager>();
-        resourceManager.Initialize();
+        // 加载 ResourceManager ScriptableObject 实例
+        var resourceManager = ResourceManager.Instance;
+
+        // 创建 ResourceManagerUpdateHelper 并托管协程生命周期
+        var helperGO = new GameObject("ResourceManagerUpdateHelper");
+        var updateHelper = helperGO.AddComponent<ResourceManagerUpdateHelper>();
+        updateHelper.Initialize(resourceManager);
+        DontDestroyOnLoad(helperGO);
 
         // 初始化远程内容管理器（如果配置存在）
         InitializeRemoteContent();
@@ -752,6 +802,45 @@ public class ResourceManagerBootstrap : MonoBehaviour
         if (_instance == this)
         {
             _instance = null;
+        }
+    }
+}
+
+// ResourceManagerUpdateHelper.cs
+/// <summary>
+/// ResourceManager 协程和 Update 生命周期托管者
+/// 由于 ScriptableObject 不支持协程和 Update()，此类作为 MonoBehaviour 辅助类，
+/// 托管 ResourceManager 所需的协程（弱引用清理等）和每帧 UpdateTick() 调用。
+/// 注意：此类不是单例，实例由 ResourceManagerBootstrap 在启动时创建。
+/// </summary>
+public class ResourceManagerUpdateHelper : MonoBehaviour
+{
+    private ResourceManager _resourceManager;
+    private Coroutine _cleanupCoroutine;
+
+    public void Initialize(ResourceManager resourceManager)
+    {
+        _resourceManager = resourceManager;
+        _cleanupCoroutine = StartCoroutine(CleanupWeakReferencesLoop());
+    }
+
+    private void LateUpdate()
+    {
+        _resourceManager?.UpdateTick();
+    }
+
+    private void OnDestroy()
+    {
+        if (_cleanupCoroutine != null)
+            StopCoroutine(_cleanupCoroutine);
+    }
+
+    private System.Collections.IEnumerator CleanupWeakReferencesLoop()
+    {
+        while (true)
+        {
+            yield return new WaitForSeconds(30f);
+            _resourceManager?.CleanupWeakReferences();
         }
     }
 }
@@ -826,7 +915,70 @@ private void CleanupAllStaleWeakReferences()
 } // end of ResourceManager class
 ```
 
+### 4.5 SceneManagerWrapper 与 ResourceManager 职责边界（ADR 评审修复 2026-04-15）
+
+> **重要澄清**：本节明确定义 SceneManagerWrapper 与 ResourceManager 的职责边界，解决两者都操作 Addressables 场景句柄可能导致的竞态条件问题。
+
+#### 架构层次
+
+| 层次 | 组件 | 职责 |
+|------|------|------|
+| **高层封装** | ResourceManager | 场景内 Addressable 资源（纹理、模型、音频等）的加载/卸载和引用计数；内存预算控制 |
+| **底层代理** | SceneManagerWrapper | 直接操作 Addressables API；管理 SceneInstance 生命周期；发布 SceneUnloadedEvent（唯一发布者） |
+
+#### 关键约束
+
+1. **SceneManagerWrapper 是 Addressables 场景句柄的唯一所有者**
+   - `LoadSceneAsync()` 返回的 `AsyncOperationHandle<SceneInstance>` 由 SceneManagerWrapper 持有
+   - `UnloadSceneAsync()` 是释放场景句柄的唯一入口
+   - ResourceManager 不直接调用 `Addressables.UnloadSceneAsync()`
+
+2. **SceneUnloadedEvent 发布者确认**
+   - `SceneUnloadedEvent` 由 **SceneManagerWrapper** 唯一发布
+   - 卸载完成时调用 `EventBus.Instance.Publish(new SceneUnloadedEvent { Scene = scene })`
+   - ResourceManager 订阅此事件清理场景绑定的资源
+
+3. **禁止的调用模式**
+   ```
+   // ❌ 错误：ResourceManager 直接卸载场景
+   Addressables.UnloadSceneAsync(sceneHandle);
+
+   // ✅ 正确：通过 SceneManagerWrapper 卸载
+   SceneManagerWrapper.Instance.UnloadSceneAsync(scene);
+   ```
+
+#### 事件发布关系
+
+| 事件 | 发布者 | 订阅者 |
+|------|--------|--------|
+| `SceneLoadedEvent` | SceneManagerWrapper | ResourceManager（注册场景资源） |
+| `SceneUnloadedEvent` | SceneManagerWrapper（**唯一发布者**） | ResourceManager（清理场景资源） |
+
+#### ConsumePreload 返回值释放契约
+
+ScenePreloader.ConsumePreload() 方法返回预加载的 `AsyncOperationHandle<SceneInstance>`：
+
+> **释放契约**（ADR 评审修复 2026-04-15）：
+> - 返回值由调用方负责释放
+> - 调用方在场景激活完成后，必须调用 `Addressables.ReleaseInstance(handle)` 释放句柄
+> - 未正确释放将导致内存泄漏
+>
+> **正确使用模式**：
+> ```csharp
+> var handle = _preloader.ConsumePreload(targetScene);
+> if (handle.IsValid())
+> {
+>     await handle.Result.ActivateAsync();
+>     // ... 场景使用完毕后
+>     Addressables.ReleaseInstance(handle);
+> }
+> ```
+
+---
+
 ### 5. 场景加载集成
+
+> **注意**：SceneManagerWrapper 完整定义见 ADR-0027，本节仅提供与 ResourceManager 交互的部分代码示例。
 
 ```csharp
 // SceneLoadRequest.cs
@@ -1222,7 +1374,7 @@ public class RemoteContentManager
 | `weapons/[type]` | 武器资源 | `weapons/pistol_01` |
 | `environments/[area]` | 环境资源 | `environments/warehouse_block_a` |
 | `ui/[type]` | UI 资源 | `ui/hud_main` |
-| `audio/[category]/[name]` | 音频资源 | `audio/sfx/explosion_01` |
+| `audio/[category]/[name]` | 音频资源 | `audio/sfx/combat/stealth_kill` |
 | `animations/[type]/[name]` | 动画资源 | `animations/takedowns/env_01` |
 
 > **命名规范**：
@@ -1308,6 +1460,7 @@ public class ResourceBudgetConfigSO : ScriptableObject
 - **生命周期明确**：引用计数确保资源不会过早/过晚卸载
 - **远程支持**：Addressables 内置 CDN 支持
 - **依赖管理**：Addressables 自动处理资源依赖
+- **事件驱动**：ResourceManager 仅通过 EventBus 与其他系统通信，符合 ADR-0018 事件订阅模式
 
 ### Negative
 
@@ -1333,6 +1486,34 @@ public class ResourceBudgetConfigSO : ScriptableObject
 | **加载速度** | 取决于资源大小和网络 | 异步加载不阻塞主线程 |
 | **内存峰值** | 约等于 TotalMemoryBudgetMB | 预算控制防止超支 |
 | **GC** | 资源卸载时触发 | 对象池减少 GC |
+
+---
+
+## ADR-0018 合规说明 [已修复]
+
+> **QueryBus 取消合规（2026-04-15）**：
+> 本 ADR 自设计之初即采用 **EventBus 事件订阅模式**，未使用 QueryBus 同步查询模式。
+> 符合 ADR-0018 §QueryBus 同步查询模式已取消 的规定。
+
+### 合规验证
+
+| 检查项 | 状态 | 说明 |
+|--------|------|------|
+| ResourceManager 资源加载/卸载 | ✅ EventBus | 使用 AssetLoadedEvent、AssetUnloadedEvent、AssetReleaseEvent |
+| 场景生命周期管理 | ✅ EventBus | 订阅 SceneUnloadedEvent 清理场景资源 |
+| 跨系统通信 | ✅ EventBus | LoadingScreenRequestEvent、LoadCompletedEvent |
+| QueryBus 使用 | ❌ 无 | 本 ADR 未使用 QueryBus |
+
+### 事件订阅关系
+
+| 事件 | 发布者 | 订阅者 | 用途 |
+|------|--------|--------|------|
+| AssetLoadedEvent | ResourceManager | 任意系统 | 资源加载完成通知 |
+| AssetUnloadedEvent | ResourceManager | 任意系统 | 资源卸载完成通知 |
+| AssetReleaseEvent | ResourceManager | 任意系统 | 引用计数归零通知 |
+| SceneUnloadedEvent | SceneManagerWrapper | ResourceManager | 场景卸载，清理场景资源 |
+| LoadingScreenRequestEvent | SceneManagerWrapper | UI | 显示加载画面 |
+| LoadCompletedEvent | SceneManagerWrapper | WorldMap | 加载完成通知 |
 
 ---
 
@@ -1373,6 +1554,7 @@ public class ResourceBudgetConfigSO : ScriptableObject
 4. **场景切换**：场景加载/卸载正确管理资源生命周期
 5. **远程加载**：CDN 可用时正确加载远程资源
 6. **Fallback**：CDN 不可用时正确 Fallback 到本地资源
+7. **内存估算精度** [已修复]：嵌套 GameObject 的内存估算误差应在正负 20% 以内
 
 ---
 

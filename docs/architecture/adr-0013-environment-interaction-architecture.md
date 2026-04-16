@@ -7,7 +7,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-11 (v4: 确认 §13.5 为 InteractionState 统一定义位置；补充 ChainRadius 与 ScaleMultiplier 交互规则的物件类别枚举说明；明确 EventQueueCapacity 与性能目标的约束关系)
+2026-04-15 (v6: 补充雾密度影响爆炸可见性的量化映射表、环境→天气完整通信链路)
 
 ## Context
 
@@ -132,6 +132,67 @@
         (EnvironmentalEvent) (ObjectStateChanged)   (任务更新)
 ```
 
+### 事件订阅
+
+**EnvironmentInteractionSystem 订阅的事件**（来自 World Layer）：
+
+| 事件 | 来源 | 用途 |
+|------|------|------|
+| `WeatherStateChangedEvent` | WeatherSystem | 根据天气状态调整环境物件参数（如雾密度影响爆炸可见性） |
+| `CheckpointRestoreRequestEvent` | CheckpointSystem | 重置所有物件状态为 Available（详见 EC-7） |
+
+> **订阅说明**：EnvironmentInteractionSystem 属于 Core Layer，通过 EventBus 订阅来自 World Layer 的事件，实现与 WeatherSystem 等系统的解耦。
+
+**雾密度影响爆炸可见性量化**：
+
+> **来源说明**：雾密度对爆炸可见性的影响定义于 ADR-0021 Weather System。本节仅引用该定义用于环境交互系统的事件交互说明。
+>
+> 当 `WeatherStateChangedEvent` 携带 `fogIntensity` 时，爆炸光效的可见距离按以下系数调整（详见 ADR-0021 §4.2 雾密度影响映射表）：
+>
+> | fogIntensity | 爆炸可见距离系数 | 说明 |
+> |-------------|----------------|------|
+> | 0.0 | 1.0 | 无雾，完整可见距离 |
+> | 0.1 | 0.95 | 轻微雾气 |
+> | 0.2 | 0.9 | 轻度雾气 |
+> | 0.3 | 0.85 | 中度雾气 |
+> | 0.4 | 0.8 | 中高雾气 |
+> | 0.5 | 0.7 | 浓雾 |
+> | 0.6 | 0.6 | 浓雾 |
+> | 0.7 | 0.5 | 非常高雾气 |
+> | 0.8 | 0.4 | 接近闭塞 |
+> | 0.9 | 0.3 | 严重闭塞 |
+> | 1.0 | 0.2 | 几乎不可见 |
+>
+> **计算公式**：`EffectiveExplosionVisibilityDistance = BaseExplosionVisibilityDistance * (1.0 - fogIntensity * 0.8)`
+>
+> **注意**：雾密度仅影响爆炸**光效**的可见距离，不影响爆炸的物理伤害半径、声音传播距离或环境破坏范围。
+
+**WeatherSystem 订阅 EnvironmentInteractionSystem 发布的事件**（双向通信 - 环境→天气）：
+
+| 事件 | 来源 | 用途 |
+|------|------|------|
+| `EnvironmentalEvent{type=EXPLOSION}` | EnvironmentInteractionSystem | 大规模爆炸触发局部天气变化（如能见度下降） |
+| `EnvironmentalEvent{type=FIRE}` | EnvironmentInteractionSystem | 火灾事件可能影响局部温度和雾气生成 |
+| `EnvironmentalEvent{type=DESTRUCTION}` | EnvironmentInteractionSystem | 大型破坏事件触发特殊天气效果 |
+
+> **双向通信说明**：Weather × Environment 双向通信链路：
+> - Weather → Environment：`WeatherStateChangedEvent`（WeatherSystem 发布，EnvironmentInteractionSystem 订阅）
+> - Environment → Weather：`EnvironmentalEvent`（EnvironmentInteractionSystem 发布，WeatherSystem 订阅特定类型）
+>
+> 具体订阅的 `EnvironmentalEventType` 值（EXPLOSION、FIRE、DESTRUCTION）定义见 shared-types.md §13.1（EnvironmentalEventType 枚举）。WeatherSystem 应在代码中过滤只处理这些类型的事件。
+
+**环境→天气完整通信链路**：
+
+| 环境事件 | 触发条件 | WeatherSystem 响应 | 效果 |
+|---------|---------|-------------------|------|
+| `EXPLOSION` | 爆炸类物件触发（灭火器、汽油桶、丙烷罐、手榴弹、C4） | 发布 `LocalizedWeatherEvent`，雾密度 +0.1~0.3（根据爆炸规模） | 局部能见度下降，持续 30~60 秒 |
+| `FIRE` | 火灾事件触发（可燃物爆炸后起火） | 发布 `LocalizedWeatherEvent`，温度 +10~20%，局部雾气生成 | 烟雾扩散，视野受限 |
+| `DESTRUCTION` | 大型破坏事件（建筑坍塌、结构破坏） | 发布 `LocalizedWeatherEvent`，触发特殊效果（如沙尘暴、碎片飘散） | 特殊视觉/氛围效果 |
+
+> **LocalizedWeatherEvent 说明**：Weather System 内部使用的事件，用于在指定区域触发局部天气变化。与全局 `WeatherForceChangeEvent` 不同，`LocalizedWeatherEvent` 影响范围限定在事件发生的区域，且在一定时间后自动消退。
+>
+> **消退机制**：局部天气变化在持续 `LocalizedWeatherDuration`（默认 30 秒）后自动消退，恢复到全局天气状态。如需延长，事件源可发送续期请求。
+
 ---
 
 ## Formulas
@@ -190,7 +251,7 @@ DistanceFalloff = Clamp(1.0 - (DistanceToObject / EventRadius), 0.0, 1.0)
 | EC-2 | 物件交互时 NPC 正看着该物件 | 物件仍可交互，NPC 立即发现玩家动作（Alert 状态） |
 | EC-3 | 动作锁定状态中尝试交互 | 输入被忽略，必须等待动画完成 |
 | EC-4 | 冷却中物件的远程触发 | OnCooldown → 触发无效但消耗弹药；Depleted → 无响应 |
-| EC-5 | 连锁爆炸 | ChainTriggerable + ChainRadius，每级 0.5s 延迟，限 MaxChainDepth 层。<br><br>**EventQueue 行为与合并规则**：<br>- **队列容量**：EventQueue 最大容量为 10 个事件（EventQueueCapacity = 10）<br>- **入队时机**：新事件到达时直接入队，队列未满则正常添加<br>- **合并触发时机**：当新事件到达时队列已满（已有 10 个事件），该新事件不直接入队，而是触发合并流程<br>- **合并规则**：<br>  1. 同类型事件（均为 EXPLOSION）→ 合并为单个事件，intensity 叠加，duration 取最大值<br>  2. 不同类型事件 → 合并为 `EnvironmentalEvent{type=CHAOS, intensity=sum_of_intensities, duration=max_duration}`，NPC AI 系统收到 CHAOS 事件时额外增加 3 秒混乱持续时间<br><br>合并后的事件视为已处理完毕，下一帧可继续正常入队。 |
+| EC-5 | 连锁爆炸 | ChainTriggerable + ChainRadius，每级 0.5s 延迟，限 MaxChainDepth 层。<br><br>**EventQueue 行为与合并规则**：<br>- **队列容量**：EventQueue 最大容量为 10 个事件（EventQueueCapacity = 10）<br>- **入队时机**：新事件到达时直接入队，队列未满则正常添加<br>- **合并触发时机**：当新事件到达时队列已满（已有 10 个事件），该新事件不直接入队，而是触发合并流程<br>- **合并规则**：<br>  1. 同类型事件（均为 EXPLOSION）→ 合并为单个事件，intensity 叠加，duration 取最大值<br>  2. 不同类型事件 → 合并为 `EnvironmentalEvent{type=CHAOS, intensity=sum_of_intensities, duration=max_duration}`<br>- **NPC AI 处理规则**：CHAOS 事件由 NPC AI System（ADR-0004 §7 OnEnvironmentEvent）处理，额外增加 3 秒混乱持续时间（通过 AlertFSM.ExtendConfusionDuration() 实现） |
 | EC-6 | 投掷物飞行中玩家被攻击 | 投掷物保持轨迹落地，玩家按 Health 规则处理 |
 | EC-7 | 关卡重置时物件状态 | 全部恢复 Available。<br><br>**三状态超时刷新规则**：<br>- **Available**：无超时机制，持续保持可用<br>- **OnCooldown**：冷却计时器独立运行，当 `TimeSinceUsed >= CooldownDuration` 时自动刷新为 Available（由 EC-6 的冷却公式 `RemainingCooldown = Max(0, CooldownDuration - TimeSinceUsed)` 驱动）<br>- **Depleted**：独立于 OnCooldown 机制，采用 30 秒连续计时刷新为 Available<br><br>**计时器行为**：Depleted 计时为**连续计时**（玩家离开区域后计时不暂停），防止玩家反复进出刷新的 exploits。OnCooldown 计时同样为连续计时，不受玩家位置影响。<br><br>**计时器重置**：若需要暂停计时（如玩家死亡后重新读取检查点），CheckpointSystem 发送 `CheckpointRestoreRequestEvent` 时附带 `ResetCooldownTimers = true`，EnvironmentInteractionSystem 收到后重置所有 OnCooldown 和 Depleted 计时器。<br><br>**与 World Map 系统集成**：当 `AreaClearedEvent` 触发时（NPC AI 系统检测到地区内敌人全灭），EnvironmentInteractionSystem 重置所有物件为 Available 状态。若需要立即重置（如玩家撤离后重新进入），由 CheckpointSystem 发送 `CheckpointRestoreRequestEvent` 触发地区初始化流程，EnvironmentInteractionSystem 订阅此事件完成物件重置。详见 ADR-0012。 |
 
@@ -218,7 +279,110 @@ DistanceFalloff = Clamp(1.0 - (DistanceToObject / EventRadius), 0.0, 1.0)
 
 ---
 
-## Alternatives Considered
+### 与 Unity 物理系统的接口
+
+> **⚠️ 重要**：EnvironmentInteractionSystem 本身不直接执行物理模拟，而是通过以下接口与 Unity 物理系统协作。
+
+#### 爆炸效果物理接口
+
+当物件触发爆炸效果时，通过 `Physics 处理：
+
+```csharp
+// 爆炸触发接口（由 EnvironmentInteractionSystem 调用）
+public void TriggerExplosion(Vector3 position, float radius, float force)
+{
+    // 1. 物理爆炸力应用（使用 Unity Physics.RadioExplosion 或 ApplyForceAtPosition）
+    Collider[] colliders = Physics.OverlapSphere(position, radius, Physics.AllLayers);
+    foreach (var collider in colliders)
+    {
+        var rb = collider.GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            Vector3 direction = (rb.position - position).normalized;
+            rb.AddExplosionForce(force, position, radius, 1f, ForceMode.Impulse);
+        }
+    }
+
+    // 2. 发布 EnvironmentalEvent（type=EXPLOSION），由 AudioSystem 决定是否触发 CameraShakeRequestEvent
+    // 注意：EnvironmentInteractionSystem 属于 Core Layer，不应直接发布 CameraShakeRequestEvent
+    // CameraShakeRequestEvent 由 AudioSystem（ADR-0025）或 ScreenEffectsSystem（ADR-0023）发布
+    EventBus.Instance.Publish(new EnvironmentalEvent
+    {
+        type = EnvironmentalEventType.EXPLOSION,
+        position = position,
+        radius = radius,
+        intensity = 1.0f,
+        source_object_id = gameObject.GetInstanceID()
+    });
+}
+```
+
+#### 可破坏物件碎片管理
+
+对于 `DESTRUCT_GLASS`、`DESTRUCT_WOOD` 等可破坏物件：
+
+```csharp
+// 碎片管理策略：对象池
+public class DebrisPool
+{
+    // 碎片预制体池（通过 Addressables 异步加载）
+    private Dictionary<string, AsyncOperationHandle<GameObject>> _debrisPrefabs;
+
+    // 碎片生命周期
+    public void SpawnDebris(string debrisId, Vector3 position, Vector3 velocity)
+    {
+        // 1. 从对象池获取碎片实例
+        var debris = _pool.Get(debrisId);
+        debris.SetActive(true);
+
+        // 2. 应用初始速度和方向
+        var rb = debris.GetComponent<Rigidbody>();
+        rb.linearVelocity = velocity;
+
+        // 3. 延迟 5 秒后回收（碎片清理）
+        StartCoroutine(ReturnToPoolDelayed(debris, 5f));
+    }
+
+    private IEnumerator ReturnToPoolDelayed(GameObject debris, float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        debris.SetActive(false);
+        _pool.Return(debrisId, debris);
+    }
+}
+```
+
+#### 推动障碍物理接口
+
+对于 `OBSTACLE_PUSH` 类型物件：
+
+```csharp
+// 推动障碍接口
+public void ApplyPushForce(Vector3 direction, float force)
+{
+    if (TryGetComponent<Rigidbody>(out var rb))
+    {
+        // 应用推动力
+        rb.AddForce(direction * force, ForceMode.Impulse);
+
+        // 限制最大速度，防止物理爆炸
+        if (rb.linearVelocity.magnitude > MAX_PUSH_SPEED)
+        {
+            rb.linearVelocity = rb.linearVelocity.normalized * MAX_PUSH_SPEED;
+        }
+    }
+}
+```
+
+#### 物理接口约束
+
+| 物件类型 | 物理 API | 说明 |
+|---------|---------|------|
+| `EXPLOSIVE_*` | `Rigidbody.AddExplosionForce` | 爆炸力推动周围物体 |
+| `DESTRUCT_*` | 对象池 + `Rigidbody` | 碎片使用对象池管理 |
+| `OBSTACLE_PUSH` | `Rigidbody.AddForce` | 推动力应用 |
+
+> **性能注意**：所有物理操作应限制在 `radius` 范围内，避免对过多物体应用力导致性能问题。
 
 ### Alternative 1: 集中式物件管理器
 

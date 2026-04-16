@@ -1,7 +1,7 @@
 # ADR-0011: 沉重处决系统 (Gritty Takedowns) 架构决策
 
 ## Status
-**Proposed**（依赖 ADR-0010 Weapon System + shared-types.md 的 APPROVED 类型定义）
+**Proposed**（依赖 ADR-0010 Weapon System + shared-types.md 的 APPROVED 类型定义）[已修复]
 
 > **v1.4.1 更新**：修复以下评审问题
 > - DECEPTION_RESISTANCE_IMMUNE 配置化
@@ -33,7 +33,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-11 (v1.4.2 — 评审修复)
+2026-04-15 (v1.6.0 — QueryBus 取消修复：ValidatePerceptionPermissions 改为事件订阅模式) [已修复]
 
 ## Context
 
@@ -55,8 +55,19 @@ Gritty Takedowns（玩家-NPC 交互系统）是《断绝：罪恶之源》"沉�
 - **时间约束**：捆绑时间 3-6 秒（受 NPC 体型和玩家技能影响）
   - NPC 体型通过 `NPCController.QuerySizeCategory()` 获取（定义见 shared-types.md §5.6）
 - **事件约束**：通过 Event Bus 与 NPC AI 系统解耦，避免循环依赖
+- **接口约束**：Gritty Takedowns 不直接依赖 NPCAIComponent，而是依赖 `IInteractionTarget` 接口（定义于 Core Layer）
 - **对话约束**：DialogueTree 数据归 NPC AI 系统所有（Core Layer），Gritty Takedowns 仅负责 UI 渲染
 - **性能约束**：单次交互响应 < 1 帧，动画锁定期间 CPU 占用 < 2ms
+- **【P1-2 修复】伤害请求时序约束**：`DamageRequest` 的发送时机由 AnimationEventBridge 在动画关键帧触发，而非 GrittyTakedowns 直接发送。这确保：
+  1. 伤害在正确的动画时机生效（武器接触目标时）
+  2. 避免 Weapon System 和 GrittyTakedowns 之间的重复逻辑
+  3. Health System 接收到的 DamageRequest 携带正确的 source=GrittyTakedowns 标识
+
+### Implementation Dependencies
+
+| 依赖系统 | 依赖关系 | 说明 |
+|----------|----------|------|
+| [ADR-0007: LOS 系统架构](./adr-0007-los-system-architecture.md) | 必须 | NPCIdentityType（身份标签）由 LOS System 维护；CanStealthKill 中的 `identity == NPCIdentityType.ENEMY` 检查依赖 LOS System 提供的数据 |
 
 ### Requirements
 
@@ -118,9 +129,10 @@ Gritty Takedowns（玩家-NPC 交互系统）是《断绝：罪恶之源》"沉�
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │                     Event Publications                              │   │
 │  │  - InteractionEvent → NPC AI/音频                                    │   │
-│  │  - DamageRequest → Health 系统                                      │   │
 │  │  - KillTagEvent → Sanity 系统                                       │   │
 │  │  - KnowledgeGainedEvent → Clue 系统                                 │   │
+│  │  ⚠️ 注意：DamageRequest 由 AnimationEventBridge 在动画关键帧触发，    │   │
+│  │    而非由 GrittyTakedowns 直接发送。这确保伤害在正确的动画时机生效。   │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                    │                                      │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
@@ -139,6 +151,39 @@ Gritty Takedowns（玩家-NPC 交互系统）是《断绝：罪恶之源》"沉�
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 接口契约
+
+为避免 Feature Layer（Gritty Takedowns）直接依赖 Core Layer（NPC AI），定义 `IInteractionTarget` 接口：
+
+```csharp
+/// <summary>
+/// 交互目标接口（定义于 Core Layer）
+/// Gritty Takedowns 通过此接口查询交互所需信息，不直接依赖 NPCAIComponent
+/// </summary>
+public interface IInteractionTarget
+{
+    /// <summary>获取 NPC ID（用于事件和日志）</summary>
+    int Id { get; }
+
+    /// <summary>获取 NPC 世界状态</summary>
+    WorldState GetWorldState();
+
+    /// <summary>获取 NPC 健康状态</summary>
+    HealthState GetHealthState();
+
+    /// <summary>获取 NPC 警戒状态</summary>
+    AlertState GetAlertState();
+
+    /// <summary>获取 NPC 身份标签</summary>
+    NPCIdentityType GetIdentity();
+
+    /// <summary>获取 NPC 体型分类（用于捆绑时间计算）</summary>
+    NPCSizeCategory GetSizeCategory();
+}
+```
+
+> **实现说明**：NPCAIComponent 应实现 IInteractionTarget 接口。Gritty Takedowns 持有 `IInteractionTarget` 引用而非直接持有 NPCAIComponent。
 
 ### 1. 交互类型矩阵
 
@@ -433,11 +478,13 @@ public class InteractionMatrix
     private InteractionAvailability QueryConvert(AvailabilityContext ctx)
     {
         // ⚠️ AlertState 检查：COMBAT 或 ESCAPE 状态下 NPC 不会响应转化
-        // ⚠️ LOYAL 派系检查：派系忠诚度为 LOYAL 时 NPC 不可被转化
+        // ⚠️ LOYAL 派系检查：派系忠诚度低于阈值时 NPC 不可被转化
+        var allegiance = ctx.Npc.QueryFactionAllegiance();
+        bool isLoyal = allegiance.faction != null && allegiance.loyalty >= LOYALTY_THRESHOLD;
         bool available = ctx.NpcState == WorldState.FREE
             && IsNpcInteractable(ctx.AlertState)
             && ctx.HasVulnerability
-            && ctx.Npc.QueryFactionAllegiance() != FactionAllegiance.LOYAL;
+            && !isLoyal;
         return new InteractionAvailability
         {
             type = InteractionType.Convert,
@@ -480,21 +527,25 @@ public class InteractionMatrix
         return alertState != AlertState.COMBAT && alertState != AlertState.ESCAPE;
     }
 
+    // 派系忠诚度阈值：loyalty >= 此值时 NPC 视为 LOYAL，不可被贿赂
+    private const int LOYALTY_THRESHOLD = 75;
+
     private bool CanBribe(AvailabilityContext ctx)
     {
         // 贿赂可用条件：
         // 1. NPC 处于 FREE 状态
         // 2. Bravery <= bribeBraveryThreshold（来自 TuningSO）
-        // 3. FactionAllegiance != LOYAL（派系忠诚度为 LOYAL 时不可被贿赂）
+        // 3. FactionAllegiance.loyalty < LOYALTY_THRESHOLD（派系忠诚度低于阈值时不可被贿赂）
         //
         // Bravery 由 NPCData 定义（见 ADR-0004 §NPCData），通过 QueryBravery() 接口获取
         // Bravery 范围 [1, 10]，值越小越容易被吓唬/贿赂
         //
         // FactionAllegiance 由 NPCData 定义，通过 QueryFactionAllegiance() 接口获取
-        // 派系忠诚度为 LOYAL 时 NPC 不会背叛其派系
+        // 派系忠诚度低于阈值时 NPC 不会背叛其派系
         int threshold = _tuning?.bribeBraveryThreshold ?? 3;  // 默认值为 3
         bool braveryCheck = ctx.Npc.QueryBravery() <= threshold;
-        bool loyaltyCheck = ctx.Npc.QueryFactionAllegiance() != FactionAllegiance.LOYAL;
+        var allegiance = ctx.Npc.QueryFactionAllegiance();
+        bool loyaltyCheck = allegiance.loyalty < LOYALTY_THRESHOLD;
 
         return braveryCheck && loyaltyCheck;
     }
@@ -515,7 +566,7 @@ public class InteractionMatrix
     {
         // 保持距离威胁：判定玩家是否可对目标使用"保持距离"交互
         // 可用条件：NPC 处于 FREE 状态且未处于战斗状态
-        // 效果说明（见 ADR-0004 NPC AI）：NPC 会进入 GUARDED 状态，暂时停止追击直到警戒超时或发现新目标
+        // 效果说明（见 ADR-0004 NPC AI）：NPC 会暂时停止追击，保持警戒距离
         //
         // ⚠️ AlertState 检查：使用 IsNpcInteractable 统一判断
         return state == WorldState.FREE && IsNpcInteractable(alert);
@@ -524,17 +575,12 @@ public class InteractionMatrix
     private bool CanStealthKill(WorldState state, NPCIdentityType identity,
         bool isCrouching, bool isBehind, AlertState alert)
     {
-        // 潜行击杀条件：背面 + 潜行 + 已标记恶徒 + 未完全警觉
+        // 潜行击杀条件：背面 + 潜行 + 已标记恶徒 + Alert 状态满足模式要求
         //
         // **⚠️ Playtest 重点**：默认 Tight 模式下可能在某些场景下过于困难。
         //   TuningSO.stealthKillAlertMode 控制检查模式（定义于 shared-types.md §15.1）：
-        //   - Tight（默认）：仅 UNDETECTED 可执行
-        //   - Loose：UNDETECTED / SUSPECT / SEARCH 均可执行，允许玩家失误后补救
-        //
-        // alert < ALERT 允许在以下状态执行：
-        //   - UNDETECTED：完全未被发现，最佳时机
-        //   - SUSPECT：NPC 怀疑但未确认，仍有潜行机会（仅 Loose 模式）
-        //   - SEARCH：NPC 正在搜索但未发现玩家（仅 Loose 模式）
+        //   - Tight（默认）：仅 `alert == AlertState.UNDETECTED` 可执行
+        //   - Loose：`alert < AlertState.ALERT`（UNDETECTED / SUSPECT / SEARCH 均可执行）
         //
         // **Loose 模式时间窗口说明**：
         //   Loose 模式允许在 SUSPECT/SEARCH 状态下执行潜行击杀，但这不代表"无限制时间窗口"。
@@ -548,14 +594,140 @@ public class InteractionMatrix
         //   - Tight 模式鼓励玩家谨慎行动，避免失误
         //   - 如果 Tight 模式过于困难导致体验下降，可切换到 Loose 模式作为补救
         bool alertCheck = _tuning?.stealthKillAlertMode == StealthKillAlertMode.Tight
-            ? alert == AlertState.UNDETECTED
-            : alert < AlertState.ALERT;
+            ? alert == AlertState.UNDETECTED  // Tight：严格 equality 检查
+            : alert < AlertState.ALERT;        // Loose：允许 SUSPECT/SEARCH
 
         return state == WorldState.FREE
             && identity == NPCIdentityType.ENEMY
             && isCrouching
             && isBehind
-            && alertCheck;
+            && alertCheck
+            && ValidatePerceptionPermissions(ctx);  // 感知权限验证
+    }
+
+    /// <summary>
+    /// 感知权限验证：确保玩家在 NPC 的感知范围内才能执行交互
+    /// </summary>
+    /// <param name="ctx">交互上下文，包含目标 NPC 信息</param>
+    /// <remarks>
+    /// **为什么需要感知权限验证**：
+    /// 即使玩家满足上述所有条件（如潜行、背面），如果玩家超出 NPC 的感知范围，
+    /// 交互应该是无效的。这是防止"隔着墙壁处决"等异常行为的最后一道防线。
+    ///
+    /// **验证逻辑（事件订阅模式）**：
+    /// - 玩家必须在 NPC 的视觉感知距离内（NPC 视野锥内或听觉范围内）
+    /// - 由 LOS System 提供感知权限判定
+    /// - GrittyTakedowns 订阅 WeatherStateChangedEvent 和 LightingStateChangedEvent，
+    ///   在回调中缓存感知系数（shadowStealthBonus、npcLightSensitivity 等）
+    /// - 验证时使用缓存的感知系数进行计算，不再使用 QueryBus
+    ///
+    /// **QueryBus 取消说明（2026-04-15）**：
+    /// 原 QueryBus 模式已取消，详见 ADR-0018 §QueryBus 同步查询模式已取消。
+    /// </remarks>
+    private bool ValidatePerceptionPermissions(AvailabilityContext ctx)
+    {
+        // 事件订阅模式下，通过缓存的感知系数验证权限
+        // 注意：实际验证逻辑由 LOS System 在收到 WeatherStateChangedEvent 或
+        // LightingStateChangedEvent 时计算并缓存到 CachedPerceptionPermissions
+        //
+        // 此处使用缓存的感知系数进行判定：
+        // - _cachedShadowStealthBonus：阴影潜行加成
+        // - _cachedNpcLightSensitivity：NPC 光照感知灵敏度
+        // - _cachedPlayerPosition：玩家位置（用于距离计算）
+        //
+        // 如果缓存尚未初始化（系统刚启动），返回 true 允许交互（保守策略）
+        if (!_perceptionCacheInitialized)
+        {
+            Debug.LogWarning("[GrittyTakedowns] 感知系数缓存未初始化，使用保守策略允许交互");
+            return true;
+        }
+
+        // ========== 距离检查（新增）==========
+        // 防止"隔墙处决"等异常行为：玩家必须在 NPC 的感知范围内
+        // 使用 NPC 的最大感知范围作为距离上限（考虑天气/光照折扣后）
+        float maxInteractionDistance = ctx.Npc.QueryEffectivePerceptionRange();
+        float distance = Vector3.Distance(_cachedPlayerPosition, ctx.Npc.transform.position);
+        if (distance > maxInteractionDistance)
+        {
+            // 玩家超出感知范围，禁止交互
+            return false;
+        }
+
+        // 使用缓存的光照感知系数进行判定
+        // NPC 感知灵敏度越低，玩家越难被发现
+        float effectiveSensitivity = _cachedNpcLightSensitivity;
+
+        // 如果 NPC 当前光照感知灵敏度低于阈值（0.3），认为玩家不可见
+        // 阈值设定理由：Night 时段 npcLightSensitivity = 0.5，PitchBlack 叠加后可能更低
+        const float PERCEPTION_THRESHOLD = 0.3f;
+        return effectiveSensitivity >= PERCEPTION_THRESHOLD;
+    }
+
+    // ========== 感知系数缓存（事件订阅模式）==========
+    // 注意：以下缓存机制替代了原 QueryBus 模式
+    // 订阅 WeatherStateChangedEvent 和 LightingStateChangedEvent，在回调中更新缓存
+
+    private bool _perceptionCacheInitialized = false;
+    private float _cachedShadowStealthBonus = 1.0f;
+    private float _cachedNpcLightSensitivity = 1.0f;
+    private Vector3 _cachedPlayerPosition = Vector3.zero;
+
+    /// <summary>
+    /// 初始化感知系数事件订阅（在 GrittyTakedownsSystem.Awake 中调用）
+    /// </summary>
+    public void InitializePerceptionEventSubscriptions()
+    {
+        EventBus.Instance.Subscribe<WeatherStateChangedEvent>(OnWeatherStateChanged);
+        EventBus.Instance.Subscribe<LightingStateChangedEvent>(OnLightingStateChanged);
+        EventBus.Instance.Subscribe<AreaLightingChangedEvent>(OnAreaLightingChanged);
+    }
+
+    private void OnWeatherStateChanged(WeatherStateChangedEvent evt)
+    {
+        // 缓存天气感知的修正系数
+        // Weather 的 PerceptionModifier 影响 NPC 的视觉感知范围和光照感知灵敏度
+        // 根据 shared-types.md §22.4 感知系数叠加规则：
+        // - Weather.visionDistanceMultiplier × Lighting.shadowStealthBonus → 最终暴露乘数（乘法组合）
+        // - Weather.weatherLightSensitivityMultiplier × Lighting.lightSensitivityMultiplier → 最终光照感知（乘法组合）
+        _cachedShadowStealthBonus *= evt.perception_modifier.visionDistanceMultiplier;
+        _cachedNpcLightSensitivity *= evt.perception_modifier.weatherLightSensitivityMultiplier;
+        _perceptionCacheInitialized = true;
+    }
+
+    private void OnLightingStateChanged(LightingStateChangedEvent evt)
+    {
+        // 缓存光照感知的修正系数
+        // Lighting 的 LightingPerceptionModifier 影响阴影潜行加成和 NPC 光照感知灵敏度
+        // 注意：Weather × Lighting 是乘法组合关系（见 shared-types.md §22.4）
+        // 最终暴露乘数 = Weather.visionDistanceMultiplier × Lighting.shadowStealthBonus
+        // 此处 Lighting 使用乘法与 Weather 效果叠加，而非覆盖
+        _cachedShadowStealthBonus *= evt.perceptionModifier.shadowStealthBonus;
+        _cachedNpcLightSensitivity *= evt.perceptionModifier.npcLightSensitivity;
+        _cachedPlayerPosition = PlayerController.Instance?.transform.position ?? Vector3.zero;
+        _perceptionCacheInitialized = true;
+    }
+
+    private void OnAreaLightingChanged(AreaLightingChangedEvent evt)
+    {
+        // 区域光照变化时更新感知系数
+        // 通过 AreaLightingCoefficientsTable 获取该区域的系数
+        if (evt.isPlayerInside)
+        {
+            var coeffs = AreaLightingCoefficientsTable.Get(evt.lightingState);
+            _cachedShadowStealthBonus = coeffs.shadowStealthMultiplier;
+            _cachedNpcLightSensitivity = coeffs.lightSensitivityMultiplier;
+        }
+        _perceptionCacheInitialized = true;
+    }
+
+    /// <summary>
+    /// 清理事件订阅（在 GrittyTakedownsSystem.OnDestroy 中调用）
+    /// </summary>
+    public void CleanupPerceptionEventSubscriptions()
+    {
+        EventBus.Instance.Unsubscribe<WeatherStateChangedEvent>(OnWeatherStateChanged);
+        EventBus.Instance.Unsubscribe<LightingStateChangedEvent>(OnLightingStateChanged);
+        EventBus.Instance.Unsubscribe<AreaLightingChangedEvent>(OnAreaLightingChanged);
     }
 
     /// <summary>
@@ -575,6 +747,13 @@ public class InteractionMatrix
         // 环境处决可在 FREE（正常状态）或 UNCONSCIOUS（已击倒）状态下执行
         // STAGGERED/DOWNED 状态由 Health System 的 HealthState 管理（见 shared-types.md §6.1）
         // 此处 WorldState 只表示 NPC AI 基础状态，与 HealthState 独立
+        //
+        // **hasWeapon 语义说明（ADR 评审修复）**：
+        // hasWeapon 由 AvailabilityContextBuilder 填充时已验证以下条件：
+        //   1. 玩家持有可投掷的环境物件
+        //   2. 物件在有效投掷距离内（range < throw_range）
+        // 因此 hasWeapon == true 已隐含"命中是可能的"前提
+        // 实际命中判定由 WeaponSystem.CalculateHitChance() 在执行时计算
         //
         // **执行后状态转移**：
         // - 从 FREE 执行：NPC 直接进入 DEAD 状态（通过 HealthSystem 处理 LETHAL 伤害）
@@ -709,8 +888,8 @@ public class PlayerInteractionFSM
     private bool TryAcquireActionLock()
     {
         // 通过 ActionLockSystem 接管玩家控制
-        // ActionLockType 定义于 shared-types.md §4.1
-        bool success = ActionLockSystem.Instance.TryAcquireLock(ActionLockType.Interaction, 0.1f);
+        // ActionLockSystem 定义于 shared-types.md §4.2
+        bool success = ActionLockSystem.Instance.AcquireLock("GrittyTakedowns", ActionLockType.Interaction, 2.0f);
         _actionLockAcquired = success;
         return success;
     }
@@ -718,7 +897,8 @@ public class PlayerInteractionFSM
     private void AcquireActionLock()
     {
         // 内部使用，不检查返回值（调用前已通过 TryAcquireActionLock 验证）
-        ActionLockSystem.Instance.AcquireLock(ActionLockType.Interaction);
+        // ActionLockSystem.AcquireLock 定义于 shared-types.md §4.2
+        ActionLockSystem.Instance.AcquireLock("GrittyTakedowns", ActionLockType.Interaction, 2.0f);
         _actionLockAcquired = true;
     }
 
@@ -1098,11 +1278,21 @@ public struct InteractionStateChangedEvent
     public PlayerInteractionState new_state;
 }
 
+// 处决动画完成事件（由 AnimationEventBridge 发布，GrittyTakedowns 订阅）
+// 注意：此事件由 AnimationSystem 发布，GrittyTakedowns 仅订阅
+public struct TakedownAnimationCompleteEvent
+{
+    public int EntityId;              // 目标实体 ID
+    public int AnimationHash;         // 动画哈希值（用于验证）
+    public InteractionType TakedownType;  // 处决类型
+    // 定义见 shared-types.md §9.6
+}
+
 // 对话选项选择（发送到 NPC AI 系统处理）
 public struct DialogueChoice
 {
     public string dialogue_id;
-    public string choiceId;  // 统一使用 PascalCase（符合 C# 命名规范）
+    public string choice_id;  // 统一使用 snake_case（与 shared-types.md §9.8 保持一致）
 }
 
 // NPC AI 系统返回的对话结果
@@ -1174,12 +1364,12 @@ public class DialogueUIManager
     }
 
     // 玩家选择后，发送选中选项到 NPC AI 系统处理
-    public void OnChoiceSelected(string choiceId)
+    public void OnChoiceSelected(string choice_id)
     {
         EventBus.Instance.Publish(new DialogueChoice
         {
             dialogue_id = _currentDialogue.dialogue_id,
-            choiceId = choiceId
+            choice_id = choice_id
         });
     }
 
@@ -1470,6 +1660,7 @@ Assets/Game/
     {
         public int player_id;
         public DamageType damage_type;
+        public float damage_amount;      // 实际伤害值（用于 SanityRage 计算精神影响）
         public HitLocation hit_location;
         public int source_entity_id;
     }

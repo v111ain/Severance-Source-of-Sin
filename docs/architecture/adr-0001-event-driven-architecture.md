@@ -7,7 +7,13 @@
 2026-04-09
 
 ## Last Updated
-2026-04-09
+2026-04-14
+
+### Revision History
+
+| 日期 | 修订内容 | 负责人 |
+|------|----------|--------|
+| 2026-04-14 | `NoiseEvent` → `NoiseMadeEvent`：统一事件命名规范，与 shared-types.md §22.4 保持一致 | Systems Designer |
 
 ## Context
 
@@ -55,7 +61,7 @@
 │  Health System     ──NPCStateChangedEvent──▶ Gritty T.       │
 │  NPC AI System     ──AlertStateChangedEvent──▶ Gritty T.     │
 │  LOS System        ──PlayerSpottedEvent──▶ NPC AI           │
-│  Player Controller ──NoiseEvent──▶ NPC AI                   │
+│  Player Controller ──NoiseMadeEvent──▶ NPC AI                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,12 +69,17 @@
 
 所有事件必须遵循：`[Subject] + [Did] + [Context] + [Event]`
 
+> **QueryBus 同步查询模式已取消 (2026-04-15)**：根据 ADR-0018 §4，所有系统间状态查询已改为**事件订阅模式**。
+> 原 `QueryNPCIdentity`、`QueryAlertState` 等 Query 类型已废弃，不应再使用。
+
 | 类型 | 规则 | 示例 |
 |------|------|------|
 | **事件 (Event)** | `Subject` + `Did` + `Context` + `Event` | `PlayerDamagedEvent`, `NPCStateChangedEvent` |
-| **查询 (Query)** | `Query` + `Subject` | `QueryNPCIdentity`, `QueryAlertState` |
 | **请求 (Request)** | `Subject` + `Request` | `DamageRequest`, `DialogueStartRequest` |
-| **响应 (Response)** | `Subject` + `Response` | `DialogueResponse` |
+
+> **已废弃的类型**：
+> - ~~查询 (Query)~~ → 改为订阅 `XXXChangedEvent`，在回调中缓存状态
+> - ~~响应 (Response)~~ → Query 取消后不再需要独立 Response 类型
 
 ### 强制要求
 
@@ -88,13 +99,47 @@
 
 推荐使用 **ScriptableObject-based Event Bus**，作为全局单例：
 
+### 订阅Token机制
+
+为解决事件订阅后无法取消导致的内存泄漏问题，EventBus 采用 **SubscriptionToken** 机制：
+
+```csharp
+/// <summary>
+/// 订阅Token，用于唯一标识一次订阅并支持取消订阅
+/// </summary>
+public readonly struct SubscriptionToken : IEquatable<SubscriptionToken>
+{
+    public Guid Id { get; }
+    public Type EventType { get; }
+
+    public SubscriptionToken(Type eventType)
+    {
+        Id = Guid.NewGuid();
+        EventType = eventType;
+    }
+
+    public bool Equals(SubscriptionToken other) => Id == other.Id;
+    public override bool Equals(object obj) => obj is SubscriptionToken other && Equals(other);
+    public override int GetHashCode() => Id.GetHashCode();
+    public static bool operator ==(SubscriptionToken left, SubscriptionToken right) => left.Equals(right);
+    public static bool operator !=(SubscriptionToken left, SubscriptionToken right) => !left.Equals(right);
+}
+```
+
+**设计要点**：
+1. 每个 `SubscriptionToken` 包含唯一 `Guid` 和 `EventType`
+2. `Subscribe<T>` 返回 `SubscriptionToken`，调用方需保存
+3. `Unsubscribe(token)` 根据 Token 取消订阅
+4. EventBus 内部维护 `Dictionary<SubscriptionToken, Delegate>` 用于 O(1) 查找
+
 ```csharp
 // Assets/Game/Infrastructure/EventBus/EventBus.cs
 [CreateAssetMenu(menuName = "Game/EventBus")]
 public class EventBus : ScriptableObject
 {
     private Dictionary<Type, List<Delegate>> _subscribers = new();
-    private static EventBus _instance;
+    private Dictionary<SubscriptionToken, Delegate> _tokenToHandler = new();
+    private static volatile EventBus _instance;
     private static readonly object _lock = new();
 
     public static EventBus Instance
@@ -120,19 +165,58 @@ public class EventBus : ScriptableObject
         }
     }
 
-    public void Subscribe<T>(Action<T> callback)
+    /// <summary>
+    /// 订阅事件，返回SubscriptionToken用于取消订阅
+    /// </summary>
+    public SubscriptionToken Subscribe<T>(Action<T> callback)
     {
         var type = typeof(T);
         if (!_subscribers.ContainsKey(type))
             _subscribers[type] = new List<Delegate>();
         _subscribers[type].Add(callback);
+
+        var token = new SubscriptionToken(type);
+        _tokenToHandler[token] = callback;
+        return token;
     }
 
+    /// <summary>
+    /// 通过SubscriptionToken取消订阅（推荐方式）
+    /// </summary>
+    public void Unsubscribe(SubscriptionToken token)
+    {
+        if (_tokenToHandler.TryGetValue(token, out var handler))
+        {
+            var type = token.EventType;
+            if (_subscribers.TryGetValue(type, out var list))
+            {
+                list.Remove(handler);
+                if (list.Count == 0)
+                    _subscribers.Remove(type);
+            }
+            _tokenToHandler.Remove(token);
+        }
+    }
+
+    /// <summary>
+    /// 传统取消订阅方式（通过callback引用）
+    /// </summary>
     public void Unsubscribe<T>(Action<T> callback)
     {
         var type = typeof(T);
-        if (_subscribers.ContainsKey(type))
-            _subscribers[type].Remove(callback);
+        if (_subscribers.TryGetValue(type, out var list))
+        {
+            list.Remove(callback);
+            if (list.Count == 0)
+                _subscribers.Remove(type);
+        }
+        // 同时从token映射中移除
+        var toRemove = _tokenToHandler
+            .Where(kvp => kvp.Value == callback)
+            .Select(kvp => kvp.Key)
+            .ToList();
+        foreach (var token in toRemove)
+            _tokenToHandler.Remove(token);
     }
 
     public void Publish<T>(T eventData)
@@ -145,9 +229,33 @@ public class EventBus : ScriptableObject
 }
 ```
 
+**使用示例**：
+```csharp
+public class MySystem : MonoBehaviour
+{
+    private SubscriptionToken _token;
+
+    private void OnEnable()
+    {
+        // 订阅并保存Token
+        _token = EventBus.Instance.Subscribe<PlayerDamagedEvent>(OnPlayerDamaged);
+    }
+
+    private void OnDisable()
+    {
+        // 通过Token取消订阅，防止内存泄漏
+        EventBus.Instance.Unsubscribe(_token);
+    }
+
+    private void OnPlayerDamaged(PlayerDamagedEvent evt) { ... }
+}
+```
+
+> **重要**：所有订阅必须在 `OnEnable` 中订阅，`OnDisable` 中取消订阅。MonoBehaviour 销毁时未取消的订阅会导致内存泄漏。
+
 ### 对象池设计要点
 
-为减少 GC 压力，频繁触发的事件（如 `NoiseEvent`）应使用对象池：
+为减少 GC 压力，频繁触发的事件（如 `NoiseMadeEvent`）应使用对象池：
 
 1. **池化策略**：在 `EventBus` 外部包装 `PooledEventBus` 层
 2. **回收时机**：事件被所有订阅方处理完毕后自动回收
@@ -158,8 +266,7 @@ public class EventBus : ScriptableObject
 | 事件名称 | 拥有者 | 订阅方 |
 |---------|-------|--------|
 | `PlayerDamagedEvent` | Health System | Gritty Takedowns, Sanity/Rage, Immersive Audio |
-| `NPCStateChangedEvent` | NPC AI System | Gritty Takedowns, Clue System, Sanity/Rage |
-| `AlertStateChangedEvent` | NPC AI System | Gritty Takedowns |
+| `NPCStateChangedEvent` | Health System | Gritty Takedowns, Clue System, Sanity/Rage, NPC AI |
 
 ---
 
@@ -282,5 +389,4 @@ public class EventBus : ScriptableObject
 - [ADR-0004: NPC AI 行为架构](./adr-0004-npc-ai-behavior-architecture.md) — NPC AI 通过事件总线订阅 AlertStateChangedEvent
 - [ADR-0005: 存档/持久化架构](./adr-0005-save-persistence-architecture.md) — 存档系统通过事件总线发布 SaveCompletedEvent 等
 - [ADR-0006: 网络同步架构](./adr-0006-network-synchronization-architecture.md) — 网络系统通过事件总线发布 PlayerJoinedEvent 等
-- [事件总线接口控制文档](../engine-reference/event-bus-icd.md) — 事件定义的权威文档
-- [跨系统接口对齐会议记录](../engine-reference/interface-alignment-meeting.md) — 决策背景记录
+- [事件总线接口控制文档](./adr-0018-event-bus-icd.md) — 事件定义的权威文档

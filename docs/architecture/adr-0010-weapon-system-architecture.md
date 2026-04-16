@@ -3,6 +3,9 @@
 ## Status
 **Proposed**（依赖 shared-types.md 的 APPROVED 类型定义）
 
+> **⚠️ HapticFeedbackManager 废弃通知**：本 ADR 中的 `HapticFeedbackManager` 实现已废弃，统一使用 [ADR-0020](./adr-0020-input-system-architecture.md) 的 `HapticFeedbackManager`。
+> 实际使用时，请引用 ADR-0020 的实现。
+
 > **v1.4.1 更新**：修复以下评审问题
 > - CategoryToWeaponId 数据驱动改造
 > - 投掷物命中概率边界计算修正
@@ -30,7 +33,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-11 (v1.4.2 — 评审修复)
+2026-04-14 (v1.4.3 — 距离衰减阈值定义)
 
 ## Context
 
@@ -201,7 +204,7 @@ public class DamageComponent
 {
     public DamageType damage_type;  // LETHAL / BLUNT（定义见 shared-types.md §2.1）
     public int penetration;          // 1-10（来自Health系统穿透规则）
-    public float base_damage;        // 基础伤害倍率
+    public float baseDamageValue;    // 基础伤害数值（最终伤害值，已含所有修正）
 }
 
 // 范围组件
@@ -231,6 +234,14 @@ public class ExplosiveComponent
     public float lethal_radius_ratio;    // 致死半径比例（默认0.3）
     public DetonationType detonation_type; // 定义见 shared-types.md §3.1.3
     public bool is_controllable;
+
+    /// <summary>
+    /// 可选的 baseDamageValue 覆盖值。
+    /// 如果不设置（<= 0），则使用 DamageComponent.baseDamageValue。
+    /// 用于爆炸物有独立伤害配置的场景。
+    /// </summary>
+    [Tooltip("可选：爆炸物独立的基础伤害数值。如果 <= 0，则使用 DamageComponent.baseDamageValue")]
+    public float override_base_damage;
 }
 
 // 动画标签组件
@@ -631,13 +642,13 @@ public void TriggerExplosion(string weapon_id, Vector3 position)
     var damage = weaponData.damage_component;
 
     // Weapon System 发送完整爆炸参数，伤害计算由 Health System 的 ExplosionHandler 执行
-    // base_damage 来源：统一使用 DamageComponent 的 base_damage（由设计文档定义，如 C4=150，手榴弹=80）
+    // base_damage 来源：统一使用 DamageComponent 的 baseDamageValue（由设计文档定义，如 C4=150，手榴弹=80）
     EventBus.Instance.Publish(new ExplosionEvent
     {
         position = position,
         radius = explosive.blast_radius,
         lethal_ratio = explosive.lethal_radius_ratio,
-        base_damage = damage.base_damage  // 统一使用 DamageComponent 的 base_damage
+        base_damage = damage.baseDamageValue  // 统一使用 DamageComponent 的 baseDamageValue
     });
 
     // 触发音效和视觉反馈
@@ -649,10 +660,10 @@ public void TriggerExplosion(string weapon_id, Vector3 position)
 }
 ```
 
-**⚠️ base_damage 来源说明**：
-- `ExplosionEvent.base_damage` 值来源于 `DamageComponent.base_damage`
-- `ExplosiveComponent` 不单独存储 `base_damage`，只存储爆炸参数（blast_radius、lethal_ratio）
-- 设计确保 `DamageComponent.base_damage` 与爆炸物配置同步
+**⚠️ baseDamageValue 来源说明**：
+- `ExplosionEvent.base_damage` 值来源于 `DamageComponent.baseDamageValue`
+- `ExplosiveComponent` 不单独存储 `baseDamageValue`，只存储爆炸参数（blast_radius、lethal_ratio）
+- 设计确保 `DamageComponent.baseDamageValue` 与爆炸物配置同步
 
 ### 5. 投掷物命中判定
 
@@ -741,7 +752,7 @@ public class ThrowableTrajectory
     /// <param name="direction">投掷方向（单位向量）</param>
     /// <param name="speed">投掷速度（米/秒）</param>
     /// <param name="maxTime">最大飞行时间（秒）</param>
-    /// <param name="layerMask">碰撞检测层掩码</param>
+/// <param name="layerMask">碰撞检测层掩码。配置于 WeaponTuningSO.throwableLayerMask，包含 Environment（环境物件）、Destructible（可破坏物）等投掷物应检测的层级。</param>
     /// <returns>命中点位置（未命中返回 null）</returns>
     /// <remarks>
     /// <b>步长计算说明</b>：
@@ -922,8 +933,67 @@ public class WeaponTuningSO : ScriptableObject
     [Header("投掷物参数")]
     [Tooltip("投掷物最小命中概率（默认 0.3）")]
     public float minHitChance = 0.3f;
+
+    [Header("远程伤害衰减参数")]
+    [Tooltip("中距离阈值（米），默认值 15.0f")]
+    public float MediumRangeThreshold = 15.0f;
+
+    [Tooltip("近距离阈值上限（米），默认值 8.0f")]
+    public float CloseRangeThreshold = 8.0f;
+
+    [Tooltip("远距离伤害倍率衰减下限，默认 0.7f（70%% 伤害）")]
+    public float FarRangeMultiplierFloor = 0.7f;
 }
 ```
+
+#### 8.1 远程伤害衰减公式（RangeMultiplier）
+
+> **适用场景**：热武器（FirearmDamage）远程伤害计算，由 Health System 在处理 DamageRequest 时调用。
+> **调用位置**：GDD weapon-system.md 公式3 `FinalDamage = FirearmDamage × RangeMultiplier(distance)`
+
+```csharp
+/// <summary>
+/// 计算远程伤害衰减倍率
+/// </summary>
+/// <param name="distance">目标距离（米）</param>
+/// <param name="closeRange">近距离上限（米），默认 8.0f</param>
+/// <param name="mediumRange">中距离阈值（米），默认 15.0f</param>
+/// <param name="farRangeMultiplierFloor">远距离衰减下限，默认 0.7f</param>
+/// <returns>伤害倍率 [0.7f, 1.0f]</returns>
+/// <remarks>
+/// | 距离区间 | RangeMultiplier | 说明 |
+/// |----------|-----------------|------|
+/// | distance < closeRange (8m) | 1.0f | 近距离全额伤害 |
+/// | closeRange <= distance < mediumRange (15m) | 线性插值 [1.0, 0.7] | 中距离线性衰减 |
+/// | distance >= mediumRange (15m) | 0.7f | 远距离最低伤害 |
+/// </remarks>
+public static float RangeMultiplier(
+    float distance,
+    float closeRange = 8.0f,
+    float mediumRange = 15.0f,
+    float farRangeMultiplierFloor = 0.7f)
+{
+    if (distance < closeRange)
+        return 1.0f;
+
+    if (distance >= mediumRange)
+        return farRangeMultiplierFloor;
+
+    // 中距离线性插值：closeRange → mediumRange 对应 1.0 → farRangeMultiplierFloor
+    float t = (distance - closeRange) / (mediumRange - closeRange);
+    return Mathf.Lerp(1.0f, farRangeMultiplierFloor, t);
+}
+```
+
+**距离区间速查表**：
+
+| 区间 | 条件 | RangeMultiplier | 示例 |
+|------|------|-----------------|------|
+| 近距离 | distance < 8m | 1.0 | 8m 内全额伤害 |
+| 中距离 | 8m <= distance < 15m | 线性插值 (1.0 → 0.7) | 10m 时约为 0.86 |
+| 远距离 | distance >= 15m | 0.7 | 15m 及以上最低伤害 |
+
+> **配置来源**：`MediumRangeThreshold`、`CloseRangeThreshold`、`FarRangeMultiplierFloor` 由 `WeaponTuningSO`（见 §8）配置。
 
 ### 9. 手柄震动反馈抽象层
 
@@ -958,6 +1028,7 @@ public interface IHapticFeedback
 /// <b>Feature Layer 规范</b>：通过构造函数注入依赖，而非使用单例模式，
 /// 便于单元测试时替换为 Mock 实现。
 /// </remarks>
+[Obsolete("Use HapticFeedbackManager from ADR-0020 instead. This implementation is deprecated.")]
 public class HapticFeedbackManager : IHapticFeedback
 {
     // 平台特定实现
@@ -1210,6 +1281,7 @@ public class WeaponSystem
 - [ADR-0003: 系统分层架构定义](./adr-0003-system-layers.md) — **Weapon System 属于 Feature Layer**，目录为 `Features/WeaponSystem/`
 - [ADR-0008: 脆弱度与伤害系统](./adr-0008-health-lethality-architecture.md) — **ExplosionHandler 属于 Health System**，Weapon System 仅发送位置参数
 - [ADR-0011: 沉重处决系统](./adr-0011-gritty-takedowns-architecture.md) — Gritty Takedowns 查询 Weapon System 获取 WeaponData
+- [ADR-0020: Input System 输入系统架构](./adr-0020-input-system-architecture.md) — **HapticFeedbackManager 统一实现位置**
 - [共享类型定义](./shared-types.md) — **DamageRequest、ExplosionEvent、ObjectCategory 等跨 ADR 类型统一定义在此**
 - [Weapon System GDD](../../design/gdd/weapon-system.md) — 本 ADR 的设计依据
 - [事件总线 ICD](../../engine-reference/event-bus-icd.md) — 事件定义的权威文档
@@ -1218,6 +1290,7 @@ public class WeaponSystem
 
 | 日期 | 版本 | 修改内容 | 评审修复 |
 |------|------|---------|----------|
+| 2026-04-14 | v1.4.3 | 新增 MediumRangeThreshold = 15.0f、CloseRangeThreshold = 8.0f、FarRangeMultiplierFloor = 0.7f 定义；新增 RangeMultiplier(distance) 函数及距离区间速查表（T-07 修复） | - |
 | 2026-04-11 | v1.4.2 | IPreprocessBuild 中 weapon_id 重复升级为 Error | - |
 | 2026-04-11 | v1.4.2 | Validation 工具添加 Legacy 模式 GasolineCan/PropaneTank 警告 | - |
 | 2026-04-11 | v1.4.2 | BuildLookupMaps 调用层级说明补充 | - |

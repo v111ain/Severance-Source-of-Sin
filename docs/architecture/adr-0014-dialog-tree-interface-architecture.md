@@ -7,7 +7,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-11 (v4: 补充 EC-5 循环引用检测的数学证明说明；澄清 allegiance_change 方向定义)
+2026-04-15 (v6 [已修复]: DialogueChoice/DialogueResult 传输机制重构；与 ADR-0018 架构冲突修复；新增 DialogueChoiceRequestEvent/DialogueTreeConfigEvent/DialogueResultEvent 替代原有事件)
 
 ## Context
 
@@ -90,14 +90,19 @@ DialogTree 接口协议定义了**沉重处决系统 (Gritty Takedowns)** 与**N
 
 ### DialogueEmotion 枚举
 
-| 值 | 说明 | UI 表现 |
+> **类型定义说明**：`DialogueEmotion` 已统一定义于 shared-types.md §13.1。本节仅补充 UI 表现说明。
+
+| 值 | 说明 | UI 表现（ADR-0028） |
 |----|------|---------|
 | `NEUTRAL` | 普通 | 标准对话气泡 |
 | `AGITATED` | 激动 | 气泡边缘抖动 |
 | `SCARED` | 恐惧 | 气泡颤抖 + 颜色变淡 |
 | `ANGRY` | 愤怒 | 气泡变红 + 边缘锯齿 |
+| `UNEASY` | 不安 | 气泡轻微晃动 + 色调偏冷（附加状态，详见 ADR-0017/ADR-0028） |
 
-> **类型定义说明**：`DialogueEmotion` 已统一定义于 shared-types.md §13.1。
+> **附加状态说明**：`UNEASY` 是 DialogueEmotion 的附加状态，触发条件与 PsychologicalState.UNEASY 不同——DialogueEmotion 用于对话场景中 NPC 的即时情绪表达，而 PsychologicalState 是玩家心理状态的全局状态（见 ADR-0017 §心理状态枚举）。ADR-0017 和 ADR-0028 中已补充 `UNEASY` 对应的 UI 样式。
+>
+> **UI 表现参数**：详细的 UI 表现参数（shake intensity、tremble、jaggedness 等）定义于 [ADR-0028 §对话情绪样式](./adr-0028-ui-design-spec.md#对话情绪样式dialogueemotion)。本 ADR 仅定义基本情绪和表现描述。
 
 ### DialogueResultType 枚举
 
@@ -117,30 +122,122 @@ DialogTree 接口协议定义了**沉重处决系统 (Gritty Takedowns)** 与**N
 | `DialogueTree` 数据结构 | NPC AI 系统 | 定义并存储所有对话树 JSON 配置 |
 | 对话 UI 渲染 | Gritty Takedowns | 渲染对话选项 UI，处理玩家输入 |
 | `ConfrontationStartRequest` | Gritty Takedowns → NPC AI | 发起对峙请求。**事件定义见 shared-types.md §13.3** |
-| `DialogueTreeConfig` | NPC AI 系统 → Gritty Takedowns | 返回对话树数据 |
-| `DialogueChoice` | Gritty Takedowns → NPC AI 系统 | 发送玩家选择（choice_id 为 string 类型） |
-| `DialogueResult` | NPC AI 系统 → Gritty Takedowns | 返回处理结果 |
+| `DialogueChoiceRequestEvent` | Gritty Takedowns → NPC AI 系统 | 发送玩家选择（fire-and-forget）**[已修复]** |
+| `DialogueTreeConfigEvent` | NPC AI 系统 → Gritty Takedowns | 返回对话树数据 **[已修复]** |
+| `DialogueResultEvent` | NPC AI 系统 → Gritty Takedowns | 返回处理结果 **[已修复]** |
+
+> **架构修复说明 (2026-04-15)**：原 `DialogueChoice` 和 `DialogueResult` 为数据结果结构，不应通过 EventBus 传输。现已重构为三个独立事件：
+> - `DialogueChoiceRequestEvent`：GrittyTakedowns → NPC AI（fire-and-forget request）
+> - `DialogueTreeConfigEvent`：NPC AI → GrittyTakedowns（响应配置数据）
+> - `DialogueResultEvent`：NPC AI → GrittyTakedowns（对话结果）
+>
+> 此修复解决了与 ADR-0018 的架构冲突（原 QueryBus 已被取消）。
 
 ### 事件时序
 
 ```
 Gritty Takedowns ──ConfrontationStartRequest(npc_id)──► NPC AI System
-                  ◄──DialogueTreeConfig (JSON)──────────────────────
+                  ◄──DialogueTreeConfigEvent ──────────────────────
                   ──渲染对话 UI（显示 text + choices）──► 玩家
-                  ──DialogueChoice(choice_id, npc_id)──► NPC AI System
-                  ◄──DialogueResult(result)──────────────────────────
+                  ──DialogueChoiceRequestEvent ─────────► NPC AI System
+                  ◄──DialogueResultEvent ───────────────────────────
                   ──继续渲染 或 对话结束──►
 ```
 
-**超时机制**：
+**超时机制（事件订阅模式）**：
+
+> **重要澄清**：超时机制采用事件订阅模式，**不是**同步查询。Gritty Takedowns 订阅 `DialogueTreeConfigEvent` 后，使用协程/计时器跟踪超时，而非阻塞等待 NPC AI 响应。
 
 | 阶段 | 超时时间 | 超时处理 |
 |------|---------|---------|
-| `ConfrontationStartRequest` 等待响应 | 2.0s | 返回空配置，fallback 到默认选项（见 EC-1） |
-| `DialogueChoice` 等待 `DialogueResult` | 1.0s | 显示默认结果（CONTINUE），对话继续 |
+| `ConfrontationStartRequest` 发送后等待 `DialogueTreeConfigEvent` | 2.0s | 超时后显示空配置，fallback 到默认选项（见 EC-1） |
+| `DialogueChoiceRequestEvent` 发送后等待 `DialogueResultEvent` | 1.0s | 超时后显示默认结果（CONTINUE），对话继续 |
 | NPC 状态响应（EC-2 场景） | 0.5s | 立即中断对话，避免 UI 挂起 |
 
-> **为何需要超时**：fire-and-forget 事件在 NPC 已死亡或不可用时会永久无响应，超时机制防止 UI 层挂起。
+> **为何需要超时**：fire-and-forget 事件在 NPC 已死亡或不可用时会永久无响应，超时机制防止 UI 层挂起。实现上使用协程计时器（如 `StartCoroutine(WaitForDialogueConfig(timeout: 2.0f))`），不阻塞游戏主循环。
+
+### 订阅生命周期管理
+
+> **统一规范**：所有 UI 面板的事件订阅必须遵循 shared-types.md §13.x UI系统事件订阅规范。此处示例代码是该规范的具体实现。
+
+对话 UI 的事件订阅必须遵循以下时机规范（防止重复订阅和内存泄漏）：
+
+```csharp
+// DialoguePanel.cs
+public class DialoguePanel : MonoBehaviour
+{
+    private void OnEnable()
+    {
+        // 对话开始时订阅
+        EventBus.Subscribe<DialogueTreeConfigEvent>(OnDialogueTreeConfigReceived);
+        EventBus.Subscribe<DialogueResultEvent>(OnDialogueResultReceived);
+        EventBus.Subscribe<NPCStateChangedEvent>(OnNPCStateChanged); // 用于 EC-2 检测
+    }
+
+    private void OnDisable()
+    {
+        // 对话结束时取消订阅
+        EventBus.Unsubscribe<DialogueTreeConfigEvent>(OnDialogueTreeConfigReceived);
+        EventBus.Unsubscribe<DialogueResultEvent>(OnDialogueResultReceived);
+        EventBus.Unsubscribe<NPCStateChangedEvent>(OnNPCStateChanged);
+    }
+
+    private void OnDialogueTreeConfigReceived(DialogueTreeConfigEvent evt) { /* ... */ }
+    private void OnDialogueResultReceived(DialogueResultEvent evt) { /* ... */ }
+    private void OnNPCStateChanged(NPCStateChangedEvent evt)
+    {
+        // NPC 死亡时立即关闭对话 UI（EC-2）
+        if (evt.npc_id == _currentNpcId && evt.new_world_state == WorldState.DEAD)
+        {
+            CloseDialogueUI();
+        }
+    }
+}
+```
+
+**新事件结构定义**：
+
+```csharp
+/// <summary>
+/// 对话选择请求事件 - GrittyTakedowns → NPC AI
+/// Fire-and-Forget 模式，发送方不等待响应
+/// </summary>
+public struct DialogueChoiceRequestEvent
+{
+    public string npc_id;           // NPC ID（string类型，与 DialogueTreeConfig JSON Schema 保持一致）
+    public int choice_id;        // 选择的 choice_id
+    public string source;        // 来源系统标识（如 "GrittyTakedowns"）
+}
+
+/// <summary>
+/// 对话树配置事件 - NPC AI → GrittyTakedowns
+/// 包含对话树配置数据
+/// </summary>
+public struct DialogueTreeConfigEvent
+{
+    public string npc_id;                    // NPC ID（string类型，与 DialogueTreeConfig JSON Schema 保持一致）
+    public DialogueTreeConfig config;    // 对话树配置（见 §DialogueTreeConfig JSON Schema）
+    public bool is_available;            // 该 NPC 是否有可用对话
+}
+
+/// <summary>
+/// 对话结果事件 - NPC AI → GrittyTakedowns
+/// 包含对话处理结果
+/// </summary>
+public struct DialogueResultEvent
+{
+    public string npc_id;           // NPC ID（string类型，与 DialogueTreeConfig JSON Schema 保持一致）
+    public DialogueResult result; // 对话结果（见 shared-types.md §13.2 DialogueResultType）
+    public string source;        // 来源系统标识（如 "NPCAI"）
+}
+```
+
+**订阅原则**：
+| 原则 | 说明 |
+|------|------|
+| OnEnable 订阅 | 对话 UI 激活时才订阅，确保存在有效的 UI 上下文 |
+| OnDisable 取消订阅 | 对话 UI 关闭时取消订阅，防止回调在 UI 销毁后被调用 |
+| 避免重复订阅 | 对话开始前先检查是否已订阅 |
 
 ---
 
@@ -184,6 +281,19 @@ AllegianceDelta = BaseChange * ContextMultiplier * RelationshipMultiplier
 | UI 动画 | `DialogueEmotionShakeIntensity` | 0.05 | 0.02~0.1 |
 | 时序 | `DialogueEndAnimationDuration` | 0.3s | 0.2~0.5s |
 | 时序 | `DialogueInterruptionFadeDuration` | 0.15s | 0.1~0.3s |
+
+### 对话选项筛选策略（> 4 选项时）
+
+当对话节点选项超过 4 个时，采用以下筛选策略：
+
+| 策略 | 适用场景 | 实现方式 |
+|------|----------|----------|
+| **优先级筛选** | 支线任务对话 | 基于 `choice_priority` 字段，取最高 4 个 |
+| **相关性筛选** | 情报收集 | 基于当前线索/知识上下文，选择最相关选项 |
+| **时间顺序** | 紧急情况 | 保留最近的 4 个选项 |
+| **随机保留** | 探索对话 | 随机选择 4 个，保持多样性 |
+
+> **默认策略**：使用**优先级筛选**，`choice_priority` 字段定义于 `DialogueChoice` 数据结构（见 shared-types.md §9.8）。`priority` 值越高越优先显示。
 
 ---
 
@@ -263,12 +373,12 @@ AllegianceDelta = BaseChange * ContextMultiplier * RelationshipMultiplier
        │                      │                      │                     │
        │  7. 玩家选择选项      │                      │                     │
        │◄─────────────────────│                      │                     │
-       │                      │  8. DialogueChoice(choice_id,               │
+       │                      │  8. DialogueChoiceRequestEvent(choice_id,  │
        │                      │      hasVulnerability)                       │
        │                      │─────────────────────►│                     │
        │                      │                      │  9. 处理选择结果     │
-       │                      │                      │  (返回 DialogueResult)
-       │                      │ 10. DialogueResult(result)                   │
+       │                      │                      │  (返回 DialogueResultEvent)
+       │                      │ 10. DialogueResultEvent(result)              │
        │                      │◄─────────────────────│                     │
        │                      │                      │                     │
 ```
@@ -284,9 +394,9 @@ AllegianceDelta = BaseChange * ContextMultiplier * RelationshipMultiplier
 | 5 | 设置 hasVulnerability | Gritty Takedowns 更新 `PlayerInteractionContext.hasVulnerability = true` |
 | 6 | 渲染 DialogTree | 重新渲染对话选项，此时 `requires_vulnerability=true` 的选项可见 |
 | 7 | 玩家选择 | 玩家可选择原本因缺少 vulnerability 而不可见的选项（如欺骗、转化） |
-| 8 | DialogueChoice | Gritty Takedowns 发送玩家选择，携带 `hasVulnerability` 标志 |
+| 8 | DialogueChoiceRequestEvent | Gritty Takedowns 发送玩家选择请求，携带 `hasVulnerability` 标志 |
 | 9 | 处理结果 | NPC AI 系统处理选择，返回结果（含 allegiance 变化、获取情报等） |
-| 10 | DialogueResult | Gritty Takedowns 接收结果，更新 UI 和游戏状态 |
+| 10 | DialogueResultEvent | Gritty Takedowns 接收结果，更新 UI 和游戏状态 |
 
 ---
 

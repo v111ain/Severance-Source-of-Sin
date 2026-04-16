@@ -1,10 +1,13 @@
 # ADR-0022: 光照系统 (Lighting System) 架构决策
 
 ## Status
-**Proposed**
+**Proposed** [已修复]
 
 ## Date
 2026-04-11
+
+## Last Updated
+2026-04-15 (QueryBus 取消修复：移除 LightingSystemQueryBus，下游系统改为订阅 AreaLightingChangedEvent；新增 LightingStealthBonusChangedEvent 定义) [已修复]
 
 ## Context
 
@@ -249,6 +252,63 @@ public struct AreaLightingChangedEvent
   - 如需获取更详细的光照系数（如 `ShadowStealthBonus`），可通过 `areaId` 查询 `LightingSystemManager` 的区域配置表
   - 事件中的 `isPlayerInside` 标志用于判定玩家是否真正在该区域内
 
+### LightingStealthBonusChangedEvent
+
+> **新增 (2026-04-15)**：此事件在 ADR-0022 v6 评审前未定义，导致 shared-types.md §22.4 引用了不存在的事件。
+
+```csharp
+/// <summary>
+/// 光照潜行加成变化事件
+/// 由 LightingSystemManager 在光照条件变化时发布
+/// 通知 LOS System 阴影加成系数（exposure_multiplier）已更新
+/// 用于计算最终感知系数
+/// </summary>
+public struct LightingStealthBonusChangedEvent
+{
+    /// <summary>
+    /// 阴影暴露乘数
+    /// 玩家在阴影中的检测难度乘数
+    /// Night 时 1.5 表示 NPC 检测玩家难度增加 50%
+    /// </summary>
+    public float exposure_multiplier;
+
+    /// <summary>
+    /// 光照敏感度乘数
+    /// NPC 对光照变化的敏感度
+    /// Night 时 0.5 表示 NPC 更难发现玩家
+    /// </summary>
+    public float light_sensitivity_multiplier;
+
+    /// <summary>
+    /// 最终照度值
+    /// </summary>
+    public float final_illumination;
+
+    /// <summary>
+    /// 事件时间戳
+    /// </summary>
+    public float timestamp;
+}
+```
+
+**定义位置**：`Assets/Game/Core/Environment/Lighting/Events/LightingEvents.cs`
+
+**发布者**：LightingSystemManager（在时段切换或区域光照变化时发布）
+
+**订阅者**：LOS System（用于计算最终感知系数）
+
+**使用方式**：
+```csharp
+// LOS System 订阅
+EventBus.Instance.Subscribe<LightingStealthBonusChangedEvent>(OnStealthBonusChanged);
+
+private void OnStealthBonusChanged(LightingStealthBonusChangedEvent evt)
+{
+    _cachedExposureMultiplier = evt.exposure_multiplier;
+    _cachedLightSensitivity = evt.light_sensitivity_multiplier;
+}
+```
+
 ---
 
 ## 时段详细参数
@@ -306,6 +366,13 @@ finalStealthBonus = timeOfDayShadowStealthBonus * shadowStealthMultiplier
 | `DuskStartHour` | 18 | 16~20 | 黄昏开始时间 |
 | `NightStartHour` | 20 | 18~22 | 夜晚开始时间 |
 | `TransitionDuration` | 30.0s | 15.0~60.0s | 时段切换的渐变时长 |
+| `UpdateFrequency` | 1.0Hz | 0.5~2.0Hz | 时段检测频率（建议与 WorldMap 游戏时间更新同步） |
+
+**频率与过渡时长匹配说明**：
+- 时段检测频率（`UpdateFrequency`）应与视觉过渡时长（`TransitionDuration`）匹配
+- 当前配置 `UpdateFrequency=1Hz` + `TransitionDuration=30s` 意味着每帧最多平滑 30 帧更新
+- 若需要更细腻的感知系数变化，推荐 `UpdateFrequency >= 2Hz`，并在感知层面使用插值曲线
+- 下游系统（NPC AI、LOS System）收到 `LightingStateChangedEvent` 后应自行实现感知系数的平滑过渡
 | `NightShadowStealthBonus` | 1.5 | 1.2~2.0 | 夜晚阴影潜行加成乘数 |
 | `PitchBlackStealthBonus` | 2.0 | 1.5~3.0 | 漆黑区域潜行加成乘数 |
 
@@ -519,35 +586,35 @@ public static class AreaLightingCoefficientsTable
             {
                 lightingState = AreaLightingState.Bright,
                 shadowStealthMultiplier = 0.8f,
-                lightSensitivityMultiplier = 1.1f,
+                lightingLightSensitivityMultiplier = 1.1f,
                 finalIllumination = 0.8f
             },
             AreaLightingState.Normal => new AreaLightingCoefficients
             {
                 lightingState = AreaLightingState.Normal,
                 shadowStealthMultiplier = 1.0f,
-                lightSensitivityMultiplier = 1.0f,
+                lightingLightSensitivityMultiplier = 1.0f,
                 finalIllumination = 1.0f
             },
             AreaLightingState.Dim => new AreaLightingCoefficients
             {
                 lightingState = AreaLightingState.Dim,
                 shadowStealthMultiplier = 1.3f,
-                lightSensitivityMultiplier = 0.85f,
+                lightingLightSensitivityMultiplier = 0.85f,
                 finalIllumination = 0.6f
             },
             AreaLightingState.PitchBlack => new AreaLightingCoefficients
             {
                 lightingState = AreaLightingState.PitchBlack,
                 shadowStealthMultiplier = 2.0f,
-                lightSensitivityMultiplier = 0.5f,
+                lightingLightSensitivityMultiplier = 0.5f,
                 finalIllumination = 0.0f
             },
             _ => new AreaLightingCoefficients
             {
                 lightingState = AreaLightingState.Normal,
                 shadowStealthMultiplier = 1.0f,
-                lightSensitivityMultiplier = 1.0f,
+                lightingLightSensitivityMultiplier = 1.0f,
                 finalIllumination = 1.0f
             }
         };
@@ -819,45 +886,51 @@ public class AreaLightingDetector : MonoBehaviour
 
 **下游系统获取系数的方式**：
 
-> **说明**：World Layer 系统不持有下游系统引用，但下游系统可以通过 `LightingSystemQueryBus` 查询上游状态。这是单向依赖，下游持有上游的查询接口而非直接引用。
+> **QueryBus 取消说明（2026-04-15）**：
+> 原 `LightingSystemQueryBus` 和 `QueryAreaLightingCoefficients` 查询模式已取消。
+> 详见 ADR-0018 §QueryBus 同步查询模式已取消。
+>
+> **新模式：事件订阅 + AreaLightingTable 查询**：
+> 下游系统订阅 `AreaLightingChangedEvent`，在回调中通过 `AreaLightingTable.LookupCoefficients()` 获取光照系数。
+> 这是单向依赖，下游持有上游的数据表引用而非直接查询。
 
 ```csharp
 /// <summary>
-/// 光照系统查询接口
-/// 下游系统通过此接口查询当前的光照系数
-/// 实现：LightingSystemQueryBus : IQueryBus
+/// 下游系统示例：NPC AI System
+/// 订阅 AreaLightingChangedEvent，在回调中缓存并使用光照系数
 /// </summary>
-public struct QueryAreaLightingCoefficients
+public class NPCAISystem : MonoBehaviour
 {
-    /// <summary>区域 ID</summary>
-    public string areaId;
+    // 缓存当前区域的光照系数
+    private AreaLightingCoefficients _currentLightingCoefficients;
+    private string _currentAreaId;
+
+    private void Start()
+    {
+        // 订阅区域光照变化事件
+        EventBus.Instance.Subscribe<AreaLightingChangedEvent>(OnAreaLightingChanged);
+        EventBus.Instance.Subscribe<LightingStateChangedEvent>(OnGlobalLightingChanged);
+    }
+
+    private void OnAreaLightingChanged(AreaLightingChangedEvent evt)
+    {
+        if (evt.isPlayerInside)
+        {
+            _currentAreaId = evt.areaId;
+            // 通过 AreaLightingTable 查询光照系数
+            _currentLightingCoefficients = _areaLightingTable.LookupCoefficients(
+                evt.areaId,
+                _currentTimeOfDay
+            );
+        }
+    }
+
+    private void OnGlobalLightingChanged(LightingStateChangedEvent evt)
+    {
+        // 更新全局光照状态（时段），用于 LookupCoefficients 计算最终系数
+        _currentTimeOfDay = evt.timeOfDay;
+    }
 }
-
-/// <summary>
-/// 光照系数查询响应
-/// </summary>
-public struct AreaLightingCoefficients
-{
-    /// <summary>该区域的光照状态</summary>
-    public AreaLightingState lightingState;
-
-    /// <summary>阴影潜行加成乘数</summary>
-    public float shadowStealthMultiplier;
-
-    /// <summary>光照灵敏度乘数</summary>
-    public float lightSensitivityMultiplier;
-
-    /// <summary>最终光照强度（0.0~1.0）</summary>
-    public float finalIllumination;
-}
-```
-
-**调用示例**（NPC AI System）：
-```csharp
-var coeffs = QueryBus.Instance.Query<QueryAreaLightingCoefficients, AreaLightingCoefficients>(
-    new QueryAreaLightingCoefficients { areaId = playerAreaId }
-);
-float stealthBonus = coeffs.shadowStealthMultiplier;
 ```
 
 **区域重叠处理**：
@@ -888,12 +961,12 @@ finalStealthBonus = timeOfDayShadowStealthBonus × shadowStealthMultiplier
 
 **本 ADR 简述**：
 - `shadowStealthMultiplier`：由 Lighting System 独立维护，Weather System 不提供对应折扣
-- `lightSensitivityMultiplier`：与 Weather 的 `visionAngleMultiplier` 乘法组合
+- `lightingLightSensitivityMultiplier`：与 Weather 的 `visionAngleMultiplier` 乘法组合 [已修复]
 - `visionDistanceMultiplier`：由 Weather System 独立维护
 
 **叠加示例**：Night + PitchBlack + Storm
 ```
-最终视野角度 = Weather.visionAngleMultiplier × Lighting.lightSensitivityMultiplier
+最终视野角度 = Weather.visionAngleMultiplier × Lighting.lightingLightSensitivityMultiplier
             = 0.5 × 0.5 = 0.25
 
 最终潜行加成 = Lighting.shadowStealthMultiplier
@@ -951,6 +1024,59 @@ public static class AreaLightingStateExtensions
 > **说明**：扩展方法放在独立文件中，而非 `AreaLightingState.cs` 本身，是为了保持类型定义的纯净性。扩展方法作为"工具类"性质的代码，与核心枚举定义分离。
 ```
 
+### Weather System 事件订阅
+
+Lighting System 订阅 Weather System 发布的闪电事件，叠加光照效果：
+
+| 事件 | 发布者 | 订阅者 | 说明 |
+|------|--------|--------|------|
+| `LightningFlashEvent` | Weather System（见 ADR-0021） | Lighting System | 闪电触发时叠加全局光照脉冲 |
+
+**`LightningFlashEvent` 权威来源**：
+- **定义位置**：`Assets/Game/Core/Environment/Weather/Events/WeatherEvents.cs`（见 ADR-0021）
+- **权威定义**：ADR-0021 — Weather System 为 `LightningFlashEvent` 的唯一发布者
+- **Lighting System 职责**：订阅事件，叠加闪电光照效果（如全局曝光脉冲、阴影强度瞬时增强）
+- **效果叠加策略**：Lighting System 在收到 `LightningFlashEvent` 时，临时提升 `globalIllumination`（持续时间 ~200ms），与时段基础光照叠加
+
+**订阅实现示例**：
+```csharp
+// LightingSystemManager 订阅 LightningFlashEvent
+public void OnLightningFlash(LightningFlashEvent evt)
+{
+    // 临时提升全局光照强度
+    _tempFlashBoost = evt.intensityBonus;
+    _flashEndTime = Time.time + evt.duration;
+
+    // 发布增强后的光照状态
+    PublishLightingStateChanged();
+}
+
+void Update()
+{
+    // 闪电效果消退
+    if (Time.time < _flashEndTime)
+    {
+        float decay = 1.0f - ((_flashEndTime - Time.time) / _flashDuration);
+        _currentFlashIntensity = Mathf.Lerp(_currentFlashIntensity, 0f, decay);
+    }
+    else
+    {
+        _currentFlashIntensity = 0f;
+    }
+}
+```
+
+**与 ADR-0021 的边界**：
+- `LightningFlashEvent` 的 `duration` 和 `intensityBonus` 参数由 Weather System 定义
+- Lighting System 负责将这些参数转换为光照系统内部的 `globalIllumination` 和 `shadowIntensity` 叠加值
+- 两个系统的感知系数叠加规则见 [shared-types.md §22.4](./shared-types.md#224-感知系数叠加规则weather-×-lighting)
+
+**相关文档**：
+- [ADR-0021: Weather System](./adr-0021-weather-system-architecture.md) — `LightningFlashEvent` 权威定义
+- [shared-types.md §22.4](./shared-types.md#224-感知系数叠加规则weather-×-lighting) — Weather × Lighting 感知系数叠加规则
+
+---
+
 ### Phase 4: 下游集成
 - [ ] NPC AI System 订阅光照事件，实现阴影潜行加成
 - [ ] LOS System 订阅光照事件，实现明暗区域判定
@@ -979,4 +1105,13 @@ public static class AreaLightingStateExtensions
 - [ADR-0017: Sanity/Rage 系统](./adr-0017-sanity-rage-meter-architecture.md) — 氛围反馈
 - [ADR-0021: Weather System](./adr-0021-weather-system-architecture.md) — 天气与光照交互
 - [ADR-0023: Screen Effects 系统](./adr-0023-screen-effects-system-architecture.md) — 光照视觉效果请求
-- [shared-types.md §22](./shared-types.md#22-游戏时间接口与-world-layer-时间事件) — IGameTimeProvider、GameHourChangedEvent、ScreenEffectRevokeEvent、感知系数叠加规则权威定义
+- [shared-types.md §22](./shared-types.md#22-游戏时间接口与-world-layer-时间事件) — IGameTimeProvider、GameHourChangedEvent、ScreenEffectRevokeEvent
+- [shared-types.md §22.4](./shared-types.md#224-感知系数叠加规则weather-×-lighting) — **感知系数叠加规则权威定义**（Weather × Lighting 组合公式）
+
+---
+
+## Revision History
+
+| 日期 | 版本 | 修改内容 | 作者 |
+|------|------|----------|------|
+| 2026-04-14 | 1.1 | 新增「Weather System 事件订阅」章节，明确 `LightningFlashEvent` 由 Weather System 发布（ADR-0021），Lighting System 为订阅者而非定义者。移除重复定义，统一事件权威来源。 | Technical Artist |

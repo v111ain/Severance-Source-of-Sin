@@ -6,6 +6,9 @@
 ## Date
 2026-04-11
 
+## Last Updated
+2026-04-15 (v3: 统一PerceptionModifier字段命名、补充WeatherForceChangeEvent时序规则、补充PitchBlack区域Fog视觉效果；补充 EnvironmentalEvent 订阅说明) [已修复]
+
 ## Context
 
 ### Problem Statement
@@ -268,6 +271,15 @@ public class WeatherTransitionMap : Dictionary<WeatherType, WeatherTransitionCon
             if (transitions.Length > 0)
                 map[table.SourceWeather] = transitions;
         }
+
+        // 空数组警告日志：帮助开发者快速定位配置问题
+        if (map.Count == 0)
+        {
+            Debug.LogWarning("[WeatherTransitionMap] 警告: 构建的转换映射表为空。"
+                + "请确保传入有效的 WeatherTransitionTable[] 资产。"
+                + "WeatherSystem 将 fallback 到保持当前天气的保底行为。");
+        }
+
         return map;
     }
 }
@@ -347,8 +359,8 @@ public struct PerceptionModifier
     /// <summary>视野距离乘数（0.0~1.0），影响 NPC 的感知范围</summary>
     public float visionDistanceMultiplier;
 
-    /// <summary>视野角度乘数（0.0~1.0），影响 NPC 的视野 FOV</summary>
-    public float visionAngleMultiplier;
+    /// <summary>天气光照灵敏度乘数（0.0~1.0），影响 NPC 对光照变化的感知阈值（与 Lighting.lightSensitivityMultiplier 区分命名）[已修复]</summary>
+    public float weatherLightSensitivityMultiplier;
 
     /// <summary>听觉灵敏度乘数（0.0~1.0），影响 NPC 对噪声的感知阈值</summary>
     public float hearingSensitivityMultiplier;
@@ -372,7 +384,7 @@ public struct PerceptionModifier
         return new PerceptionModifier
         {
             visionDistanceMultiplier = Mathf.Lerp(from.visionDistanceMultiplier, to.visionDistanceMultiplier, smoothT),
-            visionAngleMultiplier = Mathf.Lerp(from.visionAngleMultiplier, to.visionAngleMultiplier, smoothT),
+            weatherLightSensitivityMultiplier = Mathf.Lerp(from.weatherLightSensitivityMultiplier, to.weatherLightSensitivityMultiplier, smoothT),
             hearingSensitivityMultiplier = Mathf.Lerp(from.hearingSensitivityMultiplier, to.hearingSensitivityMultiplier, smoothT),
             soundPropagationMultiplier = Mathf.Lerp(from.soundPropagationMultiplier, to.soundPropagationMultiplier, smoothT)
         };
@@ -393,70 +405,70 @@ public struct PerceptionModifier
             (WeatherType.Clear, _) => new PerceptionModifier
             {
                 visionDistanceMultiplier = 1.0f,
-                visionAngleMultiplier = 1.0f,
+                weatherLightSensitivityMultiplier = 1.0f,
                 hearingSensitivityMultiplier = 1.0f,
                 soundPropagationMultiplier = 1.0f
             },
             (WeatherType.Rain, false) => new PerceptionModifier
             {
                 visionDistanceMultiplier = 0.8f,
-                visionAngleMultiplier = 0.9f,
+                weatherLightSensitivityMultiplier = 0.9f,
                 hearingSensitivityMultiplier = 0.6f,
                 soundPropagationMultiplier = 0.7f
             },
             (WeatherType.Rain, true) => new PerceptionModifier
             {
                 visionDistanceMultiplier = 0.6f,
-                visionAngleMultiplier = 0.8f,
+                weatherLightSensitivityMultiplier = 0.8f,
                 hearingSensitivityMultiplier = 0.4f,
                 soundPropagationMultiplier = 0.5f
             },
             (WeatherType.Fog, false) => new PerceptionModifier
             {
                 visionDistanceMultiplier = 0.5f,
-                visionAngleMultiplier = 0.7f,
+                weatherLightSensitivityMultiplier = 0.7f,
                 hearingSensitivityMultiplier = 0.9f,
                 soundPropagationMultiplier = 0.9f
             },
             (WeatherType.Fog, true) => new PerceptionModifier
             {
                 visionDistanceMultiplier = 0.3f,
-                visionAngleMultiplier = 0.5f,
+                weatherLightSensitivityMultiplier = 0.5f,
                 hearingSensitivityMultiplier = 0.95f,
                 soundPropagationMultiplier = 0.95f
             },
             (WeatherType.Storm, false) => new PerceptionModifier
             {
                 visionDistanceMultiplier = 0.7f,
-                visionAngleMultiplier = 0.7f,
+                weatherLightSensitivityMultiplier = 0.7f,
                 hearingSensitivityMultiplier = 0.3f,
                 soundPropagationMultiplier = 0.4f
             },
             (WeatherType.Storm, true) => new PerceptionModifier
             {
                 visionDistanceMultiplier = 0.4f,
-                visionAngleMultiplier = 0.5f,
+                weatherLightSensitivityMultiplier = 0.5f,
                 hearingSensitivityMultiplier = 0.15f,
                 soundPropagationMultiplier = 0.2f
             },
             (WeatherType.Snow, false) => new PerceptionModifier
             {
                 visionDistanceMultiplier = 0.75f,
-                visionAngleMultiplier = 0.85f,
+                weatherLightSensitivityMultiplier = 0.85f,
                 hearingSensitivityMultiplier = 0.7f,
                 soundPropagationMultiplier = 0.8f
             },
             (WeatherType.Snow, true) => new PerceptionModifier
             {
                 visionDistanceMultiplier = 0.5f,
-                visionAngleMultiplier = 0.7f,
+                weatherLightSensitivityMultiplier = 0.7f,
                 hearingSensitivityMultiplier = 0.5f,
                 soundPropagationMultiplier = 0.6f
             },
             _ => new PerceptionModifier
             {
                 visionDistanceMultiplier = 1.0f,
-                visionAngleMultiplier = 1.0f,
+                weatherLightSensitivityMultiplier = 1.0f,
                 hearingSensitivityMultiplier = 1.0f,
                 soundPropagationMultiplier = 1.0f
             }
@@ -539,7 +551,11 @@ public struct WeatherVisualParams
 - **过渡完成时**：广播 `isTransitioning=false`，`transitionProgress=1.0`
 
 **发布者**：WeatherSystemManager
-**订阅者**：NPC AI System、LOS System、Sanity/Rage System、Screen Effects System、Audio System
+**订阅者**：NPC AI System、LOS System、Sanity/Rage System、Screen Effects System、Audio System、Environment Interaction System（用于雨灭火等环境响应）
+
+> **Weather × Environment 双向通信**：Weather System 订阅 Environment Interaction System 发布的环境事件（如 `ExplosionEvent`、`FireExtinguishedEvent`），以响应环境变化（如火灾触发雾气、大雨浇灭火焰）。具体事件类型和订阅关系见 ADR-0013 §3.5 EnvironmentalEvent 定义。
+>
+> **注意**：ADR-0013 §4 不存在（原引用错误），Environment→Weather 的具体订阅事件类型应在 ADR-0013 中明确定义。参见 shared-types.md §16 的 `EnvironmentalEventType` 枚举定义。
 
 ### WeatherForceChangeEvent
 
@@ -598,6 +614,75 @@ public struct WeatherForceChangeEvent
   3. 新的强制天气立即开始过渡（如果有过渡时长）或立即生效（如果 `transitionDuration=0`）
   4. 下游系统收到新的 `WeatherStateChangedEvent`（`isTransitioning=true`）
 - 强制切换完成后，WeatherSystemManager 恢复自然天气循环，下次 `GenerateNextWeather` 自然生成新天气，不再有强制状态残留
+
+**WeatherForceChangeEvent 时序规则**：
+
+| 顺序 | 步骤 | 说明 |
+|------|------|------|
+| 1 | 区域触发器检测 | `AreaWeatherTrigger` 检测到玩家进入特定区域 |
+| 2 | 发布 WeatherForceChangeEvent | 携带 `targetWeather`、`areaId`、`source=Area` |
+| 3 | WeatherSystemManager 接收 | 立即中断当前 `WeatherTransition` 动画 |
+| 4 | 撤销旧天气效果 | 发布 `ScreenEffectRevokeEvent` |
+| 5 | 应用新天气 | 开始新的强制天气过渡或立即生效 |
+| 6 | 发布 WeatherStateChangedEvent | 下游系统收到 `isTransitioning=true` 的事件 |
+
+> **与 WorldMap 状态机的协调**：`WeatherForceChangeEvent` 打断天气过渡，但**不中断 WorldMap 状态机**（保持 `EXPLORING` 等状态）。强制天气切换时，区域危险等级不变。详见 ADR-0012。
+
+**PitchBlack 区域的 Fog 天气视觉效果**：
+
+当区域 `AreaLightingState = PitchBlack` 且天气为 `Fog` 时：
+
+| 效果 | 说明 |
+|------|------|
+| 雾效叠加 | Fog 天气效果在 PitchBlack 基础上额外叠加 |
+| 最终视觉 | 玩家视野极度受限，但仍保留微弱轮廓识别能力 |
+| NPC 感知 | `fogIntensity * PitchBlack.visibilityMultiplier` 进一步降低感知 |
+| 特殊效果 | 可选：开启"盲区"模式（仅声音提示敌人方向） |
+
+> **设计理由**：PitchBlack 区域已是视野最低状态，Fog 不应完全覆盖而应叠加效果，保持"伸手不见五指但有微弱光感"的氛围。
+
+闪电事件，由 WeatherSystem 发布，Lighting System 订阅以叠加闪电光照效果。
+
+**定义位置**：`Assets/Game/Core/Environment/Weather/Events/WeatherEvents.cs`
+
+```csharp
+/// <summary>
+/// 闪电事件
+/// 由 WeatherSystem 发布（仅 Storm 天气时），Lighting System 订阅以叠加闪电光照效果
+/// </summary>
+public struct LightningFlashEvent
+{
+    /// <summary>
+    /// 闪电中心位置（用于光照计算）
+    /// </summary>
+    public Vector3 position;
+
+    /// <summary>
+    /// 闪电强度（影响 globalIllumination 提升幅度，0.0~1.0）
+    /// </summary>
+    public float intensityBonus;
+
+    /// <summary>
+    /// 闪电持续时间（秒）
+    /// </summary>
+    public float duration;
+
+    /// <summary>
+    /// 事件时间戳
+    /// </summary>
+    public float timestamp;
+}
+```
+
+**发布条件**：
+- 仅在 `WeatherType = Storm` 时，WeatherSystemManager 随机生成闪电事件
+- 发布频率由 `lightningFrequency` 参数控制（Storm 高强度时最高可达 0.5 次/秒）
+
+**订阅者**：Lighting System
+
+**使用场景**：
+- 闪电击中时触发全局光照脉冲效果（叠加在时段基础光照之上）
+- 配合雷声 AudioEvent（由 Audio System 订阅）
 
 ---
 
@@ -664,6 +749,8 @@ private PerceptionModifier CalculateCurrentPerceptionModifier(
 - `PerceptionModifier` 是天气对 NPC 感知的**客观影响系数**
 - 两者**独立变化**：例如同一 Rain 强度 0.5，在不同区域可能对 NPC 有不同的感知折扣（取决于地形遮挡）
 - 设计师通过调整 PerceptionModifier 表来平衡游戏难度，而非直接修改 intensity
+
+> **感知系数叠加规则**：Weather × Lighting 的感知系数叠加规则见 [shared-types.md §22.4](./shared-types.md#224-感知系数叠加规则weather-×-lighting)。
 
 ---
 
@@ -774,11 +861,21 @@ currentValue = Lerp(fromValue, toValue, t_smooth)
 - [ ] Dynamic Post-Processing 集成雨滴/雾气/闪电效果
 - [ ] Audio System 集成环境音过渡
 
-### Screen Effects System 接口
+## Screen Effects System 接口
 
 Weather System 通过 EventBus 发布 `ScreenEffectRequestEvent`，ScreenEffectsManager 订阅并处理请求。
 
 **设计说明**：Weather System 直接发布完整的 `ScreenEffectRequestEvent`（含 `ScreenEffectParams`），而非仅发布 `WeatherVisualParams`。这是因为 ADR-0023 定义的 `ScreenEffectRequestEvent` 已经包含了完整的视觉效果参数，Weather System 负责填充这些参数，`ScreenEffectsManager` 负责叠加和渲染。
+
+> **架构选择说明**：当前设计让 Weather System 了解 `ScreenEffectRequestEvent` 结构，形成类型耦合。
+> 这是一种**架构权衡**：
+> - **替代方案 A（严格分层）**：Weather 发布 `WeatherVisualRequestEvent`，ScreenEffectsManager 订阅并转换为 `ScreenEffectRequestEvent`。优点：完全解耦；缺点：需要额外的转换逻辑，ScreenEffectsManager 需要了解 Weather 的视觉效果参数。
+> - **替代方案 B（当前设计）**：Weather 直接发布 `ScreenEffectRequestEvent`。优点：简单直接，Weather 完全控制视觉效果参数；缺点：类型耦合。
+>
+> **决策**：采用方案 B。原因：
+> 1. `ScreenEffectParams` 是纯数据容器，不包含行为，耦合成本低
+> 2. Weather 和 ScreenEffectsManager 都在 Infrastructure Layer 边界处，紧耦合可接受
+> 3. 如果未来需要完全解耦，可在 ScreenEffectsManager 层添加 `WeatherVisualRequestEvent → ScreenEffectRequestEvent` 转换器
 
 ```csharp
 // WeatherSystemManager 发布 Screen Effect 请求
@@ -843,14 +940,11 @@ public class WeatherSystemManager : MonoBehaviour
             ),
 
             WeatherType.Storm => (
-                ScreenEffectType.Noise | ScreenEffectType.Shake,
+                ScreenEffectType.Noise,  // 暴风雨使用 Noise 效果模拟雨滴/噪点
                 new ScreenEffectParams
                 {
                     noiseIntensity = p.rainIntensity,
                     noiseColor = new Color(0.5f, 0.5f, 0.5f, 1f),
-                    shakeIntensity = p.lightningFrequency * 4.0f,
-                    shakeDirection = new Vector2(0f, -1f), // 垂直方向震动
-                    shakeFrequency = 8f + p.lightningFrequency * 4f,
                     fadeInDuration = 0.5f,
                     fadeOutDuration = 2.0f
                 }
@@ -926,6 +1020,11 @@ Weather System 的游戏时间来源定义于 `IGameTimeProvider` 接口（**统
 - WorldMap System 实现 `IGameTimeProvider` 并发布 `GameHourChangedEvent`
 - WeatherSystemManager 订阅 `GameHourChangedEvent` 获取时间，而非主动轮询
 
+**环境事件订阅 (2026-04-15 修复)**：
+- WeatherSystemManager 订阅 `EnvironmentalEvent`（来自 EnvironmentInteractionSystem）以响应环境变化
+- 订阅的事件类型：`EnvironmentalEventType.EXPLOSION`、`EnvironmentalEventType.FIRE`、`EnvironmentalEventType.DESTRUCTION`
+- 具体订阅逻辑见 ADR-0013 §3.5
+
 ---
 
 ## Validation Criteria
@@ -947,4 +1046,5 @@ Weather System 的游戏时间来源定义于 `IGameTimeProvider` 接口（**统
 - [ADR-0007: LOS 系统架构](./adr-0007-los-system-architecture.md) — LOS 感知折扣
 - [ADR-0017: Sanity/Rage 系统](./adr-0017-sanity-rage-meter-architecture.md) — 氛围反馈
 - [ADR-0023: Screen Effects 系统](./adr-0023-screen-effects-system-architecture.md) — 天气视觉效果请求
-- [shared-types.md §22](./shared-types.md#22-游戏时间接口与-world-layer-时间事件) — IGameTimeProvider、GameHourChangedEvent、ScreenEffectRevokeEvent、感知系数叠加规则权威定义
+- [shared-types.md §22](./shared-types.md#22-游戏时间接口与-world-layer-时间事件) — IGameTimeProvider、GameHourChangedEvent、ScreenEffectRevokeEvent
+- [shared-types.md §22.4](./shared-types.md#224-感知系数叠加规则weather-×-lighting) — **感知系数叠加规则权威定义**（Weather × Lighting 组合公式）

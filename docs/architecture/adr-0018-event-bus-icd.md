@@ -1,13 +1,13 @@
 # ADR-0018: 事件总线接口契约 (Event Bus ICD)
 
 ## Status
-**Proposed**
+**Accepted**
 
 ## Date
 2026-04-11
 
 ## Last Updated
-2026-04-13
+2026-04-15 (ADR评审修复：QueryBus同步查询模式取消；NPCStateChangedEvent Owner改为Health System；TakedownAnimationCompleteEvent Owner标注为AnimationEventBridge；CameraShakeRequest更名；SceneEvents子集索引；Validation Criteria标注待实现；DialogueChoiceRequestEvent/DialogueTreeConfigEvent/DialogueResultEvent新增索引；ExecutionCameraRequestEvent字段修正；CameraTransitionRequestEvent新增 [已修复])
 
 ## Context
 
@@ -47,6 +47,58 @@ ADR-0001 定义了事件驱动架构的**概述**，但缺少完整的**接口�
 | **Query** | Request/Response | 同步查询，调用方等待响应 | `QueryNPCIdentity` |
 | **Request** | Fire-and-Forget | 单向请求，不等待响应 | `DamageRequest` |
 
+### 事件过滤器与优先级机制
+
+> **状态**：已在设计中明确，EventBus 实现时应支持以下机制。
+
+EventBus 支持基于事件字段的过滤和订阅优先级：
+
+```csharp
+// 事件过滤器：按字段条件过滤，仅当条件满足时触发回调
+public class EventFilter
+{
+    public string FieldName;      // 字段名（如 "npc_id"）
+    public object ExpectedValue;   // 期望值
+    public FilterOperator Op;     // 比较操作符（Equal, NotEqual, GreaterThan, LessThan）
+}
+
+public enum FilterOperator { Equal, NotEqual, GreaterThan, LessThan, Contains }
+
+// 订阅优先级：数值越高越先调用
+public class SubscriptionOptions
+{
+    public int Priority;         // 优先级（默认 0，数值越高越先调用）
+    public List<EventFilter> Filters;  // 过滤器列表
+}
+
+// 扩展订阅 API
+EventBus.Instance.Subscribe<TEvent>(
+    Action<TEvent> handler,
+    SubscriptionOptions options = null
+);
+```
+
+**使用示例**：
+```csharp
+// 订阅 NPC 死亡事件，但只处理 ENEMY 类型 NPC
+EventBus.Instance.Subscribe<NPCStateChangedEvent>(
+    OnNPCStateChanged,
+    new SubscriptionOptions
+    {
+        Priority = 10,  // 高优先级
+        Filters = new List<EventFilter>
+        {
+            new EventFilter { FieldName = "new_world_state", ExpectedValue = WorldState.DEAD, Op = FilterOperator.Equal }
+        }
+    }
+);
+```
+
+**优先级规则**：
+- 优先级相同时，按订阅顺序调用（FIFO）
+- 高优先级订阅者抛出异常会中断后续调用
+- 过滤器在调用前进行字段校验，不匹配则跳过
+
 ### 完整事件索引
 
 #### 3.1 Foundation Layer 事件
@@ -59,7 +111,7 @@ ADR-0001 定义了事件驱动架构的**概述**，但缺少完整的**接口�
 > **注意**：`NoiseMadeEvent` 原名为 `NoiseEvent`（已废弃别名），于 2026-04-12 正式更名。实现时应使用 `NoiseMadeEvent`
 | `DamageRequest` | WeaponSystem, GrittyTakedowns | HealthSystem | `target_id`, `damage_type`, `damage_amount`, `penetration`, `hit_location`, `source_entity_id`, `source` |
 | `ExplosionEvent` | WeaponSystem | HealthSystem, NPCAI, GrittyTakedowns | `position`, `radius`, `lethal_ratio`, `base_damage` |
-| `NPCStateChangedEvent` | Health System | NPCAI, GrittyTakedowns | `npc_id`, `entity_type`, `old_state`, `new_state`, `damage_type` |
+| `NPCStateChangedEvent` | **Health System**（通过 NPCStateManager 协调）[已修复] | NPCAI, GrittyTakedowns, SanityRage | `npc_id`, `entity_type`, `old_world_state`, `new_world_state`, `old_health_state`, `new_health_state`, `damage_type`, `has_witness`, `witness_distance` |
 | `AlertStateChangedEvent` | NPCAI | GrittyTakedowns | `npc_id`, `old_state`, `new_state` |
 > **注意**：`AlertStateChangedEvent` 与 ADR-0011 中定义的 `AlertStateChanged` 为同一事件，后者为已废弃别名，实现时应使用 `AlertStateChangedEvent`
 >
@@ -73,18 +125,24 @@ ADR-0001 定义了事件驱动架构的**概述**，但缺少完整的**接口�
 | Event | Owner | Subscribers | Event Data |
 |-------|-------|------------|------------|
 | `PlayerSpottedEvent` | LOSSystem | NPCAI | `player_id`, `npc_id`, `spot_time` |
-| `QuerySoundSourceScreenPosition` | LOSSystem | UI（Query Handler 直连，通过 QueryBus） | `npc_id` → `Vector3`（屏幕空间位置） |
+| `NPCScreenPositionChangedEvent` | LOSSystem | UI | `npc_id`, `screen_position`, `is_valid` |
+| `KeywordCapturedEvent` | LOSSystem | ClueJournal | `keyword`, `npc_id`, `location_id`, `category`, `capture_timestamp` |
 | `EnvironmentalEvent` | EnvironmentInteraction | NPCAI | `type`, `position`, `radius`, `duration`, `intensity`, `source_object_id` |
 | `ObjectStateChangedEvent` | EnvironmentInteraction | WeaponSystem | `object_id`, `object_category`, `new_state`, `position` |
 | `WeaponAwarenessEvent` | WeaponSystem | NPCAI | `weapon_id`, `position`, `weapon_type` |
 | `WeaponStateChangedEvent` | Weapon System | UI | `weapon_id`, `old_state`, `new_state` |
 | `WeaponUsedEvent` | WeaponSystem | Audio | `weapon_id`, `usage_type` |
+| `CombatStateChangedEvent` | NPCAI | SanityRage | `is_in_combat` |
+| `NPCSpeakingChangedEvent` | NPCDialogueSystem | UI, NPCAI [已修复] | `npc_id`, `is_speaking`, `dialogue_node_id` |
+| `IntelObjectInteractedEvent` | EnvironmentInteraction | ClueJournal [已修复] | `object_id`, `object_type`, `location_id` |
 
-> **命名规范**：`WeaponAwarenessEvent` 已于 2026-04-12 正式命名，原 `WeaponAwareness` 为已废弃别名
+> **命名规范**：
+> - `WeaponAwarenessEvent` 已于 2026-04-12 正式命名，原 `WeaponAwareness` 为已废弃别名
+> - `NoiseMadeEvent` 已于 2026-04-12 正式命名，原 `NoiseEvent` 为已废弃别名（见 Foundation Layer 事件）
 
 ### NPCDeath/NPCKilled 代码使用示例
 
-`NPCDeath` 和 `NPCKilled` 不是独立事件，而是 `NPCStateChangedEvent` 的语义描述。当需要监听 NPC 死亡时，应订阅 `NPCStateChangedEvent` 并检查 `new_state` 字段：
+`NPCDeath` 和 `NPCKilled` 不是独立事件，而是 `NPCStateChangedEvent` 的语义描述。当需要监听 NPC 死亡时，应订阅 `NPCStateChangedEvent` 并检查 `new_world_state` 字段：
 
 ```csharp
 // 错误示例（不应使用）
@@ -95,21 +153,31 @@ EventBus.Instance.Subscribe<NPCStateChangedEvent>(OnNPCStateChanged);
 
 private void OnNPCStateChanged(NPCStateChangedEvent evt)
 {
-    // 检查是否死亡状态
-    if (evt.new_state == WorldState.DEAD)
+    // 检查是否死亡状态（使用 WorldState.DEAD）
+    if (evt.new_world_state == WorldState.DEAD)
     {
         Debug.Log($"NPC {evt.npc_id} died");
         // 执行死亡相关逻辑
     }
 }
 
-// WorldState 枚举定义（参考 shared-types.md）
-public enum WorldState
-{
-    Alive,
-    DEAD,       // NPC 死亡状态
-    Unconscious // NPC 失去意识
-}
+// WorldState 枚举定义（见 shared-types.md §5.1）
+// public enum WorldState
+// {
+//     FREE,       // 自由状态，可被交互
+//     UNCONSCIOUS, // 失去意识，可被捆绑
+//     TIED,       // 被捆绑状态
+//     DEAD        // 死亡状态
+// }
+//
+// HealthState 枚举定义（见 shared-types.md §6.1）
+// public enum HealthState
+// {
+//     HEALTHY,    // 健康
+//     STAGGERED,  // 踉跄
+//     DOWNED,     // 倒地
+//     DEAD        // 死亡
+// }
 ```
 
 **别名映射说明**：
@@ -120,29 +188,46 @@ public enum WorldState
 
 | Event | Owner | Subscribers | Event Data |
 |-------|-------|------------|------------|
+| `TakedownAnimationCompleteEvent` | **AnimationEventBridge** [已修复] | **GrittyTakedowns** [已修复] | `entity_id`, `animation_hash`, `takedown_type` |
 | `InteractionEvent` | GrittyTakedowns | NPCAI, ClueJournal, SanityRage | `type`, `target_id`, `source`, `result` |
 | `InteractionStateChangedEvent` | Gritty Takedowns | UI | `old_state`, `new_state` |
 | `KillTagEvent` | GrittyTakedowns | SanityRage | `npc_id`, `kill_tag` |
 | `KnowledgeGainedEvent` | GrittyTakedowns | ClueJournal | `npc_id`, `knowledge_list` |
 | `ExecutionWitnessedEvent` | GrittyTakedowns | NPCAI | `victim_id`, `witness_id` |
-| `DialogueChoice` | GrittyTakedowns | NPCAI | `dialogue_id`, `choice_id` |
-| `DialogueResult` | NPCAI | GrittyTakedowns | `dialogue_id`, `success`, `allegiance_change`, `knowledge_gained` |
 | `ConfrontationStartRequest` | GrittyTakedowns | NPCAI | `npc_id`, `source` |
+| `DialogueChoiceRequestEvent` | GrittyTakedowns | NPCAI | `npc_id`, `choice_id`, `source` **[已修复]** |
+| `DialogueTreeConfigEvent` | NPCAI | GrittyTakedowns | `npc_id`, `config`, `is_available` **[已修复]** |
+| `DialogueResultEvent` | NPCAI | GrittyTakedowns | `npc_id`, `result`, `source` **[已修复]** |
 
-> **注意**：`DialogueChoice` 和 `DialogueResult` 的完整定义见 shared-types.md §9.8。注意：ADR-0018 早期版本曾使用 `DialogueChoiceEvent` 和 `DialogueResultEvent` 名称，现已统一为 shared-types.md 中的正式名称。
+> **对话事件重构说明 (2026-04-15)** [已修复]：原 `DialogueChoice` 和 `DialogueResult` 为数据结果结构，不应通过 EventBus 传输。为解决与 ADR-0014 的架构冲突，现已引入三个新的对话相关事件替代原有传输模式：
+> - `DialogueChoiceRequestEvent`：GrittyTakedowns → NPCAI（fire-and-forget request）
+> - `DialogueTreeConfigEvent`：NPCAI → GrittyTakedowns（响应对话树配置）
+> - `DialogueResultEvent`：NPCAI → GrittyTakedowns（对话处理结果）
+>
+> 详见 [ADR-0014 §接口所有权划分](./adr-0014-dialog-tree-interface-architecture.md#接口所有权划分)。
+>
+> 完整定义见 shared-types.md §9.8。ADR-0018 早期版本曾错误地将它们列为事件，现已明确区分。
+
+> **事件命名规范**：`DialogueChoice` 和 `DialogueResult` 不遵循 `Subject + Did + Context + Event` 命名规范，因为它们根本不是事件。其他所有事件名仍须遵循此规范（见 ADR-0001 §3.14）。
 
 | `ClueDiscoveredEvent` | ClueJournal | SanityRage | `clue_id`, `category`, `discovery_stage`, `narrative_significance`, `source_id` |
 | `LocationRevealedEvent` | ClueJournal | WorldMap | `location_id` |
+| `VulnerabilityUncoveredEvent` | ClueJournal | GrittyTakedowns | `npc_id`, `source`, `vulnerability`, `clue_id`, `timestamp` |
+| `ClueViewedEvent` | ClueJournal | UI, AchievementSystem [已修复] | `clue_id`, `player_id`, `timestamp` |
 
 #### 3.4 Meta Layer 事件
 
-| Event | Owner | Subscribers | Event Data |
-|-------|-------|------------|------------|
+| Event | Owner (发布者) | Subscribers (订阅者) | Event Data |
+|-------|---------------|---------------------|------------|
 | `PsychologicalStateEvent` | SanityRage | UI, DPP | `State`, `Reason` |
-| `ScreenEffectRequestEvent` | SanityRage, Weather, Lighting, etc. | ScreenEffectsManager | `source_system`, `requester_id`, `effect_type`, `intensity`, `duration`, `timeout`, `priority`, `parameters` |
-| `ScreenEffectRevokeEvent` | SanityRage, Weather, Lighting, etc. | ScreenEffectsManager | `source_system`, `requester_id`, `timestamp` |
+| `RageChangedEvent` | SanityRage | UI | `old_value`, `new_value`, `reason` |
+| `SanityChangedEvent` | SanityRage | UI | `old_value`, `new_value`, `reason` |
+| `ScreenEffectRequestEvent` | SanityRage, Weather, Lighting 等多个系统 | ScreenEffectsManager | `source_system`, `requester_id`, `effect_type`, `intensity`, `duration`, `timeout`, `priority`, `parameters` |
+| `ScreenEffectRevokeEvent` | SanityRage, Weather, Lighting 等多个系统 | ScreenEffectsManager | `source_system`, `requester_id`, `timestamp` |
 
-> **说明**：`ScreenEffectRequestEvent` / `ScreenEffectRevokeEvent` 均为 **Request-Fire-Forget 模式**（见 2.3 节），成对使用。请求方通过 EventBus 发布 Request 激活效果，通过 EventBus 发布 Revoke 撤销效果，**不持有 ScreenEffectsManager 引用**。
+> **术语说明**：本 ADR 中 "Owner" 列表示事件的**发布者（Publisher）**，即通过 EventBus 发布该事件的系统。"Subscribers" 列表示**订阅者（Subscriber）**，即接收并处理该事件的系统。
+>
+> `ScreenEffectRequestEvent` / `ScreenEffectRevokeEvent` 均为 **Request-Fire-Forget 模式**（见 2.3 节），成对使用。请求方（SanityRage、Weather、Lighting 等）通过 EventBus 发布 Request 激活效果，通过 EventBus 发布 Revoke 撤销效果，**不持有 ScreenEffectsManager 引用**。
 >
 > **parameters 字段类型**：`ScreenEffectParams` 结构体定义于 [ADR-0023 §ScreenEffectRequestEvent](./adr-0023-screen-effects-system-architecture.md#screeneffectrequestevent)，包含完整的字段定义。本 ADR 仅引用其类型，完整实现细节见 ADR-0023。
 
@@ -159,7 +244,7 @@ public enum WorldState
 
 | Event | Owner | Subscribers | Event Data |
 |-------|-------|------------|------------|
-| `SaveCompletedEvent` | SaveManager | UI | `slot_id` |
+| `SaveCompletedEvent` | SaveManager | UI | `slot_id`, `is_auto_save` |
 | `LoadCompletedEvent` | SaveManager | WorldMap | `destination`, `destination_type`, `was_successful` |
 | `SaveCorruptedEvent` | SaveManager | UI | `slot_id` |
 | `AssetLoadedEvent` | ResourceManager | Any System | `Address`, `AssetType`, `EstimatedSizeBytes` |
@@ -167,6 +252,48 @@ public enum WorldState
 | `AssetReleaseEvent` | ResourceManager | Any System | `Address`, `AssetType` |
 | `InputDeviceChangedEvent` | InputManager | Any System | `Device` |
 | `InputRemappedEvent` | InputRemapManager | InputManager | `ActionName`, `Device` |
+| `LoadingScreenRequestEvent` | WorldMap | UI | `destination`, `destination_type`, `source_location` |
+| `CameraShakeRequestEvent` | CombatSystem, GrittyTakedowns, WeaponSystem [已修复] | CameraShakeManager | `shake_type`, `intensity`, `duration`, `mode` |
+| `ScreenEffectRequestEvent` | SanityRage, Weather, Lighting 等多个系统 | ScreenEffectsManager [已修复] | `source_system`, `requester_id`, `effect_type`, `intensity`, `duration`, `timeout`, `priority`, `parameters` |
+| `ScreenEffectRevokeEvent` | SanityRage, Weather, Lighting 等多个系统 | ScreenEffectsManager [已修复] | `source_system`, `requester_id`, `timestamp` |
+| `SceneStateChangedEvent` | SceneManagerWrapper | Any System [已修复] | `scene_id`, `scene_name`, `old_state`, `new_state`, `timestamp` |
+| `PlayerPositionUpdatedEvent` | PlayerController | NPCAI, LOSSystem, Audio [已修复] | `player_id`, `position`, `rotation`, `timestamp` |
+| `ExecutionCameraRequestEvent` | GrittyTakedowns | CameraSystem [已修复] | `target` (Transform), `expectedDuration` (float), `sourceSystem` (string) |
+| `CameraTransitionRequestEvent` | GrittyTakedowns, CombatSystem | CameraSystem | `target_state` (CameraState), `priority` (int), `source` (string) |
+
+> **CameraTransitionRequestEvent (2026-04-15 新增)**：
+> 用于请求相机切换到指定状态。GrittyTakedowns 在处决动画完成或取消时发送此事件，请求相机切回 Follow 状态。
+> 定义：`CameraTransitionRequestEvent` 结构见 ADR-0026 §相机状态机。
+> 订阅者：CameraSystem 订阅此事件并在 `_stateMachine.TransitionTo(target_state)` 中处理。
+
+> **CameraShakeRequestEvent 发布者说明** [已修复]：
+> - `CombatSystem`：战斗事件触发（受击、爆炸）
+> - `GrittyTakedowns`：处决命中触发（详见 ADR-0011）
+> - `WeaponSystem`：武器使用触发（射击、爆炸震动）
+>
+> 注意：`AnimationEventBridge` 发布的是 `TakedownAnimationCompleteEvent`（由 GrittyTakedowns 订阅），不直接发布 `CameraShakeRequestEvent`。相机震动由 GrittyTakedowns 在收到 `TakedownAnimationCompleteEvent` 后决定是否触发。
+
+> **ExecutionCameraRequestEvent 字段说明 (2026-04-15 修复)**：
+> - `target`：相机锁定目标（Transform），被处决的 NPC
+> - `expectedDuration`：期望的相机持续时间（秒），相机应保持 LockOn 状态直到动画完成或超时
+> - `sourceSystem`：请求来源系统标识
+>
+> 原 ADR-0018 中定义的 `target_entity_id`, `camera_mode`, `priority`, `duration` 字段与实际实现（ADR-0024 §ExecutionCameraRequestEvent.cs）不一致，现已更正。
+
+> **网络同步事件说明**：以下网络同步专用事件定义于 ADR-0006 §21，不在本 ADR 索引范围内：
+> - `PlayerDisconnectedEvent`、`PlayerReconnectedEvent`、`ReconnectFailedEvent`、`ReconnectTimeoutEvent`、`HostMigrationStartedEvent`
+> 如需引用这些事件类型，请查阅 ADR-0006。
+
+> **SceneEvents 子集索引** [已修复]：以下场景相关事件统一归类于此：
+> | Event | Owner | Subscribers |
+> |-------|-------|------------|
+> | `SceneLoadStartedEvent` | SceneManagerWrapper | Any System |
+> | `SceneLoadProgressEvent` | SceneManagerWrapper | Any System |
+> | `SceneLoadedEvent` | SceneManagerWrapper | Any System |
+> | `SceneUnloadStartedEvent` | SceneManagerWrapper | Any System |
+> | `SceneUnloadedEvent` | SceneManagerWrapper | Any System |
+> | `SceneTransitionStartEvent` | WorldMap System | Any System |
+> | `SceneTransitionCompleteEvent` | WorldMap System | Any System |
 
 #### 3.7 World Layer 事件
 
@@ -175,96 +302,29 @@ public enum WorldState
 | `GameHourChangedEvent` | WorldMap System (IGameTimeProvider 实现) | WeatherSystem, LightingSystem, SanityRage* | `current_hour`, `time_scale` |
 
 > **注意**：`SanityRage*` 订阅 GameHourChangedEvent 用于根据游戏内时间（如昼夜节律）调整心理状态恢复速率。具体订阅关系以代码实现为准，此处标注仅供参考。
-| `WeatherStateChangedEvent` | WeatherSystem | NPCAI, LOS, SanityRage, ScreenEffects, Audio | `weather_type`, `intensity`, `transition_progress`, `perception_modifier`, `visual_params`, `timestamp` |
+| `WeatherStateChangedEvent` | WeatherSystem | NPCAI, LOS, SanityRage, ScreenEffects, Audio, EnvironmentInteraction | `weather_type`, `intensity`, `transition_progress`, `perception_modifier`, `visual_params`, `timestamp` |
 | `WeatherForceChangeEvent` | AreaTrigger, GameEvent | WeatherSystem | `target_weather`, `transition_duration`, `source` |
 | `LightingStateChangedEvent` | LightingSystem | NPCAI, LOS, SanityRage, ScreenEffects, Audio | `time_of_day`, `global_illumination`, `shadow_intensity`, `perception_modifier`, `visual_params`, `timestamp` |
 | `AreaLightingChangedEvent` | AreaLightingDetector | NPCAI, LOS, SanityRage, ScreenEffects | `area_id`, `lighting_state`, `is_player_inside`, `timestamp` |
+| `LightingStealthBonusChangedEvent` | LightingSystemManager | LOS System [新增] | `exposure_multiplier`, `light_sensitivity_multiplier`, `final_illumination`, `timestamp` |
+| `AreaEnteredEvent` | WorldMap System | NPC AI System | `area_id` |
+| `LightningFlashEvent` | WeatherSystem | LightingSystem [已修复] | `flash_intensity`, `duration`, `timestamp` |
 
 ---
 
-### Query 模式标准化
+### QueryBus 同步查询模式已取消 [已修复]
 
-Query 是同步查询模式，调用方通过独立的 `QueryBus` 单例获取响应：
-
-> **重要澄清**：Query 操作通过独立的 `QueryBus` MonoBehaviour 单例调用，而非通过 `EventBus` 发布。`QueryBus` 与 `EventBus` 是两个独立的单例组件，各自通过 `Awake()` 初始化。虽然两者挂载在同一 GameObject 上以便于管理生命周期，但通信模式完全不同：
-> - `EventBus`：Publish/Subscribe 模式（异步/单向）
-> - `QueryBus`：Request/Response 模式（同步/双向）
+> **重要变更 (2026-04-15)**：QueryBus 同步查询模式已取消。所有系统间状态查询统一改为**事件订阅模式**。
 >
-> `QueryBus` 是**唯一**通过 `QueryBus.Query<TRequest, TResult>()` 而非 `EventBus.Instance.Publish()` 通信的模式。
+> **变更原因**：同步查询模式增加了系统间耦合，且与 ADR-0003 的 World Layer 禁止直接查询原则冲突。
 >
-> **字段命名约定**：Event Data 字段统一使用 PascalCase（与 C# 属性命名一致），避免与 shared-types.md 中的实际结构体定义冲突。
-
-```csharp
-// QueryBus.cs
-// 注意：QueryBus 是独立的 MonoBehaviour 单例，与 EventBus（ScriptableObject 单例）是两个不同的组件
-// 两者通过在同一 GameObject 上挂载便于管理生命周期，但通信模式完全独立
-//
-// 线程安全：所有 public 方法（Register/Query）均使用 lock 保护，
-// 可在 Unity 主线程及 Job System 中安全调用。
-public class QueryBus : MonoBehaviour
-{
-    public static QueryBus Instance { get; private set; }
-
-    private Dictionary<Type, Delegate> _handlers = new();
-    private readonly object _lock = new();
-
-    private void Awake()
-    {
-        if (Instance != null && Instance != this)
-        {
-            Destroy(gameObject);
-            return;
-        }
-        Instance = this;
-    }
-
-    public void Register<TRequest, TResult>(Func<TRequest, TResult> handler)
-    {
-        lock (_lock)
-        {
-            _handlers[typeof(TRequest)] = handler;
-        }
-    }
-
-    public TResult Query<TRequest, TResult>(TRequest request)
-    {
-        // 先取出 handler，释放锁后再调用，避免 handler 内部递归调用 Query 时死锁
-        Delegate handler;
-        lock (_lock)
-        {
-            _handlers.TryGetValue(typeof(TRequest), out handler);
-        }
-        if (handler != null)
-            return ((Func<TRequest, TResult>)handler)(request);
-        throw new QueryHandlerNotFoundException(typeof(TRequest));
-    }
-}
-
-/// <summary>
-/// Query 处理器未找到异常
-/// </summary>
-public class QueryHandlerNotFoundException : Exception
-{
-    public Type RequestType { get; }
-
-    public QueryHandlerNotFoundException(Type requestType)
-        : base($"No handler registered for Query type: {requestType.Name}")
-    {
-        RequestType = requestType;
-    }
-}
-```
-
-**已定义的 Query**：
-
-| Query | Handler | Request Data | Response Data |
-|-------|---------|--------------|---------------|
-| `QueryNPCIdentity` | NPCAI | `npc_id` | `NPCIdentityType` |
-| `QueryAlertState` | NPCAI | `npc_id` | `AlertState` |
-| `QueryNPCSizeCategory` | NPCAI | `npc_id` | `NPCSizeCategory` |
-| `QueryWeaponData` | WeaponSystem | `weapon_id` | `WeaponData` |
-| `QueryCurrentWeather` | WeatherSystem | — | `WeatherData` |
-| `QueryEffectiveVisionRange` | LOSSystem | `npc_id` | `float` (vision range in meters) |
+> **迁移方案**：
+> - 原 `QueryNPCIdentity` → 订阅 `NPCIdentityConfirmedEvent`
+> - 原 `QueryAlertState` → 订阅 `AlertStateChangedEvent`
+> - 原 `PerceptionQueryRequest` → 订阅 `WeatherStateChangedEvent` + `LightingStealthBonusChangedEvent`，在回调中缓存感知系数
+> - 原 `PerceptionPermissionsQuery` → 订阅相关事件或通过 `ExposureValueChangedEvent` 获取状态
+>
+> **禁止**：任何系统不得持有其他系统的引用进行直接查询，必须通过事件订阅获取状态。[已修复]
 
 ---
 
@@ -611,36 +671,35 @@ public class EventBusDebugEditor : Editor
 ```csharp
 public struct LoadingScreenRequestEvent
 {
-    public string destination;           // 目标场景/位置
-    public string destination_type;      // "city" / "area" / "loading_tip"
-    public string source_location;       // 来源位置
+    public string Destination;           // 目标场景/位置
+    public string DestinationType;       // "city" / "area" / "loading_tip"
+    public string SourceLocation;        // 来源位置
 }
 ```
 
 **定义位置**：`Assets/Game/Infrastructure/EventBus/Events/LoadingScreenRequestEvent.cs`
 
-#### QuerySoundSourceScreenPosition
+#### NPCScreenPositionChangedEvent
 
 **Owner**: LOSSystem
-**Type**: Query（同步查询）
-**Subscribers**: N/A（Query Handler 直连）
+**Type**: Event（发布/订阅）
+**Subscribers**: UI System
 
 ```csharp
-// Query 请求
-public struct QuerySoundSourceScreenPosition
+// 事件数据
+public struct NPCScreenPositionChangedEvent
 {
-    public int NpcId;
-}
-
-// Query 响应（通过 QueryBus 返回 Vector3）
-public struct QuerySoundSourceScreenPositionResponse
-{
+    public int NpcId;           // NPC ID
     public Vector3 ScreenPosition;  // 屏幕空间位置
-    public bool IsValid;             // NPC 是否可见
+    public bool IsValid;             // NPC 是否可见（未被遮挡且在相机前方）
 }
 
-// 注意：Query 模式使用 QueryBus.Query<QuerySoundSourceScreenPosition, QuerySoundSourceScreenPositionResponse>()
-// 返回值为屏幕空间位置和有效性标志
+// 发布时机：当 NPC 的屏幕位置发生变化时（如 NPC 移动、玩家移动、相机移动）
+// LOSSystem 负责计算 NPC 的屏幕位置并发布此事件
+// UISystem 订阅此事件以更新 UI 中 NPC 相关提示的位置
+
+// 注意：此事件替代了已取消的 QueryBus 同步查询模式
+// UI 系统应通过事件订阅获取 NPC 屏幕位置，而非主动查询
 ```
 
 ---
@@ -730,9 +789,9 @@ public struct QuerySoundSourceScreenPositionResponse
 
 1. **完整性**：shared-types.md 中的每个事件类型都映射到 ICD 中的一个条目
 2. **正确性**：每个条目的 Owner/Subscribers 与代码实现一致
-3. **可追溯性**：[ ] 通过 `EventBusICDValidator` 单元测试验证所有 `EventBus.Instance.Publish` 调用在 ICD 中有对应条目（测试自动扫描代码并与 ICD 交叉验证）— **TODO：实现指南见附录 A**
-4. **Query 覆盖**：所有系统间同步查询都能找到对应 Query Handler
-5. **命名合规**：[ ] 新增事件通过 `EventNamingConventionTest` 测试检查是否符合 `Subject + Did + Context + Event` 格式 — **TODO：实现指南见附录 B**
+3. **可追溯性**：待实现 — `EventBusICDValidator` 单元测试（实现指南见附录 A）**[待实现]**
+4. **QueryBus 已取消**：所有查询已改为事件订阅模式，不再需要 Query Handler 覆盖验证 [已修复]
+5. **命名合规**：待实现 — `EventNamingConventionTest` 测试（实现指南见附录 B）**[待实现]**
 
 > **EventNamingConventionTest 检查规则**：
 > - 事件类型名必须以 `Event` 结尾

@@ -1,13 +1,22 @@
 # ADR-0009: 玩家控制器 (Player Controller) 架构决策
 
 ## Status
-**Accepted**
+**Accepted** — [已修复] 本文档已更新，InputHandler 相关内容已废弃，统一使用 [ADR-0020](./adr-0020-input-system-architecture.md) 的 InputManager。
+
+### 迁移状态
+- [x] PlayerController.InputHandler → 已废弃，使用 InputManager.GetMoveInput() 等接口
+- [x] PlayerMovementStateChangedEvent 发布者保持不变（仍由 PlayerController 发布）
+- [x] InputArbitrator 与 InputManager 集成（已在 ADR-0020 中实现）
+- [x] PlayerController 正确发布 PlayerPositionUpdatedEvent（见 §9 主控制器）
+
+### 相关决策
+- [ADR-0020: Input System](./adr-0020-input-system-architecture.md) — **输入系统的权威实现**
 
 ## Date
 2026-04-09
 
 ## Last Updated
-2026-04-09
+2026-04-15 (ADR 评审修复：CheckpointSystem 事件订阅修正 — 玩家死亡应订阅 PlayerDiedEvent，非 NPCStateChangedEvent)
 
 ## Context
 
@@ -32,7 +41,7 @@ Player Controller 是《断绝：罪恶之源》最基础的输入响应与状�
 - **必须**：定义移动状态机（Idle/Walk/Sprint/Crouch/Action）
 - **必须**：定义体力（Stamina）消耗与恢复系统
 - **必须**：定义动作锁定（IsLocked）接口供外部系统接管
-- **必须**：定义噪声广播（NoiseEvent）机制
+- **必须**：定义噪声广播（NoiseMadeEvent）机制
 - **必须**：定义射线检测接口供 Environment Interaction 读取
 - **必须**：定义与 Gritty Takedowns 的控制权移交机制
 
@@ -61,9 +70,10 @@ Player Controller 是《断绝：罪恶之源》最基础的输入响应与状�
 │          ┌─────────────────────────┼─────────────────────────┐          │
 │          ▼                         ▼                         ▼          │
 │  ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐   │
-│  │  InputHandler      │ │  MovementSystem   │ │  StaminaSystem    │   │
-│  │  (输入处理)         │ │  (移动系统)        │ │  (体力系统)        │   │
-│  │  ◆ MonoBehaviour  │ │  ◆ 普通类        │ │  ◆ MonoBehaviour  │   │
+│  │  InputManager      │ │  MovementSystem   │ │  StaminaSystem    │   │
+│  │  (输入抽象层)       │ │  (移动系统)        │ │  (体力系统)        │   │
+│  │  ★ 统一输入系统    │ │  ◆ 普通类        │ │  ◆ MonoBehaviour  │   │
+│  │  (见 ADR-0020)     │ │                   │ │                   │   │
 │  └───────────────────┘ └───────────────────┘ └───────────────────┘   │
 │                                                                          │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
@@ -81,20 +91,32 @@ Player Controller 是《断绝：罪恶之源》最基础的输入响应与状�
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. 移动状态机
+### 2. 输入处理（已废弃）
+
+> **⚠️ 废弃通知**：以下 `InputHandler` 实现已废弃，统一使用 [ADR-0020](./adr-0020-input-system-architecture.md) 的 `InputManager`。
+>
+> 保留此段仅作为历史参考，实现时请使用 InputManager。
 
 ```csharp
-// PlayerMovementState.cs
-public enum PlayerMovementState
+// InputHandler.cs — 已废弃，请使用 InputManager
+[Obsolete("Use InputManager instead. See ADR-0020.")]
+public class InputHandler : MonoBehaviour
 {
-    IDLE,     // 待机
-    WALK,     // 行走
-    SPRINT,   // 冲刺
-    CROUCH,   // 潜行（站立）
-    CROUCH_WALK,  // 潜行移动
-    ACTION    // 动作中（锁定）
+    // ... 已废弃的实现细节 ...
 }
+```
 
+### 3. 移动状态机
+
+> **注意**：`PlayerMovementState` 枚举已在 `shared-types.md §7.2` 统一定义，本 ADR 仅引用：
+> ```csharp
+> using PlayerMovementState = GlobalNamespace.PlayerMovementState;
+> ```
+
+`PlayerMovementState` 定义位置：`Assets/Game/Foundation/Shared/Types/PlayerMovementState.cs`
+详细定义见 [shared-types.md §7.2](../architecture/shared-types.md#72-playermovementstate)
+
+```csharp
 // 状态机管理器（统一使用 Unity MonoBehaviour 单例模式）
 public class MovementStateMachine : MonoBehaviour
 {
@@ -200,94 +222,12 @@ public class MovementStateMachine : MonoBehaviour
 
 ### 2. 输入处理
 
-```csharp
-// InputHandler.cs
-using UnityEngine.InputSystem;
+> **废弃说明**：以下 InputHandler 实现已废弃，统一使用 [ADR-0020](./adr-0020-input-system-architecture.md) 的 `InputManager`。
+> 完整的历史实现已移至附录。
 
-public class InputHandler : MonoBehaviour
-{
-    // 输入数据结构
-    public struct PlayerInput
-    {
-        public Vector2 MoveDirection;   // WASD / 左摇杆
-        public bool SprintHeld;          // 冲刺键按住
-        public bool CrouchToggled;       // 潜行键切换
-        public bool ActionPressed;       // 攻击/互动键按下
-        public bool FocusPressed;        // 专注监听键按下
-    }
+**InputHandler 历史实现**：见本文档末尾 [附录 E：废弃的 InputHandler 实现](#附录e废弃的-inputhandler-实现)。
 
-    private InputAction _moveAction;
-    private InputAction _sprintAction;
-    private InputAction _crouchAction;
-    private InputAction _actionAction;
-    private InputAction _focusAction;
-
-    private PlayerInput _currentInput;
-    private PlayerInput _previousInput;
-
-    private void Awake()
-    {
-        SetupInputActions();
-    }
-
-    private void SetupInputActions()
-    {
-        // 键盘 + 手柄输入统一为 InputAction
-        _moveAction = new InputAction("Move", InputActionType.Value);
-        _moveAction.AddBinding("<Keyboard>/w")
-                   .AddBinding("<Keyboard>/a")
-                   .AddBinding("<Keyboard>/s")
-                   .AddBinding("<Keyboard>/d")
-                   .AddBinding("<Gamepad>/leftStick");
-
-        _sprintAction = new InputAction("Sprint", InputActionType.Button);
-        _sprintAction.AddBinding("<Keyboard>/leftShift")
-                     .AddBinding("<Gamepad>/leftTrigger");
-
-        _crouchAction = new InputAction("Crouch", InputActionType.Button);
-        _crouchAction.AddBinding("<Keyboard>/leftCtrl")
-                    .AddBinding("<Gamepad>/buttonB");
-
-        _actionAction = new InputAction("Action", InputActionType.Button);
-        _actionAction.AddBinding("<Keyboard>/e")
-                    .AddBinding("<Gamepad>/buttonA");
-
-        _focusAction = new InputAction("Focus", InputActionType.Button);
-        _focusAction.AddBinding("<Keyboard>/v")
-                    .AddBinding("<Gamepad>/buttonY");
-    }
-
-    public PlayerInput GetCurrentInput()
-    {
-        _previousInput = _currentInput;
-
-        Vector2 rawMove = _moveAction.ReadValue<Vector2>();
-
-        // 对角线归一化处理：
-        // - 键盘 WASD：按下多个键时 magnitude 会 > 1（如同时按 W+D = sqrt(2) ≈ 1.414）
-        //   需要归一化防止对角线移动速度异常
-        // - 手柄摇杆：Unity Input System 默认 deadzone 为 0.125，摇杆边缘位置 magnitude
-        //   接近 1.0，这是正常的手柄响应特性，无需额外处理
-        // 注意：如果手柄 deadzone 设置不是默认的 0.125，可能需要额外处理
-        bool isKeyboardInput = _moveAction.activeControl?.device is Keyboard;
-        if (isKeyboardInput && rawMove.magnitude > 1f)
-            rawMove.Normalize();
-
-        _currentInput = new PlayerInput
-        {
-            MoveDirection = rawMove,
-            SprintHeld = _sprintAction.IsPressed(),
-            CrouchToggled = _crouchAction.WasPressedThisFrame(),  // 边缘触发：仅在按键按下那一帧为 true，抬起后为 false，直到下次按下
-            ActionPressed = _actionAction.WasPressedThisFrame(),
-            FocusPressed = _focusAction.IsPressed()
-        };
-
-        return _currentInput;
-    }
-}
-```
-
-### 3. 移动系统
+### 4. 移动系统
 
 ```csharp
 // MovementSystem.cs
@@ -373,7 +313,7 @@ public class MovementSystem
 }
 ```
 
-### 4. 体力系统
+### 5. 体力系统
 
 > **循环依赖解决方案**：StaminaSystem 通过 Initialize() 注入 PlayerController 引用，避免在 Awake 中直接访问单例导致初始化顺序问题。
 
@@ -474,7 +414,7 @@ public class StaminaSystem : MonoBehaviour
 }
 ```
 
-### 5. 动作锁定系统
+### 6. 动作锁定系统
 
 > **重要**：ActionLockSystem 统一定义在 [shared-types.md](./shared-types.md) 中。
 > 此处仅说明 Player Controller 如何使用，不重复实现细节。
@@ -501,9 +441,61 @@ public bool ReleaseActionLock(string requester)
 }
 ```
 
-### 6. 射线检测系统
+### 6.5. [已修复] InputArbitrator 集成说明
+
+> **职责边界说明**：
+> - **ActionLockSystem**（shared-types.md §4.2）：管理玩家控制权的**锁定/解锁**，用于 GrittyTakedowns 等系统需要完全接管玩家输入的场景
+> - **InputArbitrator**（ADR-0020 §3）：管理输入**路由**，决定哪个消费者（Consumer）接收输入
+> 两者协同工作：ActionLockSystem 控制是否启用输入，InputArbitrator 控制输入路由到哪个系统
+
+**InputArbitrator.SetActiveConsumer() 调用时机和调用者**：
+
+| 调用者 | 调用时机 | 设置的 Consumer | 优先级 |
+|--------|----------|-----------------|--------|
+| **PlayerController** | 正常游戏时 | `InputConsumer.PlayerController` | 10 |
+| **LOSSystem** | 进入专注监听模式时 | `InputConsumer.LOSSystem` | 20 |
+| **GrittyTakedowns** | 开始处决/交互时 | `InputConsumer.GrittyTakedowns` | 30 |
+| **DialogueSystem** | 开始对话时 | `InputConsumer.DialogueSystem` | 40 |
+| **UISystem** | 打开 UI 菜单时 | `InputConsumer.UISystem` | 50 |
+| **PauseMenu** | 打开暂停菜单时 | `InputConsumer.PauseMenu` | 100 |
+
+**优先级设置规则**：
+- 数字越大优先级越高
+- 仅当新消费者优先级 >= 当前消费者优先级时才能切换
+- 详见 [ADR-0020 输入仲裁层](./adr-0020-input-system-architecture.md#3-输入仲裁层)
+
+**PlayerController 与 InputArbitrator 集成示例**：
+```csharp
+// 在 PlayerController 初始化时注册
+InputArbitrator.Instance.RegisterConsumer(InputConsumer.PlayerController, 10);
+
+// 在 Update 中检查是否应处理输入
+if (InputArbitrator.Instance.ShouldRouteTo(InputConsumer.PlayerController))
+{
+    // 处理玩家输入...
+}
+
+// 当玩家进入 ACTION 状态时，InputArbitrator 自动路由到当前激活的消费者
+// （由 GrittyTakedowns 等系统调用 SetActiveConsumer 设置）
+```
+
+### 7. 射线检测系统
 
 ```csharp
+// IPlayerRaycastProvider.cs
+/// <summary>
+/// 玩家射线检测结果提供接口
+/// 供 Environment Interaction 等外部系统订阅当前射线检测结果
+/// 使用接口解耦，避免直接依赖 PlayerController
+/// </summary>
+public interface IPlayerRaycastProvider
+{
+    /// <summary>
+    /// 获取当前射线检测结果
+    /// </summary>
+    RaycastResult GetCurrentRaycastResult();
+}
+
 // RaycastSystem.cs
 public class RaycastSystem
 {
@@ -571,7 +563,7 @@ public class RaycastSystem
 }
 ```
 
-### 7. 噪声广播系统
+### 8. 噪声广播系统
 
 ```csharp
 // NoiseBroadcaster.cs
@@ -604,7 +596,7 @@ public class NoiseBroadcaster
 
         if (radius > 0f)
         {
-            EventBus.Instance.Publish(new NoiseEvent
+            EventBus.Instance.Publish(new NoiseMadeEvent
             {
                 position = position,
                 radius = radius,
@@ -630,7 +622,7 @@ public class NoiseBroadcaster
 }
 ```
 
-### 8. 主控制器
+### 9. 主控制器
 
 > **子系统初始化规范**：
 > - MonoBehaviour 子系统（InputHandler、MovementSystem、StaminaSystem、MovementStateMachine）：通过 GetComponent 获得，确保在同一个 GameObject 上
@@ -639,7 +631,7 @@ public class NoiseBroadcaster
 
 ```csharp
 // PlayerController.cs
-public class PlayerController : MonoBehaviour
+public class PlayerController : MonoBehaviour, IPlayerRaycastProvider
 {
     public static PlayerController Instance { get; private set; }
 
@@ -647,7 +639,7 @@ public class PlayerController : MonoBehaviour
     private int _playerId = 0;  // 玩家实体 ID，可由 EntityManager 分配
 
     // 子系统声明
-    private InputHandler _inputHandler;
+    // ★ InputHandler 已废弃，统一使用 InputManager（见 ADR-0020）
     private MovementSystem _movementSystem;
     private StaminaSystem _staminaSystem;
     // ActionLockSystem 使用共享单例（见 shared-types.md）
@@ -666,7 +658,7 @@ public class PlayerController : MonoBehaviour
         Instance = this;
 
         // 初始化 MonoBehaviour 子系统
-        _inputHandler = GetComponent<InputHandler>() ?? gameObject.AddComponent<InputHandler>();
+        // ★ InputHandler 已废弃，使用 InputManager（ADR-0020）
         _staminaSystem = GetComponent<StaminaSystem>() ?? gameObject.AddComponent<StaminaSystem>();
         _stateMachine = GetComponent<MovementStateMachine>() ?? gameObject.AddComponent<MovementStateMachine>();
 
@@ -693,17 +685,20 @@ public class PlayerController : MonoBehaviour
 
     private void Update()
     {
-        // 1. 获取输入
-        var input = _inputHandler.GetCurrentInput();
+        // 1. 获取输入（使用 InputManager，详见 ADR-0020）
+        var moveInput = InputManager.Instance.GetMoveInput();
+        bool isSprintHeld = InputManager.Instance.IsSprintHeld();
+        bool wasCrouchToggled = InputManager.Instance.WasCrouchToggled();
 
         // 2. 更新状态机
-        bool isActionLocked = ActionLockSystem.Instance.HasLock(ActionLockType.Interaction);
+        // 检查 GrittyTakedowns 是否持有交互锁（详见 shared-types.md §4.2）
+        bool isActionLocked = ActionLockSystem.Instance.HasLock("GrittyTakedowns");
         PlayerMovementState oldState = _stateMachine.CurrentState;
         _stateMachine.Update(
             _stateMachine.CurrentState,
-            input.MoveDirection.magnitude > 0.1f,
-            input.SprintHeld,
-            input.CrouchToggled,
+            moveInput.magnitude > 0.1f,
+            isSprintHeld,
+            wasCrouchToggled,
             isActionLocked);
 
         // 2.5. 发布移动状态变化事件（供 LOS System 订阅）
@@ -720,6 +715,15 @@ public class PlayerController : MonoBehaviour
         _staminaSystem.Update(_stateMachine.CurrentState, Time.deltaTime);
 
         // 4. 更新移动
+        // 构建 PlayerInput 结构体（兼容 MovementSystem）
+        var input = new MovementSystem.PlayerInput
+        {
+            MoveDirection = moveInput,
+            SprintHeld = isSprintHeld,
+            CrouchToggled = wasCrouchToggled,
+            ActionPressed = InputManager.Instance.WasActionPressed(),
+            FocusPressed = InputManager.Instance.IsFocusHeld()
+        };
         _movementSystem.Update(input, _stateMachine.CurrentState, Time.deltaTime);
 
         // 5. 头顶碰撞检测（防止低矮空间站起）
@@ -731,7 +735,7 @@ public class PlayerController : MonoBehaviour
                 _stateMachine.ForceState(PlayerMovementState.CROUCH);
             }
         }
-        else if (_stateMachine.CurrentState == PlayerMovementState.CROUCH_WALK && input.MoveDirection.magnitude <= 0.1f)
+        else if (_stateMachine.CurrentState == PlayerMovementState.CROUCH_WALK && moveInput.magnitude <= 0.1f)
         {
             // 潜行移动中松手时，检查是否可以站起
             if (!_movementSystem.CanStandUp())
@@ -749,8 +753,18 @@ public class PlayerController : MonoBehaviour
         // 7. 广播噪声
         _noiseBroadcaster.Update(_stateMachine.CurrentState, transform.position);
 
-        // 8. 更新动作锁定超时（调用共享单例）
+// 8. 更新动作锁定超时（调用共享单例）
         ActionLockSystem.Instance.Update();
+
+        // 9. [已修复] 发布玩家位置更新事件（供 Camera System 的 LockOnCameraBehavior 订阅）
+        // 注意：此事件由 PlayerController 在每帧 Update 结束时发布，LockOnCameraBehavior 依赖此事件
+        // 计算相机中点。事件发布频率由 PlayerController 控制（建议每帧一次）。
+        EventBus.Instance.Publish(new PlayerPositionUpdatedEvent
+        {
+            position = transform.position,
+            entityId = _playerId,
+            timestamp = Time.time
+        });
     }
 
     // 对外接口：动作锁定
@@ -792,9 +806,6 @@ Assets/Game/
 ├── Foundation/
 │   └── PlayerController/
 │       ├── PlayerController.cs          # 主控制器（单例）
-│       ├── Input/
-│       │   ├── InputHandler.cs          # 输入处理
-│       │   └── InputConfigSO.cs         # 输入配置
 │       ├── Movement/
 │       │   ├── MovementSystem.cs        # 移动系统
 │       │   ├── PlayerMovementState.cs    # 状态枚举
@@ -809,6 +820,10 @@ Assets/Game/
 │       │   └── NoiseBroadcaster.cs      # 噪声广播系统
 │       └── Config/
 │           └── PlayerControllerConfigSO.cs  # 配置 ScriptableObject
+│
+├── Infrastructure/
+│   └── Input/
+│       └── InputManager.cs              # 统一输入管理（见 ADR-0020）
 ```
 
 #### PlayerControllerConfigSO 定义
@@ -833,7 +848,7 @@ public class PlayerControllerConfigSO : ScriptableObject
 }
 ```
 
-### 10. Package 依赖
+### 11. Package 依赖
 
 本模块依赖以下 Unity 包：
 - **Unity.InputSystem** (1.9.0+) — 统一处理键鼠和手柄输入
@@ -853,16 +868,17 @@ public class PlayerControllerConfigSO : ScriptableObject
   - 需要精确控制速度、噪声半径、体力消耗的协同
   - 自定义状态机更灵活
 
-### Alternative 2: 使用 Unity Input System 替代自定义 InputHandler
+### Alternative 2: 使用自定义 InputHandler 作为输入处理核心
 
-- **描述**：直接使用 Unity 的 Input System Package
-- **Pros**：原生支持手柄/键鼠切换，内置交互绑定
+- **描述**：直接使用 Unity 的 Input System Package，无统一抽象层
+- **Pros**：实现简单
 - **Cons**：
   - 输入处理分散在多个组件中
-  - 对于本游戏的特殊需求（如冲刺按住检测）需要包装
-- **选择理由**：
-  - Unity Input System 确实更适合多平台输入
-  - 但需要包装层统一抽象，以支持未来可能的输入设备扩展
+  - 平台差异处理重复
+  - 输入重映射难以统一
+- **选择理由（已废弃）**：
+  - **已被 [ADR-0020](./adr-0020-input-system-architecture.md) 的 InputManager 统一抽象层取代**
+  - ADR-0020 提供了完整的输入抽象、仲裁和重映射支持
 
 ---
 
@@ -905,10 +921,10 @@ public class PlayerControllerConfigSO : ScriptableObject
 ## Migration Plan
 
 ### Phase 1: 基础框架
-- [ ] 创建 PlayerController 单例
-- [ ] 创建 InputHandler（支持键鼠+手柄）
-- [ ] 创建 PlayerMovementState 枚举
-- [ ] 创建 MovementStateMachine 状态机
+- [x] 创建 PlayerController 单例
+- [x] ~~创建 InputHandler~~ — **已废弃，使用 [InputManager](./adr-0020-input-system-architecture.md)**
+- [x] 创建 PlayerMovementState 枚举
+- [x] 创建 MovementStateMachine 状态机
 
 ### Phase 2: 移动系统
 - [ ] 实现 MovementSystem
@@ -945,7 +961,7 @@ public class PlayerControllerConfigSO : ScriptableObject
 3. **冲刺限制**：体力 0 时强制退出冲刺并锁定
 4. **面朝保持**：停止移动时保持最后面朝方向
 5. **动作锁定**：攻击期间移动输入被忽略
-6. **噪声广播**：不同移动状态广播正确半径的 NoiseEvent
+6. **噪声广播**：不同移动状态广播正确半径的 NoiseMadeEvent
 7. **头顶碰撞**：低矮空间无法站起
 8. **手柄支持**：手柄输入与键鼠行为一致
 
@@ -989,14 +1005,16 @@ public struct CheckpointData
 
 #### 死亡恢复流程（DIED 状态）
 
+> **重要修正 (2026-04-15)**：`NPCStateChangedEvent` 是 NPC 状态变化事件，不应用于玩家死亡。玩家死亡应使用 `PlayerDiedEvent`。
+
 ```
-玩家死亡 → Health System 广播 NPCStateChangedEvent(Dead)
+玩家死亡 → Health System 广播 PlayerDiedEvent
     │
     ▼
-CheckpointSystem 接收事件
+CheckpointSystem 接收事件（订阅 PlayerDiedEvent）
     │
     ▼
-CheckpointSystem 发送 CheckpointRestoreRequestEvent(area_id, checkpoint_position, arrest_location)
+CheckpointSystem 发送 CheckpointRestoreRequestEvent(area_id, checkpoint_position)
     │
     ▼
 World Map 系统接收事件，加载对应检查点
@@ -1007,11 +1025,16 @@ World Map 系统接收事件，加载对应检查点
 
 #### 被捕恢复流程（ARRESTED 状态）
 
+> **待实现 (2026-04-15)**：`PlayerArrestedEvent` 尚未在 GrittyTakedowns 系统中定义。需在 ADR-0011 中新增此事件，发布者是 GrittyTakedowns，订阅者是 CheckpointSystem。
+
 ```
 玩家被制服 → Gritty Takedowns 系统判定成功
     │
     ▼
-CheckpointSystem 记录被捕位置（arrest_location）
+Gritty Takedowns 发布 PlayerArrestedEvent
+    │
+    ▼
+CheckpointSystem 接收事件（订阅 PlayerArrestedEvent），记录被捕位置
     │
     ▼
 CheckpointSystem 发送 CheckpointRestoreRequestEvent(area_id, checkpoint_position, arrest_location)
@@ -1043,8 +1066,8 @@ CheckpointRestoreRequestEvent:
 
 | 系统 | 关系 | 说明 |
 |------|------|------|
-| Health System | 订阅者 | 接收 NPCStateChangedEvent 得知玩家死亡 |
-| Gritty Takedowns | 订阅者 | 接收 InteractionEvent 得知玩家被制服 |
+| Health System | 订阅者 | 接收 **PlayerDiedEvent** 得知玩家死亡（注：NPCStateChangedEvent 用于 NPC，不适用于玩家） |
+| Gritty Takedowns | 发布者 | 发布 **PlayerArrestedEvent**（待实现）通知玩家被制服 |
 | World Map System | 发布目标 | 发送 CheckpointRestoreRequestEvent 触发恢复 |
 | Save System | 依赖 | 检查点数据需要持久化 |
 
@@ -1063,10 +1086,107 @@ CheckpointRestoreRequestEvent:
 
 - [ADR-0001: 事件驱动架构](./adr-0001-event-driven-architecture.md) — Player Controller 通过 Event Bus 广播 NoiseEvent
 - [ADR-0003: 系统分层架构定义](./adr-0003-system-layers.md) — Player Controller 属于 Foundation Layer
-- [ADR-0004: NPC AI 行为架构](./adr-0004-npc-ai-behavior-architecture.md) — NPC AI 订阅 NoiseEvent
+- [ADR-0004: NPC AI 行为架构](./adr-0004-npc-ai-behavior-architecture.md) — NPC AI 订阅 NoiseMadeEvent
 - [ADR-0007: LOS System 架构](./adr-0007-los-system-architecture.md) — LOS System 需要 Player Controller 提供位置和移动状态
 - [ADR-0011: 沉重处决系统](./adr-0011-gritty-takedowns-architecture.md) — Gritty Takedowns 使用 ActionLockSystem 接管玩家控制权
+- [ADR-0020: Input System 输入系统架构](./adr-0020-input-system-architecture.md) — **InputManager 统一输入抽象层（已废弃本 ADR 中的 InputHandler）**
 - [共享类型定义](./shared-types.md) — **ActionLockSystem、PlayerMovementState 等跨 ADR 类型统一定义在此**
 - [共享常量定义](./shared-constants.md) — 单例模式规范等跨 ADR 约定
 - [Player Controller GDD](../../design/gdd/player-controller.md) — 本 ADR 的设计依据
 - [事件总线 ICD](../../engine-reference/event-bus-icd.md) — 事件定义的权威文档（PlayerMovementStateChangedEvent、NoiseEvent 等）
+
+---
+
+## 附录 E：废弃的 InputHandler 实现
+
+> **废弃日期**：2026-04-15
+> **废弃原因**：统一使用 [ADR-0020](./adr-0020-input-system-architecture.md) 的 `InputManager` 替代。
+> **保留目的**：历史参考，不应用于新实现。
+
+```csharp
+// InputHandler.cs
+// [已废弃] 请使用 InputManager（见 ADR-0020）
+using UnityEngine.InputSystem;
+
+public class InputHandler : MonoBehaviour
+{
+    // 输入数据结构
+    public struct PlayerInput
+    {
+        public Vector2 MoveDirection;   // WASD / 左摇杆
+        public bool SprintHeld;          // 冲刺键按住
+        public bool CrouchToggled;       // 潜行键切换
+        public bool ActionPressed;       // 攻击/互动键按下
+        public bool FocusPressed;        // 专注监听键按下
+    }
+
+    private InputAction _moveAction;
+    private InputAction _sprintAction;
+    private InputAction _crouchAction;
+    private InputAction _actionAction;
+    private InputAction _focusAction;
+
+    private PlayerInput _currentInput;
+    private PlayerInput _previousInput;
+
+    private void Awake()
+    {
+        SetupInputActions();
+    }
+
+    private void SetupInputActions()
+    {
+        // 键盘 + 手柄输入统一为 InputAction
+        _moveAction = new InputAction("Move", InputActionType.Value);
+        _moveAction.AddBinding("<Keyboard>/w")
+                   .AddBinding("<Keyboard>/a")
+                   .AddBinding("<Keyboard>/s")
+                   .AddBinding("<Keyboard>/d")
+                   .AddBinding("<Gamepad>/leftStick");
+
+        _sprintAction = new InputAction("Sprint", InputActionType.Button);
+        _sprintAction.AddBinding("<Keyboard>/leftShift")
+                     .AddBinding("<Gamepad>/leftTrigger");
+
+        _crouchAction = new InputAction("Crouch", InputActionType.Button);
+        _crouchAction.AddBinding("<Keyboard>/leftCtrl")
+                    .AddBinding("<Gamepad>/buttonB");
+
+        _actionAction = new InputAction("Action", InputActionType.Button);
+        _actionAction.AddBinding("<Keyboard>/e")
+                    .AddBinding("<Gamepad>/buttonA");
+
+        _focusAction = new InputAction("Focus", InputActionType.Button);
+        _focusAction.AddBinding("<Keyboard>/v")
+                    .AddBinding("<Gamepad>/buttonY");
+    }
+
+    public PlayerInput GetCurrentInput()
+    {
+        _previousInput = _currentInput;
+
+        Vector2 rawMove = _moveAction.ReadValue<Vector2>();
+
+        // 对角线归一化处理：
+        // - 键盘 WASD：按下多个键时 magnitude 会 > 1（如同时按 W+D = sqrt(2) ≈ 1.414）
+        //   需要归一化防止对角线移动速度异常
+        // - 手柄摇杆：Unity Input System 默认 deadzone 为 0.125，摇杆边缘位置 magnitude
+        //   接近 1.0，这是正常的手柄响应特性，无需额外处理
+        // 注意：如果手柄 deadzone 设置不是默认的 0.125，可能需要额外处理
+        bool isKeyboardInput = _moveAction.activeControl?.device is Keyboard;
+        if (isKeyboardInput && rawMove.magnitude > 1f)
+            rawMove.Normalize();
+
+        _currentInput = new PlayerInput
+        {
+            MoveDirection = rawMove,
+            SprintHeld = _sprintAction.IsPressed(),
+            CrouchToggled = _crouchAction.WasPressedThisFrame(),  // 边缘触发：仅在按键按下那一帧为 true，抬起后为 false，直到下次按下
+            ActionPressed = _actionAction.WasPressedThisFrame(),
+            FocusPressed = _focusAction.IsPressed()
+        };
+
+        return _currentInput;
+    }
+}
+```

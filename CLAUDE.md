@@ -12,3 +12,28 @@
 
 ---
 
+## Technology Stack
+
+> **引擎与语言**：Unity 6.3 LTS (6000.3) — C#
+> **构建系统**：Unity Build Pipeline
+> **资源管线**：Unity Asset Import Pipeline + Addressables
+> **测试框架**：NUnit (Unity Test Framework)
+> **目标平台**：PC (Steam) & PS5
+
+详细技术规范见 [`.claude/docs/technical-preferences.md`](.claude/docs/technical-preferences.md)。
+
+---
+
+## 核心规范索引
+
+| 类别 | 文档 | 说明 |
+|------|------|------|
+| **技术规范** | [`.claude/docs/technical-preferences.md`](.claude/docs/technical-preferences.md) | 命名规范、性能预算、测试框架 |
+| **引擎参考** | [`docs/engine-reference/`](docs/engine-reference/) | Unity 6.3 API 注意事项、事件总线协议 |
+| **架构决策** | [`docs/architecture/`](docs/architecture/) | 28 个 ADR，覆盖核心系统设计 |
+| **游戏设计** | [`design/gdd/`](design/gdd/) | 19 个 GDD，系统级设计文档 |
+| **系统索引** | [`design/gdd/systems-index.md`](design/gdd/systems-index.md) | 系统依赖关系、优先级、MVP 范围 |
+| **游戏概念** | [`design/gdd/game-concept.md`](design/gdd/game-concept.md) | 核心玩法、支柱、设计约束 |
+
+---
+

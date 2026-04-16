@@ -7,7 +7,7 @@
 2026-04-09
 
 ## Last Updated
-2026-04-09
+2026-04-15 (ADR 评审修复：补充 NPCStateChangedEvent 订阅；AlertFSM.TransitionTo() 发布 AlertStateChangedEvent；补充 AreaEnteredEvent 订阅)
 
 ## Context
 
@@ -75,7 +75,7 @@ NPC AI 系统是《断绝：罪恶之源》最高风险的系统（systems-index
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │                     PerceptionComponent                           │   │
 │  │  - 视觉感知 (LOS System 事件订阅)                                 │   │
-│  │  - 听觉感知 (NoiseEvent 事件订阅)                                 │   │
+│  │  - 听觉感知 (NoiseMadeEvent 事件订阅)                                 │   │
 │  │  - 记忆管理 (MemoryScore 衰减)                                    │   │
 │  │  - 派系感知 (SharedAlert 接收处理)                                │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
@@ -96,6 +96,11 @@ Alert State 使用**有限状态机**，因为：
 - 状态数量有限（6个：UNDETECTED/SUSPECT/SEARCH/ALERT/ESCAPE/COMBAT）
 - 状态转换条件明确，适合 FSM 的清晰表达
 - 状态转换触发 BT 中的对应行为节点
+
+> **重要：AlertStateChangedEvent 发布要求**
+> AlertFSM.TransitionTo() 在状态转换时**必须**通过 EventBus 发布 AlertStateChangedEvent，
+> 通知所有订阅方（包括 GrittyTakedowns、SanityRage 等系统）。
+> 发布方法参考 NPCController.PublishAlertStateChanged()（见 §7 事件订阅与发布关系）。
 
 ```csharp
 // AlertState.cs
@@ -118,27 +123,36 @@ public enum WorldState
 }
 
 /// <summary>
-/// NPC 身份标签类型，由 LOS System（ADR-0007）维护
+/// NPC 身份标签类型
+/// 定义位置：shared-types.md §5.5
+/// 由 LOS System（ADR-0007）维护
 /// 用于 Gritty Takedowns 判断交互选项可用性
 /// </summary>
-public enum NPCIdentityType
-{
-    UNKNOWN,     // 未识别
-    ENEMY,       // 恶徒（可处决/威胁）
-    ACCOMPLICE,  // 帮凶（可处决/威胁）
-    VICTIM       // 受害者（不可伤害）
-}
+/// <remarks>
+/// 注意：此枚举已迁移至 shared-types.md 统一管理，ADR-0004 仅引用其定义。
+/// 实现时应使用：using Assets.Game.Foundation.Shared.Types.NPCIdentityType;
+/// 或直接引用 shared-types.md 中的枚举类型。
+/// </remarks>
+// NPCIdentityType 定义移至 shared-types.md §5.5
+// public enum NPCIdentityType
+// {
+//     UNKNOWN,     // 未识别
+//     ENEMY,       // 恶徒（可处决/威胁）
+//     ACCOMPLICE,  // 帮凶（可处决/威胁）
+//     VICTIM       // 受害者（不可伤害）
+// }
 
-// 派系枚举（与其他 ADR 共享）
-public enum Faction
-{
-    凋亡议会,
-    锈网,
-    灰烬团,
-    无声者,
-    苍白之手,
-    中立
-}
+// Faction 枚举定义移至 shared-types.md §5.7
+// public enum Faction
+// {
+//     凋亡议会,
+//     锈网,
+//     灰烬团,
+//     无声者,
+//     苍白之手,
+//     中立
+// }
+// 与 FactionAllegiance 结构一起定义
 
 // AlertTransition.cs
 public struct AlertTransition
@@ -195,24 +209,310 @@ public class EscapeNode : BTNode { }     // 逃跑行为
 public class PerceptionComponent
 {
     // 感知评分（由 LOS System 和 Player Controller 事件驱动）
-    public float VisualScore { get; }    // 来自 LOSSystem 的 PlayerSpottedEvent
-    public float AudioScore { get; }      // 来自 PlayerController 的 NoiseEvent
-    public float MemoryScore { get; private set; } // 记忆残留，独立衰减
+    // VisualScore：来自 LOS System 的 ExposureValueChangedEvent（0-100）
+    // AudioScore：来自 Player Controller 的 NoiseMadeEvent（0-100）
+    // MemoryScore：通过 ExposureValueChangedEvent 事件更新，非直接同步
+    public float VisualScore { get; private set; }
+    public float AudioScore { get; private set; }
+    public float MemoryScore { get; private set; }
+
+    // ========== 暴露值 → AlertState 映射表 ==========
+    // 暴露值（0-100）到 AlertState 阈值的映射关系：
+    //
+    // | 暴露值范围 | AlertState  | 说明                    |
+    // |------------|-------------|-------------------------|
+    // | 0-29       | UNDETECTED  | 未被发现                 |
+    // | 30-59      | SUSPECT     | 怀疑，玩家可能存在       |
+    // | 60-79      | SEARCH      | 搜索，确认玩家位置       |
+    // | 80-99      | ALERT       | 警戒，准备战斗           |
+    // | 100        | COMBAT      | 进入战斗                 |
+    //
+    // 映射公式：
+    // - VisualScore → 直接对应暴露值
+    // - AudioScore → 噪声检测，累积到 MemoryScore
+    // - MemoryScore → 记忆残留，由 ExposureValueChangedEvent 衰减触发
+    //
+    // AlertState 转换优先级：COMBAT > ALERT > SEARCH > SUSPECT > UNDETECTED
 
     // 感知阈值（Tuning Knobs）
-    public float SuspectThreshold => 0.3f;
-    public float SearchThreshold => 0.6f;
-    public float AlertThreshold => 0.8f;
+    public float SuspectThreshold => 30f;    // 暴露值 30 → SUSPECT
+    public float SearchThreshold => 60f;     // 暴露值 60 → SEARCH
+    public float AlertThreshold => 80f;      // 暴露值 80 → ALERT
+    public float CombatThreshold => 100f;    // 暴露值 100 → COMBAT
+
+    // 记忆衰减配置
+    private const float MemoryDecayRate = 30f;  // 记忆衰减率（%/秒），与 LOS System DecayRate 同步
+
+    /// <summary>
+    /// 订阅 LOS System 发布的暴露值变化事件
+    /// MemoryScore 通过此事件更新，而非直接同步
+    /// </summary>
+    public void SubscribeToEvents()
+    {
+        EventBus.Instance.Subscribe<ExposureValueChangedEvent>(OnExposureValueChanged);
+        EventBus.Instance.Subscribe<NoiseMadeEvent>(OnNoiseDetected);
+        EventBus.Instance.Subscribe<NPCIdentityConfirmedEvent>(OnIdentityConfirmed);
+    }
+
+    private void OnExposureValueChanged(ExposureValueChangedEvent e)
+    {
+        if (e.npc_id != _ownerNpcId) return;
+
+        // VisualScore 直接来自暴露值（0-100）
+        VisualScore = e.exposure_value;
+
+        // MemoryScore 逻辑说明：
+        // 当玩家在视野内时，VisualScore 实时反映暴露值，MemoryScore 由 Update() 中的衰减逻辑处理
+        // 当玩家离开视野时（e.exposure_value <= 0），记录最后的暴露值到 last_exposure_value
+        // MemoryScore 的衰减在 Update() 中统一处理：从当前 MemoryScore 开始按 DecayRate 衰减
+        // 此设计确保 MemoryScore 在玩家离开视野的第一帧就开始自然衰减，而非被重置后立即衰减
+        if (e.exposure_value <= 0)
+        {
+            // 玩家离开视野时，如果当前 MemoryScore 为 0 或低于最后暴露值，则继承最后暴露值作为记忆残留
+            // 否则保持 MemoryScore 不变，让 Update() 中的衰减逻辑自然处理
+            MemoryScore = Mathf.Max(MemoryScore, e.last_exposure_value);
+        }
+    }
+
+    private void OnNoiseDetected(NoiseMadeEvent e)
+    {
+        // 玩家噪声检测：噪声强度（0-100）直接累加到 AudioScore
+        // 噪声距离NPC越近，AudioScore 累积越快
+        float distance = Vector3.Distance(_ownerTransform.position, e.position);
+        float distanceFactor = Mathf.Clamp(1.0f - (distance / MaxAudioRange), 0f, 1f);
+
+        // 噪声暴露增量 = 基础暴露速率 × 噪声强度 × 距离因子 × deltaTime
+        float noiseExposure = e.intensity * distanceFactor * Time.deltaTime;
+        AudioScore = Mathf.Clamp(AudioScore + noiseExposure, 0f, 100f);
+    }
+
+    private void OnIdentityConfirmed(NPCIdentityConfirmedEvent e)
+    {
+        if (e.npc_id != _ownerNpcId) return;
+
+        // NPCIdentityConfirmedEvent 触发后，NPC AI 应升级为 Enemy 状态
+        // 此事件由 LOS System 的 NPCIdentityManager 发布
+        // 订阅者：NPCAI（升级为 Enemy）、ClueJournal（触发线索发现）
+        _isEnemyConfirmed = true;
+    }
 
     // 每帧/定时更新
     public void Update(NPCController npc, float deltaTime)
     {
-        // MemoryScore 衰减逻辑
+        // MemoryScore 衰减逻辑：当玩家不在视野内时，记忆值按 DecayRate=30%/秒衰减
         if (!npc.IsPlayerInSight)
+        {
             MemoryScore = Mathf.Max(0, MemoryScore - MemoryDecayRate * deltaTime);
+        }
+
+        // AudioScore 也随时间衰减（如果长时间没有噪声）
+        AudioScore = Mathf.Max(0, AudioScore - MemoryDecayRate * 0.5f * deltaTime);
     }
 
-    public float GetPerceptionScore() => Mathf.Clamp01(VisualScore + AudioScore + MemoryScore);
+    /// <summary>
+    /// 获取当前综合感知评分（0-100）
+    /// </summary>
+    /// <remarks>
+    /// 评分公式：取即时感知（Visual/Audio的最大值）与Memory的加权组合
+    /// - 即时感知权重0.9：表示当前实时感知占主导
+    /// - 记忆残留权重0.1：表示历史感知作为辅助参考
+    ///
+    /// 为什么不直接相加：因为Visual/Audio/Memory都是0-100范围，直接相加最高可达300，
+    /// 这在语义上不合理（不能同时100%看到+100%听到+100%记住同一个目标）
+    /// </remarks>
+    public float GetPerceptionScore()
+    {
+        float immediateScore = Mathf.Max(VisualScore, AudioScore);
+        return Mathf.Clamp(immediateScore * 0.9f + MemoryScore * 0.1f, 0f, 100f);
+    }
+
+    /// <summary>
+    /// 根据感知评分获取对应的 AlertState
+    /// </summary>
+    public AlertState GetAlertStateFromScore()
+    {
+        float score = GetPerceptionScore();
+        if (score >= CombatThreshold) return AlertState.COMBAT;
+        if (score >= AlertThreshold) return AlertState.ALERT;
+        if (score >= SearchThreshold) return AlertState.SEARCH;
+        if (score >= SuspectThreshold) return AlertState.SUSPECT;
+        return AlertState.UNDETECTED;
+    }
+
+    private int _ownerNpcId;
+    private Transform _ownerTransform;
+    private bool _isEnemyConfirmed;
+    private const float MaxAudioRange = 20f;  // 最大听觉范围（米）
+}
+```
+
+### 3.1. 暴露值 → AlertState 数据流
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        暴露值数据流                                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  LOS System (ExposureTracker)                                           │
+│  ├── 暴露值计算：BaseExposureRate × 乘数 × 距离因子                      │
+│  ├── 发布 ExposureValueChangedEvent（暴露值变化）                        │
+│  └── 发布 PlayerSpottedEvent（暴露值达到100）                            │
+│                    │                                                     │
+│                    ▼                                                     │
+│  NPC AI (PerceptionComponent)                                           │
+│  ├── 订阅 ExposureValueChangedEvent → 更新 VisualScore/MemoryScore       │
+│  ├── 订阅 NoiseMadeEvent → 更新 AudioScore（噪声检测）                   │
+│  └── 订阅 NPCIdentityConfirmedEvent → 确认 Enemy 身份                    │
+│                    │                                                     │
+│                    ▼                                                     │
+│  AlertFSM ← GetAlertStateFromScore()                                     │
+│  ├── 30 → SUSPECT                                                       │
+│  ├── 60 → SEARCH                                                         │
+│  ├── 80 → ALERT                                                         │
+│  └── 100 → COMBAT                                                       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3.2. FactionNetworkComponent 与 LOS System 协调
+
+```csharp
+// FactionNetworkComponent.cs（扩展）
+public class FactionNetworkComponent
+{
+    // 派系关系矩阵（静态配置）
+    private static readonly Dictionary<Faction, Dictionary<Faction, FactionRelation>> Relations = new()
+    {
+        { Faction.凋亡议会, new() {
+            { Faction.锈网, FactionRelation.ALLIED },
+            { Faction.灰烬团, FactionRelation.ALLIED },
+            { Faction.无声者, FactionRelation.HOSTILE },
+            { Faction.苍白之手, FactionRelation.NEUTRAL }
+        }},
+        // ... 其他派系关系
+    };
+
+    // "已接收共享"去重列表（来源 NPC ID + 时间戳）
+    private List<(int SourceId, float Timestamp)> _receivedAlerts = new();
+
+    /// <summary>
+    /// 订阅 LOS System 的感知共享事件
+    /// 当派系 NPC 发现玩家后，通过派系网络共享感知信息
+    /// </summary>
+    public void SubscribeToLOSEvents()
+    {
+        EventBus.Instance.Subscribe<PlayerSpottedEvent>(OnFactionMemberSpottedPlayer);
+        EventBus.Instance.Subscribe<ExposureValueChangedEvent>(OnFactionMemberExposureChanged);
+    }
+
+    /// <summary>
+    /// 派系成员发现玩家时，通过派系网络广播共享感知
+    /// </summary>
+    private void OnFactionMemberSpottedPlayer(PlayerSpottedEvent e)
+    {
+        var sourceNpc = NPCManager.Instance.GetNPC(e.npc_id);
+        if (sourceNpc == null) return;
+
+        // 检查是否为同派系 NPC
+        if (!IsSameFaction(sourceNpc, _ownerNpc)) return;
+
+        // 构建威胁信息并广播
+        var threat = new ThreatInfo
+        {
+            Position = PlayerController.Instance.transform.position,
+            Intensity = 100f,  // 直接发现为最高强度
+            SourceId = e.npc_id
+        };
+
+        BroadcastSharedAlert(_ownerNpc, threat);
+    }
+
+    /// <summary>
+    /// 派系成员暴露值变化时，渐进式共享感知
+    /// </summary>
+    private void OnFactionMemberExposureChanged(ExposureValueChangedEvent e)
+    {
+        var sourceNpc = NPCManager.Instance.GetNPC(e.npc_id);
+        if (sourceNpc == null) return;
+
+        // 只有暴露值达到 SUSPECT 阈值以上才共享
+        // 使用 last_exposure_value（衰减前的记忆残留值）而非当前 exposure_value
+        if (e.last_exposure_value < 30f) return;
+        if (!IsSameFaction(sourceNpc, _ownerNpc)) return;
+
+        var threat = new ThreatInfo
+        {
+            Position = PlayerController.Instance.transform.position,
+            Intensity = e.last_exposure_value,  // 使用衰减前的记忆残留值
+            SourceId = e.npc_id
+        };
+
+        BroadcastSharedAlert(_ownerNpc, threat);
+    }
+
+    // 发送感知共享
+    public void BroadcastSharedAlert(NPCController npc, ThreatInfo threat)
+    {
+        var faction = npc.Data.Faction;
+        foreach (var otherNpc in GetSameFactionNPCs(npc))
+        {
+            if (otherNpc.NpcId == npc.NpcId) continue;  // 跳过自己
+
+            var relation = Relations[faction][otherNpc.Data.Faction];
+            var delay = CalculateSharedDelay(relation, npc, otherNpc);
+            var degradedThreat = ApplyDegradation(threat, relation);
+
+            // 延迟广播
+            npc.StartCoroutine(DelayedAlertCoroutine(otherNpc, degradedThreat, delay));
+        }
+    }
+
+    // 处理接收到的共享（去重）
+    public bool ShouldProcessSharedAlert(int sourceId)
+    {
+        var now = Time.time;
+        // 5秒内同一来源只处理一次
+        _receivedAlerts.RemoveAll(x => now - x.Timestamp > 5f);
+        if (_receivedAlerts.Any(x => x.SourceId == sourceId)) return false;
+        _receivedAlerts.Add((sourceId, now));
+        return true;
+    }
+
+    private bool IsSameFaction(NPCController a, NPCController b)
+    {
+        return a?.Data?.Faction == b?.Data?.Faction;
+    }
+}
+```
+
+### 3.3. SpatialPartition 共享组件引用
+
+> **跨 ADR 共享组件**：`SpatialPartition` 与 ADR-0007 中的 `SpatialPartition` 功能相同，
+> 应统一使用共享组件 `SpatialGrid`，统一定义在 `Assets/Game/Foundation/Shared/Spatial/` 目录下。
+> 详见 [ADR-0007](./adr-0007-los-system-architecture.md) 的 SpatialPartition 说明。
+
+```csharp
+// SpatialPartition 使用示例（引用共享组件）
+using Assets.Game.Foundation.Shared.Spatial;
+
+public class NPCManager
+{
+    private SpatialGrid _spatialGrid;  // 引用共享组件，而非重复定义
+
+    public void Initialize()
+    {
+        _spatialGrid = new SpatialGrid(GameConstants.SPATIAL_GRID_SIZE);
+    }
+
+    public void RegisterNPC(NPCController npc)
+    {
+        _spatialGrid.Register(npc.NpcId, npc.transform.position);
+    }
+
+    public List<int> GetNearbyNPCs(Vector3 position, float range)
+    {
+        return _spatialGrid.GetEntitiesInRange(position, range);
+    }
 }
 ```
 
@@ -305,15 +605,8 @@ Assets/Game/
 
 ```csharp
 // NPCSizeCategory.cs
-/// <summary>
-/// NPC 体型分类，用于 Gritty Takedowns 系统的捆绑时间计算
-/// </summary>
-public enum NPCSizeCategory
-{
-    Small,   // 体型小，捆绑时间 ×1.0（基准）
-    Medium,  // 体型中等，捆绑时间 ×1.25
-    Large    // 体型大，捆绑时间 ×1.5
-}
+// 定义位置：shared-types.md §5.6（唯一数据源）
+// 此处仅作为代码引用参考，枚举定义以 shared-types.md 为准
 
 // NPCData.cs (ScriptableObject)
 [CreateAssetMenu(menuName = "Game/NPC/NPCData")]
@@ -327,7 +620,7 @@ public class NPCData : ScriptableObject
     [Header("Attributes")]
     [Range(1, 10)] public int Bravery = 5;  // 影响抵抗/屈服判定
     [Range(1, 10)] public int Courage = 5;   // 影响回避/逃跑行为
-    public NPCSizeCategory sizeCategory = NPCSizeCategory.Medium;  // 影响捆绑时间
+    public NPCSizeCategory sizeCategory = NPCSizeCategory.Medium;  // 影响捆绑时间（引用 shared-types.md §5.6）
 
     [Header("Perception")]
     public float maxPerceptionRange = 15f;   // 最大感知范围（米）
@@ -345,17 +638,156 @@ public class NPCData : ScriptableObject
 // NPCController 事件订阅设置
 private void SetupEventSubscriptions()
 {
-    // 来自 LOS System
+    // ========== 来自 LOS System ==========
     EventBus.Instance.Subscribe<PlayerSpottedEvent>(OnPlayerSpotted);
+    EventBus.Instance.Subscribe<ExposureValueChangedEvent>(OnExposureValueChanged);  // 视觉暴露值同步
 
-    // 来自 Player Controller
-    EventBus.Instance.Subscribe<NoiseEvent>(OnNoiseDetected);
+    // ========== 来自 LOS System - NPCIdentityManager ==========
+    // NPCIdentityManager 确认身份后发布此事件
+    // NPCAI 收到此事件后应升级为 Enemy 状态
+    // ClueJournal 收到此事件后触发线索发现
+    EventBus.Instance.Subscribe<NPCIdentityConfirmedEvent>(OnNPCIdentityConfirmed);
 
-    // 来自 Gritty Takedowns
+    // ========== 来自 Player Controller ==========
+    EventBus.Instance.Subscribe<NoiseMadeEvent>(OnNoiseDetected);
+
+    // ========== 来自 Gritty Takedowns ==========
     EventBus.Instance.Subscribe<ExecutionWitnessedEvent>(OnExecutionWitnessed);
 
-    // 来自 Environment System
+    // ========== 来自 Environment System ==========
     EventBus.Instance.Subscribe<EnvironmentalEvent>(OnEnvironmentEvent);
+
+    // ========== 来自 Health System - NPC 状态变化 ==========
+    // NPCStateChangedEvent 由 Health System 发布（通过 NPCStateManager 协调）
+    // 订阅此事件以同步 WorldState ↔ HealthState 协议
+    // 注意：NPCStateChangedEvent 的 new_world_state 字段表示 NPC 的世界状态（FREE/UNCONSCIOUS/TIED/DEAD）
+    // 当 new_world_state 为 DEAD/UNCONSCIOUS/TIED 时，NPC AI 应停止当前行为
+    EventBus.Instance.Subscribe<NPCStateChangedEvent>(OnNPCStateChanged);
+
+    // ========== 来自 World Layer - Weather System（通过事件订阅获取感知系数缓存）==========
+    EventBus.Instance.Subscribe<WeatherStateChangedEvent>(OnWeatherStateChanged);
+
+    // ========== 来自 World Layer - Lighting System ==========
+    EventBus.Instance.Subscribe<LightingStateChangedEvent>(OnLightingStateChanged);
+
+    // ========== 来自 World Layer - Area Lighting ==========
+    EventBus.Instance.Subscribe<AreaLightingChangedEvent>(OnAreaLightingChanged);
+
+    // ========== 来自 WorldMap System - 区域进入事件 ==========
+    // AreaEnteredEvent 由 WorldMap System 发布，通知 NPC AI 玩家进入了新区域
+    // NPC AI 收到此事件后可触发敌人生成逻辑（见 ADR-0012 §CLEARED触发时序）
+    EventBus.Instance.Subscribe<AreaEnteredEvent>(OnAreaEntered);
+
+    // ========== 订阅 PerceptionComponent 到 LOS System 事件 ==========
+    _perceptionComponent.SubscribeToEvents();
+
+    // ========== 订阅 FactionNetworkComponent 到 LOS System 事件 ==========
+    // 派系感知共享需要接收来自同派系 NPC 的感知信息
+    _factionComponent.SubscribeToLOSEvents();
+}
+
+/// <summary>
+/// NPCIdentityConfirmedEvent 处理实现
+/// 当 LOS System 的 NPCIdentityManager 确认 NPC 身份后发布此事件
+/// NPCAI 收到此事件后应升级为 Enemy 状态
+/// ClueJournal 订阅此事件触发线索发现
+/// </summary>
+private void OnNPCIdentityConfirmed(NPCIdentityConfirmedEvent e)
+{
+    if (e.npc_id != NpcId) return;
+
+    // NPC 身份被确认为 Enemy/Accomplice 时，触发 AlertState 升级
+    // Victim 类型不影响 AlertState
+    if (e.identity_type == NPCIdentityType.ENEMY ||
+        e.identity_type == NPCIdentityType.ACCOMPLICE)
+    {
+        // 升级为 ALERT 状态（假设确认身份意味着玩家已被发现）
+        _alertFSM.TransitionTo(AlertState.ALERT);
+    }
+}
+
+/// <summary>
+/// EnvironmentalEvent 处理实现
+/// NPC AI 订阅 Environment System（ADR-0013）发布的 EnvironmentalEvent
+/// </summary>
+private void OnEnvironmentEvent(EnvironmentalEvent evt)
+{
+    // 计算 NPC 与事件源的距离
+    float distance = Vector3.Distance(transform.position, evt.Position);
+    if (distance > evt.Radius)
+        return; // 超出影响范围
+
+    switch (evt.Type)
+    {
+        case EnvironmentalEventType.EXPLOSION:
+        case EnvironmentalEventType.FIRE:
+        case EnvironmentalEventType.DESTRUCTION:
+            // 强烈事件：立即进入 ALERT
+            _alertFSM.TransitionTo(AlertState.ALERT);
+            break;
+
+        case EnvironmentalEventType.CHAOS:
+            // CHAOS 事件：额外增加 3 秒混乱持续时间
+            _alertFSM.ExtendConfusionDuration(3.0f);
+            _alertFSM.TransitionTo(AlertState.ALERT);
+            break;
+
+        case EnvironmentalEventType.ALERT:
+            // 警戒事件：NPC 会关注该位置
+            _alertFSM.SetInvestigatePoint(evt.Position);
+            _alertFSM.TransitionTo(AlertState.SEARCH);
+            break;
+
+        case EnvironmentalEventType.DISTRACTION:
+            // 干扰事件：NPC 会短暂分心
+            if (_alertFSM.CurrentState == AlertState.UNDETECTED)
+            {
+                _alertFSM.SetInvestigatePoint(evt.Position);
+                // 不改变 AlertState，但行为树会处理调查
+            }
+            break;
+    }
+}
+
+/// <summary>
+/// NPCStateChangedEvent 处理实现
+/// 由 Health System 发布（通过 NPCStateManager 协调）
+/// 当 NPC 的 WorldState 变化时（FREE/UNCONSCIOUS/TIED/DEAD），停止当前 AI 行为
+/// 定义位置：shared-types.md §5.2
+/// </summary>
+private void OnNPCStateChanged(NPCStateChangedEvent e)
+{
+    if (e.npc_id != NpcId) return;
+
+    // 根据 WorldState 变化调整 NPC AI 行为
+    switch (e.new_world_state)
+    {
+        case WorldState.DEAD:
+        case WorldState.UNCONSCIOUS:
+        case WorldState.TIED:
+            // NPC 处于非自由状态，停止当前 AI 行为
+            // 注意：这里不直接修改 AlertState，而是通过禁用行为树来停止 AI
+            enabled = false;
+            break;
+        case WorldState.FREE:
+            // NPC 恢复自由状态，重新启用 AI
+            enabled = true;
+            break;
+    }
+}
+
+/// <summary>
+/// AreaEnteredEvent 处理实现
+/// 由 WorldMap System 发布，通知玩家进入了新区域
+/// NPC AI 收到此事件后可触发敌人生成逻辑（见 ADR-0012 §CLEARED触发时序）
+/// 定义位置：shared-types.md §10.3
+/// </summary>
+private void OnAreaEntered(AreaEnteredEvent e)
+{
+    // 触发敌人生成逻辑
+    // 具体实现取决于区域类型和游戏阶段
+    // NPCManager 负责实际的敌人实例化
+    NPCManager.Instance.OnPlayerEnteredArea(e.area_id, transform.position);
 }
 
 // NPCManager 事件发布（输出）
@@ -367,16 +799,29 @@ private void SetupEventPublications()
 }
 
 /// <summary>
+/// AlertStateChangedEvent 发布
+/// AlertFSM.TransitionTo() 内部在状态转换时调用此方法发布事件
+/// 通知 GrittyTakedowns（ADR-0011）等系统 NPC 警戒状态已变化
+/// 定义位置：shared-types.md §5.3
+/// </summary>
+private void PublishAlertStateChanged(AlertState oldState, AlertState newState)
+{
+    EventBus.Instance.Publish(new AlertStateChangedEvent
+    {
+        npc_id = NpcId,
+        old_state = oldState,
+        new_state = newState
+    });
+}
+
+/// <summary>
 /// CombatStateChangedEvent
 /// 在任意 NPC AlertState 进入 ALERT 及以上状态时发布（进入战斗）
 /// 在所有 NPC AlertState 回到 UNDETECTED 时发布（退出战斗）
 /// 消费者：SanityRageMeter (ADR-0017)
+/// 定义位置：shared-types.md §5.10
 /// </summary>
-public struct CombatStateChangedEvent
-{
-    public bool IsInCombat;
-    public string Reason;  // "NPC_ENTERED_ALERT" | "ALL_NPCS_UNDETECTED"
-}
+// 完整结构体定义见 shared-types.md §5.10
 ```
 
 ---
@@ -590,6 +1035,15 @@ public partial class NPCController : MonoBehaviour
     public int QueryAllegiance() => _allegiance;
 
     /// <summary>
+    /// 查询 NPC 的派系忠诚度（用于 GrittyTakedowns 贿赂判定）
+    /// </summary>
+    public FactionAllegiance QueryFactionAllegiance() => new FactionAllegiance
+    {
+        faction = _npcData.faction,
+        loyalty = _allegiance
+    };
+
+    /// <summary>
     /// 查询 NPC 的勇气值（用于贿赂等交互判定）
     /// Bravery 范围 [1, 10]，值越小越容易被吓唬/贿赂
     /// </summary>
@@ -638,17 +1092,23 @@ public partial class NPCController : MonoBehaviour
 
     /// <summary>
     /// 查询 NPC 的有效感知范围（考虑天气和光照影响）
-    /// 计算公式：MaxPerceptionRange × WeatherModifier × LightModifier
+    /// 计算公式：MaxPerceptionRange × visionDistanceMultiplier × shadowStealthMultiplier
     /// 最低保留 30% 的基础感知范围
     ///
-    /// **依赖说明**：WeatherSystem 和 LightingSystem 属于 World Layer，
-    /// 通过 Event Bus 与 NPC AI 解耦。此处使用可空引用是安全的降级策略。
+    /// **架构约束**：WeatherSystem 和 LightingSystem 属于 World Layer，
+    /// 不得被其他系统直接调用。必须通过事件订阅机制获取感知系数。
+    /// NPC AI 通过订阅 WeatherStateChangedEvent 和 LightingStateChangedEvent 缓存最新值。
+    ///
+    /// **感知系数来源**（按 shared-types.md §22.4 叠加规则）：
+    /// - visionDistanceMultiplier：来自 WeatherStateChangedEvent.perceptionModifier
+    /// - shadowStealthMultiplier：来自 LightingStateChangedEvent.perceptionModifier
     /// </summary>
     public float QueryEffectivePerceptionRange()
     {
         var baseRange = _npcData.maxPerceptionRange;
-        var weatherMod = WeatherSystem.Instance?.GetWeatherModifier() ?? 1.0f;
-        var lightMod = LightingSystem.Instance?.GetLightModifier() ?? 1.0f;
+        // 从缓存中读取（由 OnWeatherStateChanged/OnLightingStateChanged 事件回调更新）
+        var weatherMod = _cachedWeatherModifier?.visionDistanceMultiplier ?? 1.0f;
+        var lightMod = _cachedLightModifier?.shadowStealthMultiplier ?? 1.0f;
 
         var effectiveRange = baseRange * weatherMod * lightMod;
         return Mathf.Max(effectiveRange, baseRange * 0.3f);
@@ -656,13 +1116,73 @@ public partial class NPCController : MonoBehaviour
 
     /// <summary>
     /// 查询玩家是否在 NPC 的阴影隐蔽区域内
+    ///
+    /// **架构约束**：不得直接持有 LightingSystem 引用。
+    /// 通过 AreaLightingChangedEvent 事件回调缓存当前区域的光照状态。
     /// </summary>
     public bool QueryIsPlayerInShadow()
     {
-        return LightingSystem.Instance?.IsPositionInShadow(
-            PlayerController.Instance.transform.position
-        ) ?? false;
+        // 从缓存中读取（由 OnAreaLightingChanged 事件回调更新）
+        return _cachedShadowStealthBonus > 1.0f;
     }
+
+    // ========== 事件订阅（World Layer 感知系数缓存） ==========
+    // NPC AI 订阅 WeatherStateChangedEvent 和 LightingStateChangedEvent，
+    // 在事件回调中缓存最新的感知系数，供 QueryEffectivePerceptionRange 使用。
+    // 这样遵守了 World Layer 不得被直接调用的架构约束。
+
+    private PerceptionModifier? _cachedWeatherModifier;
+    private AreaLightingCoefficients? _cachedLightModifier;
+    private float _cachedShadowStealthBonus = 1.0f;
+
+    /// <summary>
+    /// 天气状态变化事件回调（应在 SetupEventSubscriptions 中订阅）
+    /// </summary>
+    private void OnWeatherStateChanged(WeatherStateChangedEvent evt)
+    {
+        _cachedWeatherModifier = evt.perception_modifier;
+    }
+
+    /// <summary>
+    /// 光照状态变化事件回调（应在 SetupEventSubscriptions 中订阅）
+    /// </summary>
+    private void OnLightingStateChanged(LightingStateChangedEvent evt)
+    {
+        _cachedLightModifier = evt.perceptionModifier;
+        _cachedShadowStealthBonus = evt.perceptionModifier.shadowStealthBonus;
+    }
+
+    /// <summary>
+    /// 区域光照变化事件回调（应在 SetupEventSubscriptions 中订阅）
+    /// AreaLightingChangedEvent 不携带感知系数，需通过 AreaLightingCoefficientsTable 查表获取
+    /// </summary>
+    private void OnAreaLightingChanged(AreaLightingChangedEvent evt)
+    {
+        if (evt.isPlayerInside)
+        {
+            // AreaLightingChangedEvent 仅携带 lightingState，感知系数需查 AreaLightingCoefficientsTable
+            var coefficients = AreaLightingCoefficientsTable.Get(evt.lightingState);
+            _cachedShadowStealthBonus = coefficients.shadowStealthMultiplier;
+        }
+    }
+
+    // ========== GrittyTakedowns 专用接口 ==========
+
+    /// <summary>
+    /// 查询 NPC 的欺骗抗性（用于判断贿赂/欺骗是否成功）
+    /// 范围 [0, 1]，值越高越难被欺骗
+    /// </summary>
+    public float QueryDeceptionResistance() => _npcData.deceptionResistance;
+
+    /// <summary>
+    /// 查询 NPC 的对话树数据（供 DialogueUIManager 渲染对话选项）
+    /// </summary>
+    public DialogueTreeConfig QueryDialogueTree() => _npcData.dialogueTree;
+
+    /// <summary>
+    /// 查询 NPC 的健康状态（用于判断是否可以捆绑）
+    /// </summary>
+    public HealthState QueryHealthState() => _healthComponent.CurrentState;
 }
 
 public struct PerceptionScore
@@ -690,7 +1210,7 @@ public struct PerceptionScore
 ### Phase 2: 感知系统
 - [ ] 创建 PerceptionComponent
 - [ ] 实现 VisualScore 更新（订阅 PlayerSpottedEvent）
-- [ ] 实现 AudioScore 更新（订阅 NoiseEvent）
+- [ ] 实现 AudioScore 更新（订阅 NoiseMadeEvent）
 - [ ] 实现 MemoryScore 衰减逻辑
 
 ### Phase 3: 行为树
@@ -719,7 +1239,7 @@ public struct PerceptionScore
 2. **感知评分准确性**：VisualScore/AudioScore/MemoryScore 的计算结果符合设计文档公式
 3. **派系感知去重**：同一来源的 SharedAlert 在 5 秒内只处理一次
 4. **性能达标**：100 NPC 同时运行，单帧感知更新 < 2ms
-5. **事件订阅正确**：所有事件（PlayerSpottedEvent/NoiseEvent/ExecutionWitnessedEvent）正确订阅
+5. **事件订阅正确**：所有事件（PlayerSpottedEvent/NoiseMadeEvent/ExecutionWitnessedEvent）正确订阅
 6. **BT 行为可切换**：不同 Alert State 下 BT 根选择器返回不同行为分支
 7. **Query 接口正确**：QueryAlertState/QueryState/QueryAllegiance 等接口返回正确值
 8. **天气/光照折扣正确**：QueryEffectivePerceptionRange 正确应用天气和光照折扣

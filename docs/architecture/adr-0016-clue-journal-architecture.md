@@ -7,7 +7,7 @@
 2026-04-10
 
 ## Last Updated
-2026-04-11 (v5: 补充递归补偿防护机制；明确 clues_discovered_for_task 计算范围说明；OQ-4/5/6 已解决)
+2026-04-15 (v7: ADR 评审验证：VulnerabilityUncoveredEvent 订阅关系与 ADR-0018 一致；KeywordCapturedEvent 流向正确)
 
 ## Context
 
@@ -63,7 +63,7 @@
 │  │  理智/愤怒系统 │◀────────────────────────── │      JournalManager      │ │
 │  └──────────────┘                             │      (日志管理器)          │ │
 │                                              │  ◆ MonoBehaviour 单例     │ │
-│  ┌──────────────┐    LocationRevealed         │  ◆ 维护 Clue 集合         │ │
+│  ┌──────────────┐    LocationRevealedEvent     │  ◆ 维护 Clue 集合         │ │
 │  │  世界地图系统  │◀────────────────────────── │  ◆ 状态机驱动             │ │
 │  └──────────────┘                             └────────────┬─────────────┘   │
 │                                                              │                 │
@@ -75,6 +75,99 @@
 ```
 
 ### 核心数据结构
+
+#### ClueTemplate（线索模板）
+
+```csharp
+/// <summary>
+/// 线索模板（由 Narrative Director 策划配置）
+/// ClueTemplateRepository 持有所有模板的加载和查询接口
+/// </summary>
+public class ClueTemplate
+{
+    public string ClueId;                    // 唯一标识符
+    public ClueCategory Category;            // IDENTITY / LOCATION / RELATIONSHIP / ITEM / TRAGEDY
+    public string Title;                      // 显示标题
+    public string Description;                // 详细内容（解锁后可见）
+    public ClueSourceType SourceType;        // LOS_EAVESDROP / ENVIRONMENT / NPC_DEATH_SOURCE / NPC_KNOWLEDGE_BONUS
+    public string LocationId;                // 所属地点ID
+    public List<string> RelatedNpcIds;      // 关联的NPC ID列表
+    public string TaskId;                    // 关联的任务ID
+    public ClueCriticality Criticality;      // CRITICAL / IMPORTANT / OPTIONAL
+    public List<string> Prerequisites;        // 前置线索ID列表
+
+    /// <summary>
+    /// 触发关键词（当 LOS System 捕获到此关键词时，创建对应 Clue 实例）
+    /// 仅 SourceType == LOS_EAVESDROP 时使用
+    /// </summary>
+    public string TriggerKeyword;
+}
+```
+
+**Keyword→ClueTemplate 映射机制**：
+
+ClueFactory 订阅 `KeywordCapturedEvent` 后，通过 ClueTemplateRepository 查询匹配的 ClueTemplate：
+
+```csharp
+// ClueTemplateRepository.cs
+public class ClueTemplateRepository
+{
+    // ClueId → ClueTemplate 映射（用于精确查找）
+    private Dictionary<string, ClueTemplate> _templates = new();
+
+    // TriggerKeyword → ClueTemplate 映射（用于 Keyword 触发查找）
+    private Dictionary<string, ClueTemplate> _keywordToTemplate = new();
+
+    /// <summary>
+    /// 根据触发关键词查找对应的 ClueTemplate
+    /// </summary>
+    public ClueTemplate GetTemplateByKeyword(string keyword)
+    {
+        if (_keywordToTemplate.TryGetValue(keyword, out var template))
+            return template;
+
+        Debug.LogWarning($"[ClueTemplateRepository] 未找到 keyword='{keyword}' 对应的 ClueTemplate");
+        return null;
+    }
+
+    private void BuildKeywordIndex()
+    {
+        _keywordToTemplate.Clear();
+        foreach (var template in _templates.Values)
+        {
+            if (!string.IsNullOrEmpty(template.TriggerKeyword))
+            {
+                _keywordToTemplate[template.TriggerKeyword] = template;
+            }
+        }
+    }
+}
+
+// ClueFactory.cs
+private void OnKeywordCaptured(KeywordCapturedEvent evt)
+{
+    var template = _repository.GetTemplateByKeyword(evt.keyword);
+    if (template == null) return;
+
+    var clue = new Clue
+    {
+        ClueId = template.ClueId,
+        Category = template.Category,
+        Title = template.Title,
+        Description = template.Description,
+        SourceType = ClueSourceType.LOS_EAVESDROP,
+        SourceId = evt.npc_id.ToString(),
+        LocationId = template.LocationId,
+        RelatedNpcIds = template.RelatedNpcIds,
+        TaskId = template.TaskId,
+        Criticality = template.Criticality,
+        Prerequisites = template.Prerequisites,
+        State = ClueState.NOT_DISCOVERED
+    };
+
+    Journal.AddClue(clue);
+}
+```
 
 #### Clue 实体
 
@@ -107,15 +200,23 @@ public enum ClueState
 }
 
 /// <summary>
-/// 线索类别（定义在 Shared Types 中，此处内联供参照）
+/// 线索类别（定义于 shared-types.md §11.1）
 /// </summary>
+/// <remarks>
+/// ClueCategory 枚举已在 shared-types.md 中统一定义，本文档仅做引用说明：
+/// - IDENTITY：身份线索
+/// - LOCATION：位置线索
+/// - RELATIONSHIP：关系线索
+/// - ITEM：物品线索
+/// - TRAGEDY：悲剧线索
+/// </remarks>
 public enum ClueCategory
 {
-    IDENTITY,     // 身份线索：NPC 的真实身份、背景
-    LOCATION,     // 位置线索：地点、入口、隐藏区域
-    RELATIONSHIP, // 关系线索：NPC 之间的关系网络
-    ITEM,         // 物品线索：关键道具、证据
-    TRAGEDY       // 悲剧线索：悲剧事件、受害者信息
+    IDENTITY,
+    LOCATION,
+    RELATIONSHIP,
+    ITEM,
+    TRAGEDY
 }
 
 /// <summary>
@@ -190,6 +291,22 @@ public class CompensationEntry
     public List<string> CompensationClueIds; // 补偿线索 ID 列表（支持 1:N 补偿池）
 }
 ```
+
+> **P0 验证要求**：`SourceClueId` 对应的线索必须是 `Criticality.CRITICAL` 类型。
+> 在加载 `CompensationEntry` 时必须验证此约束，若不满足则输出错误日志并拒绝加载。
+> 实现示例：
+> ```csharp
+> public void AddCompensation(CompensationEntry entry)
+> {
+>     var sourceClue = GetClue(entry.SourceClueId);
+>     if (sourceClue == null || sourceClue.Criticality != ClueCriticality.CRITICAL)
+>     {
+>         Debug.LogError($"[ClueJournal] Compensation source clue {entry.SourceClueId} must be CRITICAL");
+>         return;
+>     }
+>     // ... 后续逻辑
+> }
+> ```
 
 ### 线索状态机
 
@@ -329,14 +446,28 @@ ShouldCompensate = (critical_clue_missing == true) AND (clues_discovered_for_tas
 4. 显示警示文字"——你的选择留下了无法愈合的伤口——"
 5. 原 MISSING 标记保留，实现"遗憾不可消除"
 
+**补偿机制与 KillTagEvent（ADR-0011）联动说明**：
+> 补偿机制**仅针对玩家主动击杀 NPC 导致的线索缺失**。与威胁/审讯/转化获取情报的区别如下：
+
+| 获取方式 | 触发机制 | 补偿触发 |
+|----------|----------|----------|
+| **玩家主动击杀 NPC**（StealthKill/EnvironmentKill/FinishOff） | `KillTagEvent` → `NPCStateChangedEvent{DEAD}` → 标记线索为 MISSING | **会触发补偿**（因为是击杀导致的永久信息缺失） |
+| 审问（Interrogate）已捆绑 NPC | `KnowledgeGainedEvent` → 获取 vulnerability/knowledge | **不触发补偿**（NPC 仍存活，信息已成功获取） |
+| 搜身（Search）已死亡 NPC | `KnowledgeGainedEvent` → 获取 vulnerability/knowledge | **不触发补偿**（玩家主动搜索，信息已成功获取） |
+| 威胁/贿赂/欺骗 NPC | `DialogueChoiceRequestEvent` → `DialogueResultEvent` | **不触发补偿**（NPC 存活，不涉及信息缺失） |
+
+> **设计理由**：补偿机制的核心是"玩家冲动行为（杀死 NPC）导致关键线索永久缺失"这一遗憾体验。威胁/审讯/转化是玩家与 NPC 交互的手段，不会导致线索缺失，因此不在补偿范围内。
+
 ### 关键接口定义
+
+> **统一规范**：所有 UI 面板的事件订阅必须遵循 shared-types.md §13.x UI系统事件订阅规范。Clue Journal UI 作为游戏数据消费者，订阅来自其他系统的事件。
 
 #### 事件订阅（Inputs）
 
 | 事件 | 来源 | 处理逻辑 |
 |------|------|----------|
 | `KeywordCapturedEvent{keyword, npc_id, location_id}` | LOS 系统 | 与 ClueTemplate 匹配，创建 Clue 实例 |
-| `IntelObjectInteracted{object_id, object_type, location_id}` | 环境交互系统 | 直接创建 Clue 实例（已是成品线索） |
+| `IntelObjectInteractedEvent{object_id, object_type, location_id}` | 环境交互系统 | 直接创建 Clue 实例（已是成品线索） |
 | `NPCStateChangedEvent{npc_id, new_state: DEAD}` | NPC AI 系统 | 遍历 NPC 的 knowledge，标记尚未 DISCOVERED 的线索为 MISSING，MissingReason = NPC_DEAD |
 
 > **已确定的设计决策**（原 OQ-4/5/6）：
@@ -351,9 +482,12 @@ ShouldCompensate = (critical_clue_missing == true) AND (clues_discovered_for_tas
 
 | 事件 | 目标 | 数据内容 |
 |------|------|----------|
-| `ClueDiscoveredEvent{clue_id, clue_category, discovery_stage, narrative_significance}` | 理智系统 | 线索发现上下文，用于计算理智惩罚 |
-| `LocationRevealed{location_id}` | 世界地图 | 新地点被发现，在地图上显示标记 |
+| `ClueDiscoveredEvent{clue_id, category, discovery_stage, narrative_significance, source_id}` | 理智系统 | 线索发现上下文，用于计算理智惩罚（完整定义见 shared-types.md §11.4） |
+| `VulnerabilityUncoveredEvent{npc_id, source, vulnerability, clue_id, timestamp}` | Gritty Takedowns 系统 | 线索发现触发 vulnerability 解锁（完整定义见 shared-types.md §11.5） |
+| `LocationRevealedEvent{location_id}` | 世界地图 | 新地点被发现，在地图上显示标记 |
 | `JournalData{journal_view, current_clues}` | UI 系统 | 日志渲染所需数据（按 LOCATION/NPC 组织，TIMELINE 为 Phase 4+ 预留） |
+
+> **注意**：`ClueDiscoveredEvent` 和 `VulnerabilityUncoveredEvent` 的完整字段定义见 shared-types.md §11.4 和 §11.5。本表格仅列出关键字段。
 
 ---
 
@@ -522,9 +656,93 @@ public void ValidateJournalOnLoad(Journal journal, IEntityRegistry entityRegistr
 | [ADR-0006: 网络同步架构](./adr-0006-network-synchronization-architecture.md) | 必须 | 存档/加载时 Journal 状态同步 |
 | [ADR-0008: 脆弱度与伤害系统](./adr-0008-health-lethality-architecture.md) | 可选 | 击杀事件与线索转移的联动（如果线索来源包含战斗场景） |
 | [ADR-0011: 沉重处决系统](./adr-0011-gritty-takedowns-architecture.md) | 可选 | KillTagEvent 触发理智/愤怒变化 |
-| [ADR-0012: 世界地图与非线性叙事架构](./adr-0012-world-map-nonlinear-progression.md) | 必须 | LocationRevealed 事件消费者 |
+| [ADR-0012: 世界地图与非线性叙事架构](./adr-0012-world-map-nonlinear-progression.md) | 必须 | LocationRevealedEvent 事件消费者 |
 | [ADR-0015: UI 系统](./adr-0015-ui-system-architecture.md) | 必须 | JournalData 查询接口消费者 |
 | [ADR-0017: 理智/愤怒系统](./adr-0017-sanity-rage-meter-architecture.md) | 必须 | ClueDiscoveredEvent 消费者（下游依赖）。注：此为接口声明式依赖，非实现依赖；两系统通过 EventBus 解耦，无循环引用问题 |
+
+### Journal UI MVP 布局
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  [LOCATION]           Journal            [Filters ▼]   │
+├──────────────┬──────────────────────────────────────────┤
+│              │                                          │
+│  LOCATION   │   Current View (Clue/NPC/Location)       │
+│  ────────── │                                          │
+│  • 锈港      │   ┌────────────────────────────────┐   │
+│  • 灰桥      │   │  Clue Card                      │   │
+│  • ...       │   │  ────────────────────────────    │   │
+│              │   │  Title: 码头废弃文件              │   │
+│  NPC         │   │  Category: 文档                   │   │
+│  ────────── │   │  Significance: 中                │   │
+│  • NPC-A     │   │  ────────────────────────────    │   │
+│  • NPC-B     │   │  Description text...             │   │
+│  • ...       │   │                                  │   │
+│              │   └────────────────────────────────┘   │
+│              │                                          │
+└──────────────┴──────────────────────────────────────────┘
+```
+
+> **布局说明**：
+> - 左侧 LOCATION/NPC 列表为固定宽度（约 200px），垂直滚动
+> - 右侧为可变宽度内容区，显示当前选中项的线索卡片
+> - LOCATION 视图：按地区分组线索，显示完成百分比
+> - NPC 视图：按 NPC 分组线索，显示 NPC 头像 + 姓名 + 状态图标
+> - **NPC 状态图标定义**（来源 ADR-0004 §AlertState）：
+>   - 🟢 UNDETECTED（未发现）、🟡 SUSPECT（怀疑）、🔴 ALERT（警戒）、⚠️ ESCAPE（逃跑）、⚔️ COMBAT（战斗）
+>   - 💀 DEAD（死亡）— NPC 死亡后状态图标变灰并显示覆盖层
+> - TIMELINE 视图为 Phase 4+ 预留，MVP 仅实现 LOCATION/NPC
+
+### Clue Journal UI 输入屏蔽规则
+
+当 Clue Journal UI 打开时，UI 系统通过 Input Blocking Layer 屏蔽游戏输入：
+
+```
+Clue Journal UI 打开流程：
+1. 玩家按下 Journal 快捷键（PC: J / PS5: Touchpad）
+2. UI 系统接收 JournalOpenRequest 事件
+3. UI 系统设置 Input Blocking Layer 为 active，Priority = 50（Menu Layer 范围）
+4. 玩家输入被屏蔽（移动/攻击/交互/跳跃/蹲伏）
+5. UI 导航和确认键保持可用（确保玩家仍能操作 Journal UI）
+6. 玩家按下关闭键（ESC/Options）或点击关闭按钮
+7. UI 系统设置 Input Blocking Layer 为 inactive
+8. 游戏输入恢复
+```
+
+**输入屏蔽范围**：
+- **屏蔽**：移动(WASD)、攻击(鼠标左键/F)、交互(E/F)、跳跃(空格/C)、蹲伏(C/Ctrl)、菜单(ESC)、快速存档(Q)、地图拖拽
+- **保持可用**：UI 导航（方向键/左摇杆）、确认(Enter/A/X)、取消(ESC/Options/O)
+
+> **与 World Map 揭示动画的 Input Blocking 优先级说明**：
+> - Clue Journal 的 Input Blocking Priority = 50（Menu Layer）
+> - World Map 揭示动画的 Input Blocking Priority = 60（高于 Menu Layer）
+> - 如果揭示动画期间玩家打开 Journal，揭示动画的 Input Blocking 不会被 Journal 覆盖（60 > 50）
+> - 揭示动画完成后，Journal 的 Input Blocking 才能生效
+
+### ClueViewedEvent 事件说明
+
+> **设计说明**：`ClueViewedEvent` 用于区分"发现线索"（DISCOVERED 状态触发）与"阅读线索"（UNLOCKED 状态触发）。
+
+```csharp
+/// <summary>
+/// 玩家阅读线索事件
+/// 当玩家在 Journal UI 中打开线索详情并阅读时发布
+/// 用于区分"发现"与"阅读"的行为追踪
+/// </summary>
+public struct ClueViewedEvent
+{
+    public string clue_id;
+    public string player_id;
+    public float timestamp;
+}
+```
+
+| 事件 | 触发时机 | 使用场景 |
+|------|---------|---------|
+| `ClueDiscoveredEvent` | 线索状态变为 DISCOVERED 时（发现线索来源） | Sanity/Rage 系统计算理智惩罚 |
+| `ClueViewedEvent` | 玩家主动打开 Journal 并阅读线索详情时（UNLOCKED 状态） | 任务进度追踪、成就系统、COMPLETED 状态触发 |
+
+> **COMPLETED 触发条件补充**：玩家主动确认线索后，线索状态从 UNLOCKED 变为 COMPLETED。详见 §线索完成机制。
 
 ---
 
@@ -565,7 +783,7 @@ public void ValidateJournalOnLoad(Journal journal, IEntityRegistry entityRegistr
 - [ADR-0006: 网络同步架构](./adr-0006-network-synchronization-architecture.md) — 存档/加载时 Journal 状态同步
 - [ADR-0008: 脆弱度与伤害系统](./adr-0008-health-lethality-architecture.md) — 击杀事件与线索转移的联动
 - [ADR-0011: 沉重处决系统](./adr-0011-gritty-takedowns-architecture.md) — KillTagEvent 触发理智/愤怒变化
-- [ADR-0012: 世界地图与非线性叙事架构](./adr-0012-world-map-nonlinear-progression.md) — LocationRevealed 事件消费者
+- [ADR-0012: 世界地图与非线性叙事架构](./adr-0012-world-map-nonlinear-progression.md) — LocationRevealedEvent 事件消费者
 - [ADR-0017: 理智/愤怒系统](./adr-0017-sanity-rage-meter-architecture.md) — ClueDiscoveredEvent 消费者
 - [ADR-0015: UI 系统](./adr-0015-ui-system-architecture.md) — JournalData 查询接口消费者
 - [Shared Types: 伤害与命中类型](./shared-types.md) — ClueCategory 枚举定义

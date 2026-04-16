@@ -136,6 +136,13 @@ public struct PlayerSnapshot
     public int Sanity;
     public int Rage;
     public int LastProcessedPhase;         // 最后处理的相位（用于去重）
+
+    // P0 修复：添加完整 PlayerSave 数据，确保重连时能恢复所有玩家进度
+    // 注意：这些字段在相位同步时可能为空（节省带宽），仅在检查点快照时填充
+    public List<string> CollectedClues;               // 已收集线索 ID 列表
+    public List<string> AcquiredKnowledge;           // 已获取知识 ID 列表
+    public Dictionary<string, int> NPCRelationships; // NPC ID → 好感度
+    public List<string> UnlockedWeapons;            // 已解锁武器 ID 列表
 }
 
 [Serializable]
@@ -182,7 +189,9 @@ public class ReconnectCheckpoint
     public string SessionId;                // 会话 ID
     public long Timestamp;                 // 检查点时间戳
     public GameStateSnapshot GameState;    // 游戏状态快照
-    public string SaveSlotId;              // 对应的存档槽位
+    // 注意：SaveSlotId 已移除（ADR-0005 评审修复 2026-04-15）
+    // 断线重连检查点使用 "reconnect_checkpoint" 专用槽位（见 ADR-0005 §4.2）
+    // 不再需要 SaveSlotId 字段标识关联的存档槽位
     public int HostPlayerId;               // 当前 Host 的玩家 ID
     public List<int> ConnectedPlayerIds;   // 断线前的玩家 ID 列表
 }
@@ -430,12 +439,33 @@ public class NPCStateSync : NetworkBehaviour
 
 ### 5. 延迟补偿和预测
 
+#### 参数设计依据
+
+| 参数 | 值 | 计算依据 | 性能影响 |
+|------|-----|----------|----------|
+| `INPUT_DELAY` | 2 | 客户端延迟 = (RTT / 2) / phase_duration。假设 RTT = 100ms，phase = 33.3ms，则延迟 ≈ 1.5 相位，取整为 2 | 额外 66.6ms 输入延迟 |
+| `SNAP_THRESHOLD` | 0.5m | 玩家可感知的位置跳跃阈值。超过 0.5m 的偏差会导致明显跳跃感 | 低于阈值使用插值平滑 |
+| `CORRECTION_LERP` | 10f | 每秒校正 10m 的速度。CORRECTION_LERP / frame_rate ≈ 0.17m/frame (60fps) | 保证平滑但不迟钝 |
+
+> **延迟容忍度**：本设计支持 < 300ms RTT 的网络环境。超过 300ms RTT 时：
+> - `INPUT_DELAY` 自动调整为 ceil(RTT / (2 * phase_duration)) + 1
+> - 额外输入延迟 = 客户端 RTT / 2
+> - 最大容忍延迟：500ms（之后客户端进入"卡顿补偿模式"）
+
 ```csharp
 // ClientPrediction.cs
 public class ClientPrediction : NetworkBehaviour
 {
     // 延迟补偿参数
-    private const int INPUT_DELAY = 2;  // 客户端延迟 2 个相位执行输入
+    // 计算公式: INPUT_DELAY = ceil(RTT / (2 * phase_duration)) + safety_margin
+    // 假设 RTT = 100ms, phase_duration = 33.3ms, safety_margin = 1
+    // 则 INPUT_DELAY = ceil(100 / (2 * 33.3)) + 1 = ceil(1.5) + 1 = 3
+    // 实际使用中取保守值 2 以优化手感
+    private const int INPUT_DELAY = 2;
+
+    // 校正参数
+    private const float SNAP_THRESHOLD = 0.5f;   // 超过 0.5m 直接跳转
+    private const float CORRECTION_LERP = 10f;  // 校正插值速度
 
     // 本地预测状态
     private PlayerState _predictedState;
@@ -659,19 +689,18 @@ public class ReconnectionManager : MonoBehaviour
     private async void SaveCheckpointToSaveSystem()
     {
         // 构建检查点
+        // 注意：SaveSlotId 已移除，ReconnectCheckpoint 不再存储存档槽位信息
+        // 断线重连检查点使用 "reconnect_checkpoint" 专用槽位（ADR-0005 §4.2）
         _lastCheckpoint = new ReconnectCheckpoint
         {
             SessionId = _sessionId,
             Timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             GameState = _phaseManager.CaptureGameStateSnapshot(),
-            // ⚠️ SaveSlotId 应从当前游戏会话获取，表示当前游戏所在的存档槽位
-            // SaveCheckpointAsync 使用 "reconnect_checkpoint" 专用槽位，不使用此字段
-            SaveSlotId = "slot_0", // TODO: 从 NetworkRoomManager 或游戏会话获取实际槽位
             HostPlayerId = GetHostPlayerId(),
             ConnectedPlayerIds = GetAllConnectedPlayerIds()
         };
 
-        // 通过存档系统保存检查点
+        // 通过存档系统保存检查点（使用 "reconnect_checkpoint" 专用槽位）
         await SaveManager.Instance.SaveCheckpointAsync();
     }
 
@@ -853,10 +882,21 @@ public class ReconnectionManager : MonoBehaviour
 
     private float GetConnectionQuality(NetworkConnection conn)
     {
-        // 计算连接质量（基于延迟和丢包率）
-        // 返回 0-1，1 为最佳
-        // ⚠️ TODO: 当前实现返回固定值 1f，实际应基于 NetworkTelemetry 计算
-        return 1f;
+        if (conn == null || !conn.isReady) return 0f;
+
+        // 使用 NetworkTime.GetPing() 获取 RTT（毫秒）
+        var rtt = NetworkTime.GetPing(conn) * 2; // 单程延迟 = RTT/2
+        var packetLoss = conn.packetLoss; // 丢包率 0-1
+
+        // 将 RTT 转换为质量分数 (0-1)
+        // 假设 0ms = 1.0, 500ms+ = 0.0
+        var rttQuality = Mathf.Clamp(1f - (rtt / 500f), 0f, 1f);
+
+        // 丢包率直接影响质量
+        var lossQuality = 1f - packetLoss;
+
+        // 综合质量 = 0.7*RTT + 0.3*丢包
+        return 0.7f * rttQuality + 0.3f * lossQuality;
     }
 
     private float GetConnectionLatency(NetworkConnection conn)
@@ -888,42 +928,37 @@ public class ReconnectionManager : MonoBehaviour
         // ... (调用 WorldMapSystem 等)
     }
 }
+```
 
-// 事件定义
-public class PlayerDisconnectedEvent
-{
-    public int PlayerId { get; }
-    public PlayerDisconnectedEvent(int playerId) => PlayerId = playerId;
-}
+**`reconnect_checkpoint` 专用槽位策略说明**：
 
-public class PlayerReconnectedEvent
-{
-    public int PlayerId { get; }
-    public PlayerReconnectedEvent(int playerId) => PlayerId = playerId;
-}
+`SaveCheckpointAsync()` 使用的 `"reconnect_checkpoint"` 专用槽位具有以下特性：
 
-public class ReconnectFailedEvent
-{
-    public int PlayerId { get; }
-    public ReconnectFailedEvent(int playerId) => PlayerId = playerId;
-}
+| 特性 | 策略 |
+|------|------|
+| **槽位数量** | 始终单槽，不参与多槽位轮换 |
+| **本地备份** | 是，保留在本地存储 |
+| **云同步** | **不上云**，避免与本地重连检查点冲突 |
+| **覆盖时机** | 每次新的断线重连检查点保存时自动覆盖 |
+| **重连成功后** | 由 Network 系统决定是否清除（通常保留用于下次快速重连） |
 
-public class ReconnectTimeoutEvent
-{
-    public int PlayerId { get; }
-    public ReconnectTimeoutEvent(int playerId) => PlayerId = playerId;
-}
+> **设计理由**：断线重连检查点是瞬态数据（transient），不应该与玩家的持久存档混淆，因此使用独立槽位且不上云。
 
-public class HostMigrationStartedEvent
-{
-    public int OldHostId { get; }
-    public int NewHostId { get; }
-    public HostMigrationStartedEvent(int oldHostId, int newHostId)
-    {
-        OldHostId = oldHostId;
-        NewHostId = newHostId;
-    }
-}
+> **重连检查点与完整存档的合并策略**（ADR 评审修复 2026-04-15）：
+> 当玩家重连后选择"继续游戏"时，检查点数据与完整存档的合并逻辑如下：
+> 1. **优先使用检查点**：如果存在有效的 `reconnect_checkpoint`，使用检查点的 `GameStateSnapshot` 恢复游戏状态
+> 2. **完整存档作为 Fallback**：如果检查点已过期或损坏，回退到玩家最近一次完整存档
+> 3. **数据选择性合并**：`GameStateSnapshot` 中的玩家状态、NPC 状态直接采用；世界状态（如地区探索进度）从完整存档读取并与检查点合并
+> 4. **检查点清理**：成功重连后，`reconnect_checkpoint` 槽位被标记为可覆盖（但保留直到下次保存覆盖）
+
+> **网络同步事件定义**：以下网络同步专用事件定义于 `shared-types.md §21`，本 ADR 仅做索引引用：
+> - `PlayerDisconnectedEvent` — 玩家断开连接
+> - `PlayerReconnectedEvent` — 玩家重连成功
+> - `ReconnectFailedEvent` — 重连失败
+> - `ReconnectTimeoutEvent` — 重连超时
+> - `HostMigrationStartedEvent` — Host 迁移开始
+>
+> 实现时应引用 `shared-types.md` 中的权威定义，本文档不做重复定义。
 ```
 
 ### 8. 同步精度分级
@@ -1034,10 +1069,118 @@ Assets/Game/Infrastructure/Network/
 
 | 风险 | 描述 | 缓解措施 |
 |------|------|----------|
-| **Host 作弊** | Host 可以修改本地状态 | 关键状态需 Host 验证；报告机制 |
+| **Host 作弊** | Host 可以修改本地状态 | 关键状态需 Host 验证；报告机制；输入时间戳校验；关键状态 Server 校验框架（见 §10） |
 | **NAT 穿透失败** | 某些网络无法建立 P2P | Steam/PSN 中继服务器作为 Fallback |
 | **Host 迁移卡顿** | Host 离开时游戏短暂卡顿 | 平滑迁移流程；提前通知 |
 | **状态不同步** | 网络波动导致状态不一致 | 相位同步 + 重连检查点恢复 |
+
+### 10. 反作弊技术实现
+
+> **设计说明**：P2P 架构下 Host 具有天然优势（本地状态可修改）。本节定义关键验证点，降低作弊发生率。完整反作弊系统需在上线前持续迭代，本节提供基础框架。
+
+#### 10.1 AntiCheatManager
+
+```csharp
+// AntiCheatManager.cs
+public class AntiCheatManager : MonoBehaviour
+{
+    // 输入时间戳检测窗口（毫秒）
+    private const int INPUT_TIMESTAMP_WINDOW = 500;
+
+    // 关键状态 Server 校验阈值
+    private const float HEALTH_DEVIATION_THRESHOLD = 0.02f; // 2% 偏差允许（原 10% 过宽）
+    private const float MAX_ALLOWED_SPEED = 10f; // m/s，超过视为瞬移
+
+    /// <summary>
+    /// 验证玩家输入时间戳是否合理（防止输入延迟作弊）
+    /// </summary>
+    public bool ValidateInputTimestamp(float clientTimestamp, float serverTime)
+    {
+        var deviation = Mathf.Abs(serverTime - clientTimestamp);
+        if (deviation > INPUT_TIMESTAMP_WINDOW / 1000f)
+        {
+            Debug.LogWarning($"[AntiCheat] Input timestamp deviation {deviation:F3}s exceeds threshold");
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// 校验玩家关键状态（由 Host 在关键节点调用）
+    /// </summary>
+    public bool ValidateCriticalState(int playerId, PlayerSnapshot clientState, PlayerSnapshot serverState)
+    {
+        // 校验生命值
+        var healthDeviation = Mathf.Abs(clientState.Health - serverState.Health) / Mathf.Max(serverState.Health, 1f);
+        if (healthDeviation > HEALTH_DEVIATION_THRESHOLD)
+        {
+            Debug.LogWarning($"[AntiCheat] Player {playerId} health deviation {healthDeviation:P} exceeds threshold");
+            EventBus.Instance.Publish(new PlayerCheatDetectedEvent(playerId, CheatType.HEALTH_TAMPERING));
+            return false;
+        }
+
+        // 校验位置（瞬移检测）
+        // 使用 timestamp 计算速度 = distance / timeDelta
+        var distance = Vector3.Distance(clientState.Position, serverState.Position);
+        var timeDelta = (clientState.Timestamp - serverState.Timestamp) / 1000f; // 转换为秒
+        var speed = timeDelta > 0 ? distance / timeDelta : 0f;
+
+        if (speed > MAX_ALLOWED_SPEED)
+        {
+            Debug.LogWarning($"[AntiCheat] Player {playerId} potential teleport detected: {speed:F1}m/s over {timeDelta:F3}s");
+            EventBus.Instance.Publish(new PlayerCheatDetectedEvent(playerId, CheatType.TELEPORT));
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 校验客户端上报的伤害值是否合理
+    /// </summary>
+    public bool ValidateDamageRequest(int attackerId, float damage, Vector3 hitPosition)
+    {
+        // 校验伤害值上限（防止放大伤害）
+        var maxDamage = GetWeaponMaxDamage(attackerId); // 从权威数据获取
+        if (damage > maxDamage * 1.2f) // 20% 容差
+        {
+            Debug.LogWarning($"[AntiCheat] Player {attackerId} suspicious damage value: {damage:F1} > max {maxDamage:F1}");
+            return false;
+        }
+        return true;
+    }
+}
+
+public enum CheatType
+{
+    HEALTH_TAMPERING,
+    TELEPORT,
+    SPEED_HACK,
+    AIMBOT_SUSPECTED,
+    DAMAGE_AMPLIFICATION
+}
+
+public struct PlayerCheatDetectedEvent
+{
+    public int PlayerId;
+    public CheatType CheatType;
+    public float Timestamp;
+}
+```
+
+#### 10.2 调用时机
+
+| 校验点 | 调用时机 | 校验内容 |
+|--------|----------|----------|
+| 输入时间戳 | 每次收到 `PlayerInputCommand` | `ValidateInputTimestamp` |
+| 伤害事件 | 每次收到 `DamageEvent` | `ValidateDamageRequest` |
+| 状态快照同步 | 每次 `GameStateSnapshot` 接收（关键节点） | `ValidateCriticalState` |
+
+#### 10.3 局限性
+
+- **无法防止 Host 本地完整状态修改**：Host 可修改一切本地数据，Server 校验只能检测异常模式
+- **合理阈值需要上线后调优**：`HEALTH_DEVIATION_THRESHOLD` 和 `MAX_ALLOWED_SPEED` 需要根据实际数据调整
+- **隐蔽作弊难以检测**：如"轻微加速"、"小幅生命修改"等可能绕过检测
 
 ---
 
@@ -1092,6 +1235,28 @@ Assets/Game/Infrastructure/Network/
 8. **GameStateSnapshot 完整性**：快照包含所有必要的玩家/NPC/世界状态，且不超过容量限制（4 玩家 + 100 NPC）
 9. **重连超时处理**：30 秒超时后正确触发 OnReconnectFailed 并提供玩家选择
 10. **Host 迁移选择**：新 Host 选择基于连接质量（GetConnectionQuality TODO 实现后验证）
+
+---
+
+## Dependencies [已修复]
+
+### Network 与 SaveManager 依赖关系
+
+Network 系统依赖 SaveManager 实现断线重连检查点保存：
+
+| 依赖方向 | 说明 |
+|---------|------|
+| Network → SaveManager | Network 的 `ReconnectionManager` 调用 `SaveManager.Instance.SaveCheckpointAsync()` 保存重连检查点 |
+| SaveManager → ResourceManager | SaveManager 依赖 ResourceManager 加载存档资源（场景数据、角色状态等） |
+
+**依赖实现位置**：
+- `ReconnectionManager.SaveCheckpointToSaveSystem()`（第 682-698 行）调用 `SaveManager.Instance.SaveCheckpointAsync()`
+- 详见 ADR-0005 §4.2 关于 `reconnect_checkpoint` 专用槽位的定义
+
+**调用时序**：
+1. 客户端断开连接 → `ReconnectionManager.OnClientDisconnect()`
+2. 保存检查点 → `SaveManager.Instance.SaveCheckpointAsync()`
+3. 等待重连（30 秒超时）
 
 ---
 

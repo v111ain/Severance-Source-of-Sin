@@ -7,7 +7,7 @@
 2026-04-12
 
 ## Last Updated
-2026-04-12
+2026-04-14 (ADR 评审修复：AnimationEventBridge 改为发布 TakedownAnimationCompleteEvent，职责归位)
 
 ## Context
 
@@ -60,7 +60,7 @@
 │                              ▲                                      │
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │  Animation Layer 1: Action Layer                            │   │
-│  │  权重: 1.0 (Override)                                        │   │
+│  │  权重: 0.0-1.0 (Additive)                                   │   │
 │  │  内容: 处决动画、交互动画、技能动画                           │   │
 │  │  控制: ActionStateMachine（由游戏系统触发）                   │   │
 │  └─────────────────────────────────────────────────────────────┘   │
@@ -90,29 +90,55 @@ public enum AnimationLayer
     /// <summary>
     /// 动作层：处决动画、交互动画、技能动画
     /// 由游戏系统通过 ActionStateMachine 触发
-    /// 权重: Override，完全替代 Base 层
+    /// 权重: Additive，通过权重与 Base 层混合（而非完全替代）
+    ///
+    /// **权重设计说明**：
+    /// - Action 层使用 Additive 而非 Override，因为：
+    ///   1. 动作动画通常只播放部分身体动作（如上半身处决动画 + 下半身行走）
+    ///   2. 动作结束后需要平滑过渡回 Base 层，而非突然切换
+    ///   3. Overlay 层需要叠加在 Base+Action 组合之上，Additive 是唯一正确选择
+    /// - 运行时权重由 AnimationLayerWeightController 通过 FadeToWeight 控制
+    /// - 默认状态：Base=1.0, Action=0.0, Overlay=0.0
+    /// - **Animator Controller 配置**：Action 层在 Animator 中必须设置为 Additive 混合模式，
+    ///   而非 Override。代码层设置 SetLayerWeight 仅控制权重，混合模式由 Animator Controller 决定。
     /// </summary>
     Action = 1,
 
     /// <summary>
     /// 覆盖层：表情动画、武器挂载、披风物理
-    /// 权重: Additive，叠加在 Base/Action 之上
+    /// 权重: Additive，叠加在 Base+Action 组合之上
     /// </summary>
     Overlay = 2
 }
 ```
+
+> **初始化顺序说明**：`AnimationStateMachine` 现在是 MonoBehaviour，
+> 通过 Unity 生命周期方法自动按正确顺序初始化，不再需要手动注入：
+> ```csharp
+> // 1. 确保 AnimationLayerWeightController 和 AnimationStateMachine 在同一 GameObject 上
+> // 2. AnimationStateMachine.Awake() 会自动获取同 GameObject 上的 LayerWeightController
+> // 3. 动画师/程序员只需要在 Inspector 中配置 SerializeField 引用
+> ```
+>
+> **设计优势**：
+> - Unity 生命周期保证初始化顺序（Awake → OnEnable → Start）
+> - 无需手动调用多个 Set 方法
+> - 避免"未初始化就调用"导致的静默错误
+> - `Debug.LogWarning` 在运行时检测并警告未初始化的操作
+>
+> 注意：`AnimationLayerWeightController.IsInitialized` 可用于检查是否已完成初始化。
 
 ### 2. AnimationState 定义
 
 ```csharp
 // AnimationState.cs
 /// <summary>
-/// 动画状态枚举（按层分组，值域连续）
-/// 注意：枚举值按层分组，便于 Animator Controller 参数映射和调试
+/// 动画状态枚举（按层分组）
+/// 注意：枚举值按层分组（Base: 0-31, Action: 32-95, Locomotion: 96-127），值域连续且紧凑
 /// </summary>
 public enum AnimationState
 {
-    // ========== Base Layer (0-99) ==========
+    // ========== Base Layer (0-31) ==========
     /// <summary>无动作（默认）</summary>
     None = 0,
 
@@ -134,58 +160,165 @@ public enum AnimationState
     /// <summary>死亡</summary>
     Death = 6,
 
-    // ========== Action Layer (100-199) ==========
+    // ========== Action Layer (32-95) ==========
     /// <summary>潜行击杀</summary>
-    StealthKill = 100,
+    StealthKill = 32,
 
     /// <summary>环境击杀</summary>
-    EnvironmentKill = 101,
+    EnvironmentKill = 33,
 
     /// <summary>终结</summary>
-    FinishOff = 102,
+    FinishOff = 34,
 
     /// <summary>捆绑</summary>
-    TieUp = 103,
+    TieUp = 35,
 
     /// <summary>审讯</summary>
-    Interrogate = 104,
+    Interrogate = 36,
 
     /// <summary>威胁</summary>
-    Threaten = 105,
+    Threaten = 37,
 
     /// <summary>搜身</summary>
-    Search = 106,
+    Search = 38,
 
-    // ========== Movement Blend (200-255) ==========
-    /// <summary>移动混合（行走/冲刺/蹲行）</summary>
-    Locomotion = 200,
+    // ========== Locomotion Blend (96-127) ==========
+    /// <summary>
+    /// 移动混合状态（BlendTree 标识符）
+    ///
+    /// **设计说明**：
+    /// - 此枚举值用于 Animator Controller 内部的 BlendTree 状态标识
+    /// - Base 层实际状态仍为 Walk/Sprint/CrouchWalk，
+    ///   Animator Controller 根据 Speed 参数在 BlendTree 中选择具体动画
+    /// - AnimationStateMachine 使用 Locomotion = 96 作为 BlendTree 状态的标识值
+    /// - **不建议在代码中切换到此状态**：移动应使用 Walk/Sprint/CrouchWalk 等离散状态
+    ///
+    /// **与 Base Layer 动画的配合**：
+    /// 当 PlayerController 设置 BaseState = Locomotion 时，Animator Controller 中的
+    /// Locomotion 状态被激活，BlendTree 根据 Speed 参数在 Walk/Sprint/CrouchWalk 之间混合。
+    /// 这种设计允许动画师在 Animator 中精细控制移动动画的过渡和混合。
+    /// </summary>
+    [System.Obsolete("Locomotion 是 Animator 内部 BlendTree 标识符，不应在代码中切换。移动应使用 Walk/Sprint/CrouchWalk 等离散状态。")]
+    Locomotion = 96,
 
-    /// <summary>战斗姿态移动</summary>
-    CombatLocomotion = 201
+    /// <summary>
+    /// 战斗姿态移动混合状态（BlendTree 标识符）
+    ///
+    /// **设计说明**：
+    /// - 与 Locomotion 类似，用于战斗姿态下的移动混合
+    /// - 由 PlayerController 切换到 Combat 模式时启用
+    /// - **不建议在代码中切换到此状态**：移动应使用 Walk/Sprint/CrouchWalk 等离散状态，
+    ///   战斗姿态的移动混合由 Animator Controller 的 BlendTree 自动处理
+    /// </summary>
+    [System.Obsolete("CombatLocomotion 是 Animator 内部 BlendTree 标识符，不应在代码中切换。移动应使用 Walk/Sprint/CrouchWalk 等离散状态。")]
+    CombatLocomotion = 97,
+}
+
+// NPCAnimationState.cs
+/// <summary>
+/// NPC 动画状态枚举（独立于玩家 AnimationState，避免跨职责混用）
+/// NPC 使用独立的 Animator Controller，NPCAnimationStateMachine
+/// 订阅 NPCStateChangedEvent，将 NPC AI 状态映射到此枚举后
+/// 调用 SetBaseState() 更新对应 NPC 的 Animator 参数。
+/// </summary>
+public enum NPCAnimationState
+{
+    /// <summary>NPC 待机</summary>
+    Idle = 0,
+
+    /// <summary>NPC 巡逻（沿路径行走）</summary>
+    Patrol = 1,
+
+    /// <summary>NPC 警戒（发现异样，原地警惕）</summary>
+    Alert = 2,
+
+    /// <summary>NPC 搜索（进入搜寻状态，缓慢移动）</summary>
+    Search = 3,
+
+    /// <summary>NPC 追击（全速追赶目标）</summary>
+    Chase = 4,
+
+    /// <summary>NPC 战斗姿态（已锁定目标，近战/射击准备）</summary>
+    Combat = 5,
+
+    /// <summary>NPC 死亡</summary>
+    Death = 6,
+
+    /// <summary>NPC 被捆绑（倒地或坐地）</summary>
+    Bound = 7,
+
+    /// <summary>NPC 被击倒（短暂晕眩）</summary>
+    Stunned = 8
 }
 
 // AnimationStateMachine.cs
+using System;
+using UnityEngine;
+
 /// <summary>
 /// 动画状态机
 /// 负责管理 Base/Action/Overlay 三层动画状态的切换
-/// 注意：此类是非 MonoBehaviour 的 Plain C# class，
-/// 协程通过注入的 MonoBehaviour runner 执行
+/// 此类是 MonoBehaviour，确保生命周期方法按正确顺序执行，
+/// 避免 Plain C# class 注入模式带来的初始化顺序陷阱
 /// </summary>
-public class AnimationStateMachine
+public class AnimationStateMachine : MonoBehaviour
 {
-    private AnimationLayer _currentLayer;
     private AnimationState _baseState = AnimationState.None;
     private AnimationState _actionState = AnimationState.None;
 
-    private MonoBehaviour _coroutineRunner;
+    /// <summary>
+    /// 动作执行中标志（用于防止竞态条件）
+    /// 确保 StopCoroutine 和 NotifyActionCompleted 不会重复触发 OnActionComplete
+    /// </summary>
+    private bool _isActionRunning;
+
     private System.Collections.IEnumerator _pendingCoroutine;
 
     /// <summary>
-    /// 注入协程运行器（通常是角色身上的 MonoBehaviour）
+    /// 动画层权重控制器引用
+    /// 由 AnimationStateMachine 在 PlayAction/OnActionComplete_Core 中直接调用
+    /// FadeToWeight()，无需中间事件。组件在同一 GameObject 上，
+    /// 通过 Awake() 的 GetComponent 自动获取。
     /// </summary>
-    public void SetCoroutineRunner(MonoBehaviour runner)
+    [SerializeField] private AnimationLayerWeightController _layerWeightController;
+
+    /// <summary>
+    /// 初始化完成标志
+    /// </summary>
+    private bool _isInitialized;
+
+    /// <summary>
+    /// Unity 生命周期 Awake - 自动按正确顺序初始化
+    /// </summary>
+    private void Awake()
     {
-        _coroutineRunner = runner;
+        // 自动获取同 GameObject 上的 LayerWeightController
+        if (_layerWeightController == null)
+        {
+            _layerWeightController = GetComponent<AnimationLayerWeightController>();
+        }
+        _isInitialized = _layerWeightController != null;
+    }
+
+    /// <summary>
+    /// 检查初始化状态，未初始化时输出警告
+    /// </summary>
+    private bool ValidateInitialization()
+    {
+        if (_isInitialized) return true;
+
+        Debug.LogWarning("[AnimationStateMachine] Operation rejected: StateMachine is not initialized. " +
+            "Ensure AnimationLayerWeightController is attached to the same GameObject.");
+        return false;
+    }
+
+    /// <summary>
+    /// 动画层权重变化回调
+    /// 当 Action 层开始/结束时调用，通知 _layerWeightController 更新层权重
+    /// </summary>
+    private void OnLayerWeightNeedsUpdate(AnimationLayer layer, float targetWeight, float transitionDuration)
+    {
+        _layerWeightController?.FadeToWeight(layer, targetWeight, transitionDuration);
     }
 
     /// <summary>
@@ -193,6 +326,7 @@ public class AnimationStateMachine
     /// </summary>
     public void SetBaseState(AnimationState state)
     {
+        if (!ValidateInitialization()) return;
         if (_actionState != AnimationState.None)
             return; // Action 层占用时不能切换 Base
 
@@ -204,24 +338,72 @@ public class AnimationStateMachine
     /// Action 层播放完毕后自动回归 None，触发回调
     /// </summary>
     /// <param name="actionState">动作状态</param>
-    /// <param name="fixedDuration">固定时长（秒），-1 表示使用 AnimationEvent</param>
+    /// <param name="fixedDuration">
+    /// 固定时长（秒），-1 表示使用 AnimationEvent 触发。
+    ///
+    /// **模式说明**：
+    /// - **fixedDuration >= 0**：固定时长模式，用于动画时间已知且稳定的处决动画。
+    ///   超时后强制触发 OnActionComplete，作为安全网。
+    /// - **fixedDuration < 0**：动画事件模式，等待 AnimationEventBridge.OnAnimationEvent("OnAnimationEnd") 触发。
+    ///   这是主要推荐模式，因为与动画师制作的动画精确同步。
+    ///
+    /// **线程安全说明**：
+    /// _isActionRunning 标志位确保 StopCoroutine 和 NotifyActionCompleted 不会重复触发 OnActionComplete。
+    /// </param>
     public void PlayAction(AnimationState actionState, float fixedDuration = -1f)
     {
-        _actionState = actionState;
+        if (!ValidateInitialization()) return;
 
-        if (fixedDuration > 0)
+        // 如果已有动作在执行，先中断
+        if (_isActionRunning)
+        {
+            InterruptAction();
+        }
+
+        _actionState = actionState;
+        _isActionRunning = true;
+
+        // 淡入 Action 层权重（修复 P3：原方法定义但从未调用）
+        OnLayerWeightNeedsUpdate(AnimationLayer.Action, 1f, 0.1f);
+
+        if (fixedDuration >= 0)
         {
             // 固定时长模式（用于动画时间已知的处决动画）
             _pendingCoroutine = ActionCompleteCoroutine(fixedDuration);
-            _coroutineRunner?.StartCoroutine(_pendingCoroutine);
+            StartCoroutine(_pendingCoroutine);
         }
         // 否则等待 AnimationEvent 触发 OnActionComplete
+    }
+
+    /// <summary>
+    /// 中断当前正在执行的动作
+    /// 用于播放新动画时强制打断旧动画
+    /// </summary>
+    public void InterruptAction()
+    {
+        if (!_isActionRunning) return;
+
+        // 停止待处理的协程
+        if (_pendingCoroutine != null)
+        {
+            StopCoroutine(_pendingCoroutine);
+            _pendingCoroutine = null;
+        }
+
+        // 触发完成回调（传递被打断的动作状态）
+        var interruptedAction = _actionState;
+        _isActionRunning = false;
+        OnActionComplete_Core(interruptedAction);
     }
 
     private System.Collections.IEnumerator ActionCompleteCoroutine(float duration)
     {
         yield return new WaitForSeconds(duration);
-        OnActionComplete();
+        // 线程安全：检查 _isActionRunning 防止协程超时触发时已完成
+        if (_isActionRunning)
+        {
+            OnActionComplete_Core(_actionState);
+        }
     }
 
     /// <summary>
@@ -229,28 +411,65 @@ public class AnimationStateMachine
     /// </summary>
     public void NotifyActionCompleted()
     {
-        if (_pendingCoroutine != null && _coroutineRunner != null)
+        // 线程安全：检查 _isActionRunning 防止重复触发
+        if (!_isActionRunning) return;
+
+        if (_pendingCoroutine != null)
         {
-            _coroutineRunner.StopCoroutine(_pendingCoroutine);
+            StopCoroutine(_pendingCoroutine);
             _pendingCoroutine = null;
         }
-        OnActionComplete();
+        OnActionComplete_Core(_actionState);
     }
 
-    public event Action<AnimationState> OnActionCompleted;
+    /// <summary>
+    /// 动作结束事件
+    /// 回调参数为刚结束的动作状态（previousAction），而非 None
+    ///
+    /// **⚠️ 重要语义说明 ⚠️**：
+    /// - 回调在 Action 层回归 None **之前**触发，传递的是刚完成的动作状态
+    /// - 调用方收到此事件时，Action 层仍处于 previousAction 状态，
+    ///   可以安全地读取动作信息（如处决动画的伤害值、持续时间等）
+    /// - Action 层真正回归 None 是在回调执行完成后由 OnActionComplete_Core 内部处理
+    /// - 如需在 Action 层完全回归 None 后收到通知，应订阅 OnActionStateChanged 事件（如果已实现）
+    ///
+    /// **使用示例**：
+    /// ```csharp
+    /// // 正确：在 OnActionEnded 中读取 previousAction 信息
+    /// stateMachine.OnActionEnded += (previousAction) =>
+    /// {
+    ///     // 此时 Action 层仍为 previousAction，可以读取其关联数据
+    ///     var damage = GetTakedownDamage(previousAction);
+    /// };
+    ///
+    /// // 错误：在回调中认为 Action 层已回归 None
+    /// stateMachine.OnActionEnded += (previousAction) =>
+    /// {
+    ///     // 此处 GetActionState() 返回的仍是 previousAction，而非 None
+    ///     // 如需在 None 状态下执行操作，应使用独立的完成事件
+    /// };
+    /// ```
+    /// </summary>
+    public event Action<AnimationState> OnActionEnded;
 
     /// <summary>
-    /// 动作完成回调
+    /// 动作完成核心逻辑（内部方法，供 InterruptAction/NotifyActionCompleted/ActionCompleteCoroutine 调用）
     /// </summary>
-    private void OnActionComplete()
+    /// <param name="previousAction">刚完成的动作状态（用于回调）</param>
+    private void OnActionComplete_Core(AnimationState previousAction)
     {
-        var previousAction = _actionState;
+        _isActionRunning = false;
         _actionState = AnimationState.None;
         _pendingCoroutine = null;
 
+        // 淡出 Action 层权重，回归 Base 层（修复 P3：原方法定义但从未调用）
+        OnLayerWeightNeedsUpdate(AnimationLayer.Action, 0f, 0.2f);
+
         if (previousAction != AnimationState.None)
         {
-            OnActionCompleted?.Invoke(_baseState);
+            // 传递刚完成的 action 状态，而非 None
+            // 调用方可以在此处安全地读取 previousAction 的信息
+            OnActionEnded?.Invoke(previousAction);
         }
     }
 
@@ -308,6 +527,9 @@ public static class AnimationStateMapper
 
 ```csharp
 // AnimationEventBridge.cs
+using System.Collections.Generic;
+using UnityEngine;
+
 /// <summary>
 /// 动画事件桥接器：将 Animator AnimationEvent 转换为 EventBus 事件
 /// 解决 AnimationEvent 无法直接发布到 EventBus 的问题
@@ -337,27 +559,30 @@ public class AnimationEventBridge : MonoBehaviour
     /// 由 AnimationEvent 触发，查找并执行对应的 EventBus 事件
     /// </summary>
     /// <param name="eventName">事件名称</param>
-    /// <param name="targetId">目标实体ID（用于 InteractionEvent）</param>
-    public void OnAnimationEvent(string eventName, int targetId = 0)
+    /// <param name="entityId">实体 ID（用于交互类事件，如 StealthKill、EnvironmentKill）</param>
+    /// <param name="weaponId">武器 ID（用于武器类事件，如 WeaponSwing）</param>
+    public void OnAnimationEvent(string eventName, int entityId = 0, int weaponId = 0)
     {
-        // 需要 targetId 的事件直接处理，不走字典映射
+        // 交互类事件：使用 entityId
+        // 注意：OnStealthKillHit 只转发动画命中事件，不发布 InteractionEvent
+        // InteractionEvent 由 GrittyTakedowns 在动画完成后发布
         if (eventName == "OnStealthKillHit")
         {
-            EventBus.Instance.Publish(new InteractionEvent
+            EventBus.Instance.Publish(new TakedownAnimationCompleteEvent
             {
-                type = InteractionType.StealthKill,
-                target_id = targetId,  // 由 AnimationEvent 的 int 参数传入
-                source = "animation",
-                result = InteractionResult.Success
+                EntityId = entityId,
+                AnimationHash = 0, // 由调用方填充
+                TakedownType = InteractionType.StealthKill
             });
             return;
         }
 
+        // 武器类事件：使用 weaponId
         if (eventName == "OnWeaponSwing")
         {
             EventBus.Instance.Publish(new WeaponUsedEvent
             {
-                weapon_id = "unknown",
+                weapon_id = weaponId > 0 ? weaponId.ToString() : "unknown",
                 usage_type = "melee"
             });
             return;
@@ -374,7 +599,8 @@ public class AnimationEventBridge : MonoBehaviour
 // 在 Unity Animator 中配置 AnimationEvent：
 // - Object: 绑定 AnimationEventBridge 组件
 // - Function: 选择 "OnAnimationEvent"
-// - String Parameter: 传入事件名称
+// - String Parameter: 传入事件名称（eventName）
+// - Int Parameter: 用于 entityId（交互类）或 weaponId（武器类），按事件类型选用
 ```
 
 ### 4. 动画参数定义
@@ -405,6 +631,8 @@ public static class AnimationParameters
 }
 
 // AnimationParameterUpdater.cs
+using UnityEngine;
+
 /// <summary>
 /// 负责将游戏状态同步到 Animator 参数
 /// 挂载在角色 GameObject 上
@@ -429,7 +657,8 @@ public class AnimationParameterUpdater : MonoBehaviour
         if (_rigidbody != null)
         {
             // 同步移动状态（使用水平速度）
-            Vector3 horizontalVelocity = new Vector3(_rigidbody.velocity.x, 0, _rigidbody.velocity.z);
+            // 注意：Unity 6 中 Rigidbody.velocity 已弃用，改用 linearVelocity
+            Vector3 horizontalVelocity = new Vector3(_rigidbody.linearVelocity.x, 0, _rigidbody.linearVelocity.z);
             _animator.SetFloat(AnimationParameters.Speed, horizontalVelocity.magnitude);
             _animator.SetBool(AnimationParameters.IsMoving, horizontalVelocity.magnitude > 0.1f);
         }
@@ -457,25 +686,66 @@ public class AnimationParameterUpdater : MonoBehaviour
 
 ```csharp
 // AnimationLayerWeightController.cs
-public class AnimationLayerWeightController
+using System.Collections;
+using UnityEngine;
+
+/// <summary>
+/// 动画层权重控制器（MonoBehaviour）
+/// 挂载在与 AnimationStateMachine 相同的 GameObject 上，
+/// 由 AnimationStateMachine.Awake() 通过 GetComponent 自动获取。
+///
+/// **设计变更说明（P1 修复）**：
+/// 原设计为 Plain C# class，通过 SetAnimator/SetCoroutineRunner 手动注入。
+/// 问题在于 AnimationStateMachine.Awake() 使用 GetComponent 查找它，
+/// 而 Plain C# class 无法通过 GetComponent 获取，导致运行时永远为 null。
+/// 改为 MonoBehaviour 后，GetComponent 可正确找到组件，
+/// 协程也可直接通过 StartCoroutine 运行，无需外部注入运行器。
+/// </summary>
+public class AnimationLayerWeightController : MonoBehaviour
 {
-    private Animator _animator;
+    [SerializeField] private Animator _animator;
+
+    /// <summary>
+    /// 检查是否已初始化（Animator 已赋值）
+    /// </summary>
+    public bool IsInitialized => _animator != null;
+
+    /// <summary>
+    /// 每个动画层的当前淡入淡出协程引用
+    /// key: AnimationLayer 枚举整数值
+    /// 每次 FadeToWeight 调用前先停止同层旧协程，防止多次调用时权重值被多个协程同时修改
+    /// </summary>
+    private Dictionary<int, Coroutine> _lerpCoroutines = new();
 
     /// <summary>
     /// 设置指定动画层的权重
     /// </summary>
     public void SetLayerWeight(AnimationLayer layer, float weight)
     {
+        if (_animator == null)
+        {
+            Debug.LogWarning("[AnimationLayerWeightController] Animator not assigned in Inspector");
+            return;
+        }
         int layerIndex = (int)layer;
         _animator.SetLayerWeight(layerIndex, Mathf.Clamp01(weight));
     }
 
     /// <summary>
     /// 平滑过渡到目标权重
+    /// 自动取消同层未完成的旧过渡协程，防止多次调用时出现权重闪烁
     /// </summary>
     public void FadeToWeight(AnimationLayer layer, float targetWeight, float duration)
     {
-        StartCoroutine(LerpWeightCoroutine(layer, targetWeight, duration));
+        int key = (int)layer;
+
+        // 停止该层上正在执行的旧协程
+        if (_lerpCoroutines.TryGetValue(key, out var existing) && existing != null)
+        {
+            StopCoroutine(existing);
+        }
+
+        _lerpCoroutines[key] = StartCoroutine(LerpWeightCoroutine(layer, targetWeight, duration));
     }
 
     private System.Collections.IEnumerator LerpWeightCoroutine(
@@ -487,21 +757,171 @@ public class AnimationLayerWeightController
 
         while (elapsed < duration)
         {
-            elapsed += Time.deltaTime;
+            // P0 修复：使用 unscaledDeltaTime 确保不受 Time.timeScale 影响
+            // 这样暂停菜单或慢动作时，动画层权重过渡仍能正常完成
+            elapsed += Time.unscaledDeltaTime;
             float t = elapsed / duration;
             _animator.SetLayerWeight(layerIndex, Mathf.Lerp(start, target, t));
             yield return null;
         }
 
         _animator.SetLayerWeight(layerIndex, target);
+
+        // 协程自然完成，从字典移除引用
+        _lerpCoroutines.Remove(layerIndex);
     }
 }
 ```
 
-### 6. 骨骼动画与 IK 支持
+### 6. 动画层控制器
 
 ```csharp
+// BaseLayerController.cs
+/// <summary>
+/// Base 层动画控制器
+/// 负责管理角色基础动画状态（移动、待机、潜行、死亡）
+/// 由 PlayerController/NPCController 驱动
+/// </summary>
+public class BaseLayerController
+{
+    private readonly Animator _animator;
+
+    public BaseLayerController(Animator animator)
+    {
+        _animator = animator;
+    }
+
+    /// <summary>
+    /// 设置基础动画状态
+    /// </summary>
+    public void SetState(AnimationState state)
+    {
+        _animator.SetInteger(AnimationParameters.BaseState, (int)state);
+    }
+
+    /// <summary>
+    /// 设置移动速度（用于 BlendTree）
+    /// </summary>
+    public void SetSpeed(float speed)
+    {
+        _animator.SetFloat(AnimationParameters.Speed, speed);
+    }
+
+    /// <summary>
+    /// 设置是否蹲伏
+    /// </summary>
+    public void SetCrouching(bool isCrouching)
+    {
+        _animator.SetBool(AnimationParameters.IsCrouching, isCrouching);
+    }
+}
+
+// ActionLayerController.cs
+/// <summary>
+/// Action 层动画控制器
+/// 负责管理角色动作动画（处决、交互动画、技能动画）
+/// 由游戏系统通过 ActionStateMachine 触发
+/// 权重: Additive，通过 AnimationLayerWeightController 控制权重
+/// </summary>
+public class ActionLayerController
+{
+    private readonly Animator _animator;
+    private readonly AnimationLayerWeightController _weightController;
+
+    public ActionLayerController(Animator animator, AnimationLayerWeightController weightController)
+    {
+        _animator = animator;
+        _weightController = weightController;
+    }
+
+    /// <summary>
+    /// 播放动作动画
+    /// Action 层使用 Additive 混合，权重从 0 渐变到 1
+    /// </summary>
+    public void PlayAction(AnimationState actionState, float fadeInDuration = 0.1f)
+    {
+        _animator.SetInteger(AnimationParameters.ActionState, (int)actionState);
+        _weightController?.FadeToWeight(AnimationLayer.Action, 1f, fadeInDuration);
+    }
+
+    /// <summary>
+    /// 结束动作动画
+    /// Action 层权重渐变回 0，状态回归 None
+    /// </summary>
+    public void EndAction(float fadeOutDuration = 0.2f)
+    {
+        _weightController?.FadeToWeight(AnimationLayer.Action, 0f, fadeOutDuration);
+        _animator.SetInteger(AnimationParameters.ActionState, (int)AnimationState.None);
+    }
+}
+
+// OverlayLayerController.cs
+/// <summary>
+/// Overlay 层动画控制器
+/// 负责管理覆盖层动画（表情动画、武器挂载、披风物理）
+/// 权重: Additive，叠加在 Base+Action 组合之上
+/// </summary>
+public class OverlayLayerController
+{
+    private readonly Animator _animator;
+    private readonly AnimationLayerWeightController _weightController;
+
+    public OverlayLayerController(Animator animator, AnimationLayerWeightController weightController)
+    {
+        _animator = animator;
+        _weightController = weightController;
+    }
+
+    /// <summary>
+    /// 播放覆盖层动画
+    /// </summary>
+    public void PlayOverlay(string overlayName, float fadeInDuration = 0.15f)
+    {
+        // Overlay 层动画通过 Animator Controller 的 Trigger 参数触发
+        _animator.SetTrigger(Animator.StringToHash(overlayName));
+        _weightController?.FadeToWeight(AnimationLayer.Overlay, 1f, fadeInDuration);
+    }
+
+    /// <summary>
+    /// 停止覆盖层动画
+    /// </summary>
+    public void StopOverlay(float fadeOutDuration = 0.15f)
+    {
+        _weightController?.FadeToWeight(AnimationLayer.Overlay, 0f, fadeOutDuration);
+    }
+
+    /// <summary>
+    /// 设置披风物理模拟强度
+    /// </summary>
+    public void SetCapePhysics(float intensity)
+    {
+        _animator.SetFloat(Animator.StringToHash("CapePhysicsIntensity"), intensity);
+    }
+}
+```
+
+### 6.5. 骨骼动画与 IK 支持
+
+```csharp
+// IKSolver.cs
+using UnityEngine;
+
+/// <summary>
+/// IK 求解器接口
+/// 用于动画 IK 处理的抽象
+/// </summary>
+public interface IKSolver
+{
+    void SetRightHandWeapon(Transform weaponMount);
+    void SetLeftHandWeapon(Transform weaponMount);
+    void SetLookAtTarget(Transform target);
+    void SetFootIKTarget(AvatarIKGoal foot, Transform target);
+    void ClearIKTargets();
+}
+
 // AnimationIKHandler.cs
+using UnityEngine;
+
 /// <summary>
 /// 处理骨骼 IK（Inverse Kinematics）
 /// 支持：武器瞄准、脚步 IK、环境交互对齐
@@ -513,11 +933,33 @@ public class AnimationIKHandler : MonoBehaviour, IKSolver
     [SerializeField] private Transform _rightHandTarget;
     [SerializeField] private Transform _lookAtTarget;
 
+    /// <summary>
+    /// 左脚 IK 目标
+    /// </summary>
+    private Transform _leftFootTarget;
+
+    /// <summary>
+    /// 右脚 IK 目标
+    /// </summary>
+    private Transform _rightFootTarget;
+
+    /// <summary>
+    /// IK 处理的动画层索引
+    /// 默认为 Base Layer (0)
+    ///
+    /// **设计说明**：Unity 的 OnAnimatorIK 会在每个启用 IK 的层上调用。
+    /// 大多数 IK 逻辑（如武器瞄准、注视）应在 Base Layer (0) 上处理，
+    /// 因为 Base Layer 始终处于激活状态。如果需要其他层支持 IK，
+    /// 可在 Inspector 中调整此值。
+    /// </summary>
+    [SerializeField] private int _ikLayerIndex = 0;
+
     private void OnAnimatorIK(int layerIndex)
     {
-        if (layerIndex != (int)AnimationLayer.Base) return;
+        // IK 仅在配置的层上处理（默认 Base Layer）
+        if (layerIndex != _ikLayerIndex) return;
 
-        // 武器瞄准 IK
+        // 武器瞄准 IK（右手）
         if (_rightHandTarget != null)
         {
             _animator.SetIKPositionWeight(AvatarIKGoal.RightHand, 1f);
@@ -525,12 +967,63 @@ public class AnimationIKHandler : MonoBehaviour, IKSolver
             _animator.SetIKPosition(AvatarIKGoal.RightHand, _rightHandTarget.position);
             _animator.SetIKRotation(AvatarIKGoal.RightHand, _rightHandTarget.rotation);
         }
+        else
+        {
+            // 清除右手 IK（防止上一帧的目标残留）
+            _animator.SetIKPositionWeight(AvatarIKGoal.RightHand, 0f);
+            _animator.SetIKRotationWeight(AvatarIKGoal.RightHand, 0f);
+        }
+
+        // 左手 IK
+        if (_leftHandTarget != null)
+        {
+            _animator.SetIKPositionWeight(AvatarIKGoal.LeftHand, 1f);
+            _animator.SetIKRotationWeight(AvatarIKGoal.LeftHand, 1f);
+            _animator.SetIKPosition(AvatarIKGoal.LeftHand, _leftHandTarget.position);
+            _animator.SetIKRotation(AvatarIKGoal.LeftHand, _leftHandTarget.rotation);
+        }
+        else
+        {
+            _animator.SetIKPositionWeight(AvatarIKGoal.LeftHand, 0f);
+            _animator.SetIKRotationWeight(AvatarIKGoal.LeftHand, 0f);
+        }
 
         // 头部注视 IK
         if (_lookAtTarget != null)
         {
             _animator.SetLookAtWeight(1f);
             _animator.SetLookAtPosition(_lookAtTarget.position);
+        }
+        else
+        {
+            _animator.SetLookAtWeight(0f);
+        }
+
+        // 脚部 IK（仅在有目标时启用）
+        if (_leftFootTarget != null)
+        {
+            _animator.SetIKPositionWeight(AvatarIKGoal.LeftFoot, 1f);
+            _animator.SetIKRotationWeight(AvatarIKGoal.LeftFoot, 1f);
+            _animator.SetIKPosition(AvatarIKGoal.LeftFoot, _leftFootTarget.position);
+            _animator.SetIKRotation(AvatarIKGoal.LeftFoot, _leftFootTarget.rotation);
+        }
+        else
+        {
+            _animator.SetIKPositionWeight(AvatarIKGoal.LeftFoot, 0f);
+            _animator.SetIKRotationWeight(AvatarIKGoal.LeftFoot, 0f);
+        }
+
+        if (_rightFootTarget != null)
+        {
+            _animator.SetIKPositionWeight(AvatarIKGoal.RightFoot, 1f);
+            _animator.SetIKRotationWeight(AvatarIKGoal.RightFoot, 1f);
+            _animator.SetIKPosition(AvatarIKGoal.RightFoot, _rightFootTarget.position);
+            _animator.SetIKRotation(AvatarIKGoal.RightFoot, _rightFootTarget.rotation);
+        }
+        else
+        {
+            _animator.SetIKPositionWeight(AvatarIKGoal.RightFoot, 0f);
+            _animator.SetIKRotationWeight(AvatarIKGoal.RightFoot, 0f);
         }
     }
 
@@ -543,14 +1036,90 @@ public class AnimationIKHandler : MonoBehaviour, IKSolver
     }
 
     /// <summary>
+    /// 设置左手武器挂载点（由武器系统调用）
+    /// </summary>
+    public void SetLeftHandWeapon(Transform weaponMount)
+    {
+        _leftHandTarget = weaponMount;
+    }
+
+    /// <summary>
     /// 设置注视目标（由相机系统调用）
     /// </summary>
     public void SetLookAtTarget(Transform target)
     {
         _lookAtTarget = target;
     }
+
+    /// <summary>
+    /// 设置脚部 IK 目标（由环境交互系统调用）
+    /// </summary>
+    /// <param name="foot">AvatarIKGoal.LeftFoot 或 AvatarIKGoal.RightFoot</param>
+    /// <param name="target">脚部目标 Transform（如地面上的 IK 标记点）</param>
+    public void SetFootIKTarget(AvatarIKGoal foot, Transform target)
+    {
+        switch (foot)
+        {
+            case AvatarIKGoal.LeftFoot:
+                _leftFootTarget = target;
+                break;
+            case AvatarIKGoal.RightFoot:
+                _rightFootTarget = target;
+                break;
+            default:
+                Debug.LogWarning($"[AnimationIKHandler] SetFootIKTarget: unsupported foot {foot}");
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 清除所有 IK 目标
+    /// </summary>
+    public void ClearIKTargets()
+    {
+        _rightHandTarget = null;
+        _leftHandTarget = null;
+        _lookAtTarget = null;
+        _leftFootTarget = null;
+        _rightFootTarget = null;
+    }
 }
 ```
+
+#### IK LOD 策略
+
+| LOD Level | IK 类型 | 触发条件 | 性能开销 |
+|------------|---------|----------|----------|
+| **LOD 0 (Full)** | All IKs + LookAt + Foot IK | 距离 < 3m 或处于交互状态 | 高 |
+| **LOD 1 (Partial)** | Hand IK + LookAt | 距离 3-8m 或 NPC 正面对玩家 | 中 |
+| **LOD 2 (Minimal)** | Hand IK only | 距离 8-15m | 低 |
+| **LOD 3 (None)** | No IK | 距离 > 15m 或相机看不到角色背面 | 无 |
+
+**切换逻辑**：
+```csharp
+public void UpdateIKLOD(Vector3 characterPosition, Vector3 cameraPosition, bool isInInteraction)
+{
+    var distance = Vector3.Distance(characterPosition, cameraPosition);
+
+    if (isInInteraction || distance < 3f)
+        _currentIKLOD = IKLODLevel.Full;
+    else if (distance < 8f)
+        _currentIKLOD = IKLODLevel.Partial;
+    else if (distance < 15f)
+        _currentIKLOD = IKLODLevel.Minimal;
+    else
+        _currentIKLOD = IKLODLevel.None;
+}
+```
+
+> **设计说明**：IK 计算是 CPU 密集型操作，PC 平台上大量角色同时进行完整 IK 计算会严重影响帧率。通过 LOD 策略，远距离角色的 IK 计算可以被跳过或简化，保持帧率稳定。PS5 版本可考虑使用 GPU Skinning 进一步优化。
+
+### 6.6-6.8 节缺失说明
+
+> **§6.6-6.8 说明**：骨骼动画与 IK 支持的内容已在 §6.5 中完整定义。
+> 原有 §6.6（动画事件桥接）、§6.7（动画状态映射）、§6.8（调参配置）
+> 已分别整合到 §2.5（AnimationState ↔ PlayerMovementState 映射）和 §4（动画参数定义）中。
+> 本文档结构现已统一为：基础定义(§1-§2) → 控制器(§3-§5) → IK支持(§6.5) → 项目结构(§7)
 
 ### 7. Unity 项目结构（Presentation Layer）
 
@@ -574,7 +1143,7 @@ Assets/Game/
 ```
 
 > **注意**：相机震动（Shake）功能由 ADR-0026 相机系统的 CameraShakeManager 统一管理，
-> 不属于动画系统的职责。动画系统通过 AnimationEvent 触发 CameraShakeRequest 事件来间接控制震动。
+> 不属于动画系统的职责。动画系统通过 AnimationEvent 触发 CameraShakeRequestEvent 事件来间接控制震动。
 
 ---
 
@@ -669,6 +1238,96 @@ Assets/Game/
 - [ ] 与武器系统集成右手 IK
 - [ ] 与相机系统集成注视 IK
 
+### Phase 5: 动画-相机协调协议
+- [ ] 实现 `ExecutionCameraRequest` 事件（见下节）
+- [ ] 在 GrittyTakedowns 处决动画播放前发送协调事件
+- [ ] CameraManager 订阅并响应协调事件
+
+---
+
+### 动画-相机协调协议
+
+> **⚠️ 问题背景**：`LockOnCameraBehavior` 的 `duration` 参数与动画系统的处决动画时长相互独立，可能导致相机已切回 Follow 但动画仍在播放，或反之。
+
+#### 协调事件定义
+
+```csharp
+// ExecutionCameraRequestEvent.cs
+/// <summary>
+/// 动画系统向相机系统发送的协调请求
+/// 在播放需要相机配合的动画（如处决动画）前发送
+/// </summary>
+public struct ExecutionCameraRequestEvent
+{
+    /// <summary>
+    /// 请求的相机目标（被处决的 NPC）
+    /// </summary>
+    public Transform target;
+
+    /// <summary>
+    /// 期望的相机持续时间（秒）
+    /// 相机应保持 LockOn 状态直到动画完成或超时
+    /// </summary>
+    public float expectedDuration;
+
+    /// <summary>
+    /// 请求来源系统
+    /// </summary>
+    public string sourceSystem;
+}
+```
+
+#### 协调流程
+
+```
+GrittyTakedowns 准备处决动画
+        │
+        ▼
+发布 ExecutionCameraRequestEvent(expectedDuration)
+        │
+        ▼
+CameraManager 接收事件，设置 LockOn(target, expectedDuration)
+        │
+        ▼
+开始播放处决动画（AnimationSystem）
+        │
+        ▼
+动画完成 → AnimationEventBridge.OnAnimationEvent("OnAnimationEnd")
+        │
+        ▼
+GrittyTakedowns 发送 CameraTransitionRequest(CameraState.Follow)
+        │
+        ▼
+相机切换回 Follow 状态
+```
+
+#### CameraManager 响应协调事件
+
+```csharp
+// 在 CameraManager 中订阅 ExecutionCameraRequestEvent
+EventBus.Instance.Subscribe<ExecutionCameraRequestEvent>(OnExecutionCameraRequest);
+
+private void OnExecutionCameraRequest(ExecutionCameraRequestEvent evt)
+{
+    if (_stateMachine.CurrentState == CameraState.LockOn)
+    {
+        // 已处于 LockOn，无需重复设置
+        return;
+    }
+
+    // 请求切换到 LockOn 状态
+    _stateMachine.RequestState(CameraState.LockOn);
+    var lockOn = _stateMachine.CurrentBehavior as LockOnCameraBehavior;
+    lockOn.SetTarget(evt.target, evt.expectedDuration);
+}
+```
+
+#### 注意事项
+
+1. **超时保护**：`expectedDuration` 仅作为参考，实际超时由 `LockOnCameraBehavior` 的 `duration` 参数控制
+2. **状态检查**：如果相机已在 LockOn 状态，忽略重复请求
+3. **动画取消**：如果动画被中断（如玩家受伤），GrittyTakedowns 应发送 `CameraTransitionRequest(CameraState.Follow)` 恢复相机
+
 ---
 
 ## Validation Criteria
@@ -697,7 +1356,8 @@ Assets/Game/
 |------|---------|------|
 | `PlayerMovementState` | shared-types.md §7.2 | 玩家移动状态枚举 |
 | `AnimationLayer` | ADR-0024 本文档 | 动画层枚举 |
-| `AnimationState` | ADR-0024 本文档 | 动画状态枚举 |
+| `AnimationState` | ADR-0024 本文档 | 玩家/动作动画状态枚举 |
+| `NPCAnimationState` | ADR-0024 本文档 | NPC 动画状态枚举（独立定义，勿与 AnimationState 混用） |
 | `InteractionType` | shared-types.md §9.1 | 交互类型枚举 |
 | `InteractionResult` | shared-types.md §9.2 | 交互结果枚举 |
 | `WeaponUsedEvent` | shared-types.md §3.7 | 武器使用事件 |
